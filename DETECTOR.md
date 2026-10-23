@@ -134,6 +134,25 @@ This writes `models/combiner.json`, which the app picks up automatically, and
 RAID-test has about 672k texts, so run this on a GPU machine. Then open a pull request to
 [liamdugan/raid](https://github.com/liamdugan/raid). Declare it if the combiner saw RAID-train.
 
+## Deploy to Hugging Face Spaces
+
+The app runs on a free CPU Space: 16 GB of RAM covers the models in full precision. Sign in
+once with a **write** token from huggingface.co/settings/tokens, then deploy:
+
+```bash
+.venv/bin/hf auth login
+```
+
+```bash
+.venv/bin/python deploy/huggingface/deploy.py
+```
+
+This creates a private Space, `<your-username>/open-detector`, and uploads only `app.py`, the
+`opendetector` package, the fitted combiner and the files in `deploy/huggingface/`. No `.env` or
+API keys are uploaded. Run the same command again to redeploy after changes. Add `--public` for a
+public Space, or change its visibility later in the Space's settings. The first analysis after a
+restart downloads about 4 GB of models and takes a few minutes.
+
 ## Red-team the detector
 
 `align_engine.py` is the attack this detector has to survive. It has Claude write a text,
