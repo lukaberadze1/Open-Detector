@@ -1,0 +1,46 @@
+{
+  "features": [
+    "desklib_mean",
+    "desklib_max"
+  ],
+  "medians": [
+    1.6953125,
+    1.90625
+  ],
+  "mean": [
+    2.2387380902908123,
+    2.4182314859653764
+  ],
+  "scale": [
+    6.739906044808274,
+    6.6805680693345
+  ],
+  "coef": [
+    3.3387087906332207,
+    2.0759355097764414
+  ],
+  "intercept": 1.8129290740165753,
+  "thresholds": {
+    "ai": 0.7963678273937214,
+    "review": 0.3335838918933995
+  },
+  "info": {
+    "n_fit": 1093,
+    "datasets": [
+      "raid"
+    ],
+    "fitted": "2026-10-23",
+    "threshold_method": "5-fold out-of-fold conformal",
+    "alphas": {
+      "ai": 0.01,
+      "review": 0.05
+    },
+    "n_calibration_human": 480,
+    "n_test": 300,
+    "test_auroc": 0.9898624348138824,
+    "test_tpr_at_1pct_fpr": 0.8614457831325302,
+    "test_fpr_at_ai_threshold": 0.014925373134328358,
+    "test_source_fpr_at_ai_threshold": 0.008,
+    "test_tpr_at_ai_threshold": 0.8734939759036144
+  }
+}

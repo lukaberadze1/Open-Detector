@@ -47,9 +47,16 @@ def main() -> None:
     parser.add_argument("--limit", type=int, help="stop after this many texts (smoke tests)")
     parser.add_argument("--min-words", type=int, default=DetectorConfig().min_words,
                         help="skip shorter texts; the detector abstains on them anyway")
+    parser.add_argument("--engines", default="glyph,desklib,bino",
+                        help="comma-separated engines to run (e.g. desklib for the slim profile)")
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--dtype", default="auto", help="auto, float32 or bfloat16; match the deployment's")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
+    engines = [e.strip() for e in args.engines.split(",") if e.strip()]
+    unknown = sorted(set(engines) - {"glyph", "desklib", "bino"})
+    if unknown:
+        parser.error(f"unknown engines: {', '.join(unknown)} (choose from glyph, desklib, bino)")
 
     df = load(args)
     long_enough = df["text"].map(lambda t: count_words(t) if isinstance(t, str) else 0) >= args.min_words
@@ -69,11 +76,11 @@ def main() -> None:
 
     from opendetector.engines import ENGINE_NAMES, build_engine, free_memory
 
-    config = DetectorConfig(device=args.device)
+    config = DetectorConfig(device=args.device, dtype=args.dtype)
     texts = {row.id: row.text if isinstance(row.text, str) else "" for row in todo.itertuples(index=False)}
     features: dict[str, dict] = {i: {} for i in texts}
     # One engine at a time, so peak memory is a single model; each pass resumes on its own.
-    for name in ENGINE_NAMES:
+    for name in (n for n in ENGINE_NAMES if n in engines):
         part = out.with_name(f"{out.name}.{name}.partial")
         cached = read_jsonl(part)
         remaining = [i for i in texts if i not in cached]

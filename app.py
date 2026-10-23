@@ -1,4 +1,7 @@
-"""Streamlit front end: streamlit run app.py"""
+"""Streamlit front end: streamlit run app.py
+
+Set OPENDETECTOR_PROFILE=slim to run Desklib alone on the CPU, for small hosts.
+"""
 
 from __future__ import annotations
 
@@ -14,20 +17,28 @@ st.set_page_config(page_title="Open Detector", page_icon="🔎", layout="wide")
 
 VERDICT_LABELS = {"likely_ai": "Likely AI", "needs_review": "Needs review", "likely_human": "Likely human"}
 HIGHLIGHT = {"likely_ai": "rgba(255, 82, 82, 0.35)", "needs_review": "rgba(255, 193, 7, 0.35)"}
+ENGINE_LABELS = {
+    "glyph": "GLYPH · DeBERTa-v3-base classifier",
+    "desklib": "Desklib · DeBERTa-v3-large classifier",
+    "bino": "Binoculars · zero-shot (two small LMs)",
+}
+
+PROFILE = os.environ.get("OPENDETECTOR_PROFILE", "full")
+CONFIG = DetectorConfig.for_profile(PROFILE)
+AVAILABLE = [name for name, model in (("glyph", CONFIG.glyph_model), ("desklib", CONFIG.desklib_model),
+                                      ("bino", CONFIG.binoculars_observer)) if model]
 
 with st.sidebar:
     st.header("Engines")
-    use_glyph = st.checkbox("GLYPH · DeBERTa-v3-base classifier", value=True)
-    use_desklib = st.checkbox("Desklib · DeBERTa-v3-large classifier", value=True)
-    use_bino = st.checkbox("Binoculars · zero-shot (two small LMs)", value=True)
+    enabled = {name: st.checkbox(ENGINE_LABELS[name], value=True) for name in AVAILABLE}
     show_sentences = st.checkbox("Sentence highlights", value=True)
-    ram_gb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
-    if ram_gb < 12:
-        st.caption(f"This machine has {ram_gb:.0f} GB of RAM. All three engines need about 3.5 GB; "
-                   "if it slows down, switch off Binoculars (about 2 GB).")
-
-
-CONFIG = DetectorConfig()
+    if PROFILE == "slim":
+        st.caption("Slim build: Desklib alone, the strongest single engine, on CPU to fit a small free host.")
+    else:
+        ram_gb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+        if ram_gb < 12:
+            st.caption(f"This machine has {ram_gb:.0f} GB of RAM. All three engines need about 3.5 GB; "
+                       "if it slows down, switch off Binoculars (about 2 GB).")
 
 
 # One cache entry per engine, so toggling engines never loads a second copy of a model.
@@ -38,9 +49,9 @@ def load_engine(name: str):
     return build_engine(name, CONFIG)
 
 
-classifiers = [load_engine(n) for n, on in (("glyph", use_glyph), ("desklib", use_desklib)) if on]
+classifiers = [load_engine(n) for n in ("glyph", "desklib") if enabled.get(n)]
 combiner = Combiner.load(CONFIG.combiner_path) if CONFIG.combiner_path.exists() else None
-detector = Detector(classifiers, load_engine("bino") if use_bino else None, combiner, CONFIG)
+detector = Detector(classifiers, load_engine("bino") if enabled.get("bino") else None, combiner, CONFIG)
 
 with st.sidebar:
     st.header("Calibration")
@@ -56,10 +67,12 @@ with st.sidebar:
             st.caption(f"Held-out test: catches {info['test_tpr_at_1pct_fpr']:.1%} of AI texts at 1% FPR.")
 
 st.title("Open Detector")
-st.markdown(
-    "An ensemble of two fine-tuned classifiers and the Binoculars zero-shot detector, "
-    "scored over overlapping windows and combined by a calibrated model."
-)
+if PROFILE == "slim":
+    st.markdown("The Desklib classifier scores overlapping windows of the whole text, and a calibrated "
+                "model turns those scores into one AI likelihood.")
+else:
+    st.markdown("An ensemble of two fine-tuned classifiers and the Binoculars zero-shot detector, "
+                "scored over overlapping windows and combined by a calibrated model.")
 
 if detector.combiner is None:
     st.warning(

@@ -1,0 +1,9 @@
+# Streamlit Community Cloud (slim profile). CPU-only PyTorch: the CUDA build from PyPI would
+# pull ~2.5 GB of GPU libraries that the free tier can't use.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.4
+transformers>=4.46,<5
+sentencepiece
+protobuf
+numpy>=2
+streamlit>=1.40

@@ -134,10 +134,38 @@ This writes `models/combiner.json`, which the app picks up automatically, and
 RAID-test has about 672k texts, so run this on a GPU machine. Then open a pull request to
 [liamdugan/raid](https://github.com/liamdugan/raid). Declare it if the combiner saw RAID-train.
 
-## Deploy to Hugging Face Spaces
+## Deploy free on Streamlit Community Cloud (slim build)
 
-The app runs on a free CPU Space: 16 GB of RAM covers the models in full precision. Sign in
-once with a **write** token from huggingface.co/settings/tokens, then deploy:
+Community Cloud's free tier caps an app at about 2.7 GB of RAM, too little for the full
+ensemble. The **slim** profile runs Desklib alone, the strongest single engine, in float32 on
+the CPU. It peaks around 1.5 GB, its scores match the full build's Desklib scores (correlation
+1.000), and it has its own combiner, `models/combiner_slim.json`, so its verdicts are still
+calibrated. The same `app.py` runs both builds; `deploy/streamlit_cloud/streamlit_app.py` just
+selects the slim profile. (bfloat16 and int8 were measured and rejected: bfloat16 is emulated on
+most CPUs and took minutes per essay, and int8 cut Desklib's AUROC from 0.998 to 0.934.)
+
+1. Sign in at [share.streamlit.io](https://share.streamlit.io) with GitHub, and allow access to
+   private repositories if asked.
+2. Click **Create app**, then **Deploy a public app from GitHub**, and fill in:
+   - Repository: `luka751/Open-Detector`
+   - Branch: `feat/phase1-ensemble` (or `main` once merged)
+   - Main file path: `deploy/streamlit_cloud/streamlit_app.py`
+   - Advanced settings, Python version: **3.12**
+3. Click **Deploy**. Dependencies come from `deploy/streamlit_cloud/requirements.txt`, which
+   installs CPU-only PyTorch. The first analysis downloads Desklib (1.7 GB) and takes a few
+   minutes; later ones are much faster.
+
+To run the slim build locally:
+
+```bash
+OPENDETECTOR_PROFILE=slim .venv/bin/streamlit run app.py
+```
+
+## Deploy to Hugging Face Spaces (needs PRO)
+
+Hugging Face now requires a PRO subscription to run Docker Spaces, even on free CPU hardware.
+With PRO, the full ensemble runs on a CPU Space: 16 GB of RAM covers all three engines in full
+precision. Sign in once with a **write** token from huggingface.co/settings/tokens, then deploy:
 
 ```bash
 .venv/bin/hf auth login

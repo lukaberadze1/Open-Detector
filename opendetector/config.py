@@ -31,3 +31,19 @@ class DetectorConfig:
     min_words: int = 150
 
     combiner_path: Path = ROOT / "models" / "combiner.json"
+
+    @classmethod
+    def for_profile(cls, profile: str) -> DetectorConfig:
+        """'full': every engine on the best available hardware. 'slim': Desklib alone, float32 on
+        the CPU, sized for Streamlit Community Cloud's free tier (about 1.5 GB peak).
+
+        Measured alternatives for slim: bfloat16 is emulated on most CPUs (minutes per essay);
+        int8 dropped Desklib's AUROC from 0.998 to 0.934; a bf16 embedding table used more memory
+        than float32, which transformers maps straight from the model file."""
+        if profile == "full":
+            return cls()
+        if profile == "slim":
+            return cls(glyph_model=None, binoculars_observer=None, binoculars_performer=None,
+                       device="cpu", dtype="float32", batch_size=2,
+                       combiner_path=ROOT / "models" / "combiner_slim.json")
+        raise ValueError(f"unknown profile {profile!r}; use 'full' or 'slim'")

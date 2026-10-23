@@ -15,6 +15,8 @@ import io
 import json
 import random
 import re
+import time
+import urllib.error
 import urllib.request
 from collections import Counter
 from collections.abc import Iterator
@@ -43,11 +45,23 @@ RAID_URL = "https://huggingface.co/datasets/liamdugan/raid/resolve/main/{split}.
 _ROW_START = re.compile(rb"\n(?=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12},)")
 
 
-def _get(url: str, start: int, end: int) -> tuple[bytes, int]:
+def _get(url: str, start: int, end: int, retries: int = 5) -> tuple[bytes, int]:
+    """One byte range of `url`, retried with backoff: a sample takes hundreds of requests, and
+    a single network blip (DNS failure, TLS timeout, 5xx) shouldn't throw the whole run away."""
     req = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end - 1}"})
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        total = int(resp.headers["Content-Range"].rsplit("/", 1)[1])
-        return resp.read(), total
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                total = int(resp.headers["Content-Range"].rsplit("/", 1)[1])
+                return resp.read(), total
+        except urllib.error.HTTPError as exc:
+            if (exc.code < 500 and exc.code != 429) or attempt == retries - 1:
+                raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == retries - 1:
+                raise
+        time.sleep(min(60, 2 ** attempt * 3))
+    raise AssertionError("unreachable")
 
 
 def _iter_raid_random(split: str, seed: int, chunks: int, chunk_bytes: int = 1 << 20) -> Iterator[dict]:

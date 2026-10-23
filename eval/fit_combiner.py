@@ -85,6 +85,8 @@ def main() -> None:
     parser.add_argument("--report", default="eval/reports/latest.md")
     parser.add_argument("--min-words", type=int, default=DetectorConfig().min_words,
                         help="drop shorter texts; the deployed detector abstains on them")
+    parser.add_argument("--features", help="comma-separated subset of features to fit on, e.g. "
+                                           "desklib_mean,desklib_max for the slim profile")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -96,6 +98,12 @@ def main() -> None:
     ai_rewritten = (df.dataset == "raid") & (df.label == 0) & (df.attack == "paraphrase")
     df = df[~short & ~ai_rewritten].reset_index(drop=True)
     features = [c for c in df.columns if c not in META and not df[c].isna().all()]
+    if args.features:
+        wanted = [f.strip() for f in args.features.split(",") if f.strip()]
+        missing = sorted(set(wanted) - set(features))
+        if missing:
+            raise SystemExit(f"features not in the cache: {', '.join(missing)} (available: {', '.join(features)})")
+        features = wanted
     df["split"] = assign_split(df.group_key, args.seed)
     dev = df[df.split == "dev"].reset_index(drop=True)
     test = df[df.split == "test"].reset_index(drop=True)
