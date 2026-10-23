@@ -1,6 +1,10 @@
 """The red-team loop with a stub Claude client and a stub detector: no network, no models."""
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -70,6 +74,26 @@ def test_refusal_raises():
     with pytest.raises(align_engine.GenerationError, match="declined"):
         align_engine.generate_aligned_text("p", client=StubClient(["x"], stop_reason="refusal"),
                                            detector=StubDetector([0.5]))
+
+
+def test_missing_credentials_become_a_clear_error():
+    class NoCredentials(StubClient):
+        def create(self, **kwargs):
+            raise TypeError('"Could not resolve authentication method. Expected one of api_key, auth_token, '
+                            'or credentials to be set."')
+
+    with pytest.raises(align_engine.MissingCredentialsError, match="ANTHROPIC_API_KEY"):
+        align_engine.generate_aligned_text("p", client=NoCredentials([]), detector=StubDetector([0.5]))
+
+
+def test_cli_without_credentials_exits_cleanly(tmp_path):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ANTHROPIC_")}
+    env["HOME"] = str(tmp_path)  # no `ant auth login` profile either
+    root = Path(__file__).resolve().parent.parent
+    run = subprocess.run([sys.executable, str(root / "align_engine.py"), "Write a short essay."],
+                         capture_output=True, text=True, cwd=root, env=env, timeout=120)
+    assert run.returncode == 1
+    assert "ANTHROPIC_API_KEY" in run.stderr and "Traceback" not in run.stderr
 
 
 def test_every_draft_is_logged_as_a_labelled_ai_sample(tmp_path):

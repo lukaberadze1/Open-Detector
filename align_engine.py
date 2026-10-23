@@ -52,14 +52,27 @@ class GenerationError(RuntimeError):
     pass
 
 
+class MissingCredentialsError(GenerationError):
+    pass
+
+
 def complete(client: anthropic.Anthropic, model: str, prompt: str) -> str:
-    response = client.beta.messages.create(
-        model=model,
-        max_tokens=16000,
-        betas=[FALLBACK_BETA],
-        fallbacks="default",  # on a policy decline, the API retries on a recommended fallback model
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        response = client.beta.messages.create(
+            model=model,
+            max_tokens=16000,
+            betas=[FALLBACK_BETA],
+            fallbacks="default",  # on a policy decline, the API retries on a recommended fallback model
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except TypeError as e:
+        # With no credentials at all, the SDK raises a bare TypeError before sending anything,
+        # not AuthenticationError (that one means a key was sent and rejected).
+        if "authentication method" not in str(e):
+            raise
+        raise MissingCredentialsError(
+            "no Anthropic credentials found. Set ANTHROPIC_API_KEY or run `ant auth login`."
+        ) from e
     if response.stop_reason == "refusal":
         category = getattr(response.stop_details, "category", None)
         raise GenerationError(f"the model declined the request (category: {category})")
@@ -178,7 +191,7 @@ def main() -> int:
         text = generate_aligned_text(prompt, args.target, args.max_attempts, model=args.model,
                                      log_path=args.log, device=args.device)
     except anthropic.AuthenticationError:
-        log.error("No valid Anthropic credentials. Set ANTHROPIC_API_KEY or run `ant auth login`.")
+        log.error("The Anthropic API rejected the credentials. Check ANTHROPIC_API_KEY or run `ant auth login`.")
         return 1
     except anthropic.NotFoundError:
         log.error("Model %r not found or not available to this key.", args.model)
