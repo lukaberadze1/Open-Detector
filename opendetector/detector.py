@@ -199,10 +199,10 @@ class Detector:
         if local_windows:
             window_p = self._probabilities([self._window_features(local_scores, k) for k in range(len(local_windows))])
             totals, counts = np.zeros(len(sents)), np.zeros(len(sents))
-            for w, wp in zip(local_windows, window_p):
+            for w, wp in zip(local_windows, window_p, strict=True):
                 totals[w.first : w.last + 1] += wp
                 counts[w.first : w.last + 1] += 1
-            for s, total, count in zip(sents, totals, counts):
+            for s, total, count in zip(sents, totals, counts, strict=True):
                 sentence_scores.append(SentenceScore(s.start, s.end, clean[s.start : s.end], float(total / count)))
 
         return Report(verdict=self.verdict(p), ai_probability=p, features=feats, engines=engines,

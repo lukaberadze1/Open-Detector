@@ -50,18 +50,9 @@ class Combiner:
         return cls(**json.loads(Path(path).read_text()))
 
 
-def fit_combiner(
-    X: np.ndarray,
-    y: np.ndarray,
-    features: list[str],
-    X_cal: np.ndarray,
-    y_cal: np.ndarray,
-    alphas: Mapping[str, float] = DEFAULT_ALPHAS,
-    C: float = 1.0,
-    info: dict | None = None,
-) -> Combiner:
-    """Fit on (X, y); pick thresholds on the human rows of (X_cal, y_cal), which must not
-    overlap the fitting data or the guarantee is void."""
+def fit_logistic(X: np.ndarray, y: np.ndarray, features: list[str], C: float = 1.0,
+                 info: dict | None = None) -> Combiner:
+    """Fit the logistic regression only; thresholds are set separately (set_thresholds)."""
     from sklearn.linear_model import LogisticRegression
 
     X = np.asarray(X, dtype=float)
@@ -73,7 +64,7 @@ def fit_combiner(
     lr = LogisticRegression(C=C, class_weight="balanced", max_iter=5000)
     lr.fit((Xf - mean) / scale, y)
 
-    combiner = Combiner(
+    return Combiner(
         features=list(features),
         medians=medians.tolist(),
         mean=mean.tolist(),
@@ -82,8 +73,29 @@ def fit_combiner(
         intercept=float(lr.intercept_[0]),
         info=dict(info or {}),
     )
-    human_scores = combiner.predict_matrix(np.asarray(X_cal)[np.asarray(y_cal) == 0])
+
+
+def set_thresholds(combiner: Combiner, human_scores: np.ndarray,
+                   alphas: Mapping[str, float] = DEFAULT_ALPHAS) -> Combiner:
+    """Set each band's threshold from human texts' scores. The scores must come from a
+    model that never saw those texts, or the false-positive guarantee is void."""
+    human_scores = np.asarray(human_scores, dtype=float)
     combiner.thresholds = {name: conformal_threshold(human_scores, a) for name, a in alphas.items()}
     combiner.info["alphas"] = dict(alphas)
-    combiner.info["n_calibration_human"] = int(len(human_scores))
+    combiner.info["n_calibration_human"] = len(human_scores)
     return combiner
+
+
+def fit_combiner(
+    X: np.ndarray,
+    y: np.ndarray,
+    features: list[str],
+    X_cal: np.ndarray,
+    y_cal: np.ndarray,
+    alphas: Mapping[str, float] = DEFAULT_ALPHAS,
+    C: float = 1.0,
+    info: dict | None = None,
+) -> Combiner:
+    """Fit on (X, y); set thresholds on the human rows of a separate (X_cal, y_cal)."""
+    combiner = fit_logistic(X, y, features, C, info)
+    return set_thresholds(combiner, combiner.predict_matrix(np.asarray(X_cal)[np.asarray(y_cal) == 0]), alphas)

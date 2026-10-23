@@ -103,7 +103,7 @@ if st.button("Analyze", type="primary"):
     cols[0].metric("Verdict", VERDICT_LABELS[report.verdict])
     cols[1].metric("AI likelihood" + ("" if report.calibrated else " (uncalibrated)"), f"{report.ai_probability:.0%}")
     names = {"glyph": "GLYPH P(AI)", "desklib": "Desklib P(AI)", "bino": "Binoculars"}
-    for col, (name, value) in zip(cols[2:], report.engines.items()):
+    for col, (name, value) in zip(cols[2:], report.engines.items(), strict=True):
         col.metric(names.get(name, name), f"{value:.2f}" if name == "bino" else f"{value:.0%}",
                    help="Lower means more AI-like." if name == "bino" else None)
 
@@ -121,7 +121,8 @@ if st.button("Analyze", type="primary"):
             body = html.escape(s.text)
             if band in HIGHLIGHT:
                 tip = html.escape(f"{s.ai_probability:.0%} AI likelihood", quote=True)
-                body = f"<span title='{tip}' style='background:{HIGHLIGHT[band]};border-radius:3px;padding:1px 2px'>{body}</span>"
+                style = f"background:{HIGHLIGHT[band]};border-radius:3px;padding:1px 2px"
+                body = f"<span title='{tip}' style='{style}'>{body}</span>"
             parts.append(body)
             cursor = s.end
         st.markdown(f"<div style='line-height:1.8;font-size:16px'>{''.join(parts)}</div>", unsafe_allow_html=True)

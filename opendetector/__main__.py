@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from . import Detector, DetectorConfig
 
@@ -16,7 +17,7 @@ def main() -> None:
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
 
-    text = open(args.path, encoding="utf-8").read() if args.path else sys.stdin.read()
+    text = Path(args.path).read_text(encoding="utf-8") if args.path else sys.stdin.read()
     detector = Detector.from_config(DetectorConfig(device=args.device))
     report = detector.analyze(text, sentences=not args.no_sentences).to_dict()
     report.pop("text")

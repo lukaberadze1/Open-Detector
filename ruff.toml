@@ -1,0 +1,16 @@
+line-length = 120
+target-version = "py312"
+extend-exclude = ["Open-Detector", "example_usage.py"]
+
+[lint]
+select = ["E", "F", "W", "B", "UP", "SIM", "PIE", "RUF"]
+
+[lint.per-file-ignores]
+# Cyrillic/Greek look-alike letters, curly quotes and dashes are deliberate in these files:
+# they are what the normalizer strips, what the splitter matches, or report typography.
+"opendetector/normalize.py" = ["RUF001", "RUF003"]
+"opendetector/segment.py" = ["RUF001"]
+"tests/test_normalize.py" = ["RUF001", "RUF003"]
+"extract_baseline.py" = ["RUF001"]
+"app.py" = ["RUF001"]
+"eval/fit_combiner.py" = ["RUF001"]

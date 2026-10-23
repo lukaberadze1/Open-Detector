@@ -58,6 +58,6 @@ def test_combiner_learns_signal_and_round_trips(tmp_path):
     comb.save(tmp_path / "c.json")
     loaded = Combiner.load(tmp_path / "c.json")
     np.testing.assert_allclose(loaded.predict_matrix(X_test), p)
-    row = dict(zip(["a", "b", "noise"], X_test[0]))
+    row = dict(zip(["a", "b", "noise"], X_test[0], strict=True))
     assert loaded.predict_proba([row])[0] == pytest.approx(p[0])
     assert np.isfinite(loaded.predict_proba([{"a": 1.0}])[0]), "absent features fall back to medians"

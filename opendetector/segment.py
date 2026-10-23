@@ -9,6 +9,7 @@ of its tokenizer.
 
 from __future__ import annotations
 
+import itertools
 import re
 from dataclasses import dataclass
 
@@ -75,7 +76,7 @@ def split_sentences(text: str) -> list[Sentence]:
     bounds = sorted(set(cuts))
 
     sentences = []
-    for a, b in zip(bounds, bounds[1:]):
+    for a, b in itertools.pairwise(bounds):
         while a < b and text[a].isspace():
             a += 1
         while b > a and text[b - 1].isspace():

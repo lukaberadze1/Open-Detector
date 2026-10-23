@@ -101,7 +101,8 @@ def load_raid(
         if counts[key] >= (human_per_bucket if human else ai_per_bucket):
             continue
         counts[key] += 1
-        source = next((v for v in (r.get("source_id"), r.get("adv_source_id"), r["id"]) if isinstance(v, str) and v), r["id"])
+        candidates = (r.get("source_id"), r.get("adv_source_id"), r["id"])
+        source = next((v for v in candidates if isinstance(v, str) and v), r["id"])
         rows.append({
             "id": r["id"], "text": r["generation"], "label": 0 if human else 1, "dataset": "raid",
             "domain": r["domain"], "model": r["model"], "attack": attack, "group_key": source,
@@ -153,7 +154,7 @@ def load_persuade(csv_path: str, n: int | None = None, seed: int = 0) -> pd.Data
         "text": df[text_col],
         "label": 0,
         "dataset": "persuade",
-        "domain": df["prompt_name"] if "prompt_name" in df else "essay",
+        "domain": df.get("prompt_name", "essay"),
         "model": "human",
         "group": group,
     })

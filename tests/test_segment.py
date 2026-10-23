@@ -1,3 +1,5 @@
+import itertools
+
 from opendetector.segment import Sentence, sentence_windows, split_sentences
 
 
@@ -41,7 +43,7 @@ def test_windows_cover_every_sentence_and_overlap():
         assert w.words <= 100
         covered.update(range(w.first, w.last + 1))
     assert covered == set(range(20))
-    assert all(b.first <= a.last for a, b in zip(windows, windows[1:])), "consecutive windows should overlap"
+    assert all(b.first <= a.last for a, b in itertools.pairwise(windows)), "consecutive windows should overlap"
 
 
 def test_last_window_is_anchored_to_the_end():

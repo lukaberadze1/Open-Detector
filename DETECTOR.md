@@ -21,8 +21,10 @@ text ─► normalize ─► sentences ─► overlapping windows ─┬─► G
   look-alike letters are stripped before scoring, and the app says how many it found.
 - **It abstains on short text** (under 150 words; Turnitin reportedly needs about 300).
 
-Until you fit a combiner, the app runs **uncalibrated**: it averages the two classifiers and
-labels the result as uncalibrated.
+The shipped `models/combiner.json` is fitted on a 1,400-text RAID sample. On RAID's held-out
+test split, it flags 1 of 125 human documents (0.8%) as Likely AI and catches 87% of AI texts.
+The full numbers are in `eval/reports/latest.md`. Without a combiner file, the app runs
+**uncalibrated**: it averages the two classifiers and labels the result that way.
 
 ## Setup
 
@@ -47,9 +49,15 @@ refit the combiner.
 
 ## Evaluate and calibrate
 
-Every number below comes from texts the combiner never saw. Data is split by source document
-into fit, calibration and test sets (60/20/20), so a text's attacked copies and its AI mirror
+Every number in the report comes from texts the combiner never saw. Data is split by source
+document into development (80%) and test (20%), so a text's attacked copies and its AI mirror
 always land on the same side.
+
+Thresholds are cross-fitted. Each development text is scored by a model trained on the other
+four folds, and the 1% and 5% cut-offs come from those scores on every development human
+text, instead of from a small held-out slice. False-positive rates are reported per source
+document, because attacked copies of one text aren't independent errors. RAID's "human" texts
+under its paraphrase attack are left out: an AI paraphraser rewrote them.
 
 **1. Public benchmarks.**
 

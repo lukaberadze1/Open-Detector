@@ -75,8 +75,9 @@ def main() -> None:
             essay_id = f"{source_id}-{args.model}-{args.style}"
             if essay_id in done:
                 continue
+            assignment = row.get("assignment")
             fields = {
-                "assignment": row.get("assignment") if isinstance(row.get("assignment"), str) else row.get("prompt_name"),
+                "assignment": assignment if isinstance(assignment, str) else row.get("prompt_name"),
                 "words": max(150, round(len(str(row["full_text"]).split()), -1)),
                 "grade": row.get("grade_level", 10),
             }
