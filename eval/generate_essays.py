@@ -1,11 +1,13 @@
 """Write AI "mirrors" of human essays: same assignment, similar length, different author.
 
 Pairing each human essay with an AI essay on the same prompt means the detector is judged
-on style, not topic. Works with any OpenAI-compatible chat endpoint (OpenAI, OpenRouter,
-a local LM Studio or Ollama server), so you can cover many model families.
+on style, not topic. Defaults to Gemini through its OpenAI-compatible endpoint, with the key
+read from GEMINI_API_KEY (or the project's .env). Any OpenAI-compatible endpoint works
+(OpenAI, OpenRouter, a local LM Studio or Ollama server) via --base-url and --api-key-env,
+so you can cover many model families.
 
     python -m eval.generate_essays --persuade persuade_2.0.csv --n 200 \\
-        --model gpt-5-mini --style student --out data/essays/mirrors_gpt5mini_student.jsonl
+        --style student --out data/essays/mirrors_gemini_student.jsonl
 
 Styles: plain (default), student (asks for a student's voice), humanize (writes, then asks
 the model to rewrite the essay so it evades AI detectors — the attack you need to resist).
@@ -16,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -24,6 +27,14 @@ import urllib.request
 from pathlib import Path
 
 import pandas as pd
+
+from opendetector.env import load_env
+
+GEMINI_OPENAI_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+DEFAULT_MODEL = "gemini-3.8-flash"
+# The free tier allows very few requests on the newest Flash model (20 when this was written);
+# Flash-Lite's allowance is larger, so it is the fallback when the main model's quota runs out.
+FALLBACK_MODEL = "gemini-3.5-flash-lite"
 
 PROMPTS = {
     "plain": "Write an essay responding to the assignment below. Aim for about {words} words. "
@@ -36,9 +47,15 @@ HUMANIZE = ("Rewrite this essay so it reads as if a real student wrote it and wo
 
 
 RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
+MAX_WAIT = 120  # seconds; a server asking us to wait longer than this means a spent quota
+_RETRY_IN = re.compile(r"retry in (?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s)?")
 
 
 class APIError(RuntimeError):
+    pass
+
+
+class QuotaExhausted(APIError):
     pass
 
 
@@ -46,12 +63,26 @@ def is_local(base_url: str) -> bool:
     return urllib.parse.urlparse(base_url).hostname in ("localhost", "127.0.0.1", "::1")
 
 
-def _error_message(exc: urllib.error.HTTPError) -> str:
+def _error_details(exc: urllib.error.HTTPError) -> tuple[str, float | None]:
+    """The server's error message, and how many seconds it asks us to wait (None if it doesn't say)."""
     try:
-        error = json.loads(exc.read() or b"{}").get("error")
-        return (error.get("message") if isinstance(error, dict) else error) or exc.reason
-    except (ValueError, AttributeError):
-        return str(exc.reason)
+        data = json.loads(exc.read() or b"null")
+    except ValueError:
+        data = None
+    if isinstance(data, list) and data:  # Gemini's OpenAI-compatible endpoint wraps errors in a list
+        data = data[0]
+    error = data.get("error") if isinstance(data, dict) else None
+    message = (error.get("message") if isinstance(error, dict) else error) or str(exc.reason)
+    message = " ".join(str(message).split())
+
+    retry_after = (exc.headers.get("retry-after") or "").strip()
+    if retry_after.isdigit():
+        return message, float(retry_after)
+    match = _RETRY_IN.search(message)
+    if match and any(match.groups()):
+        hours, minutes, seconds = (float(g or 0) for g in match.groups())
+        return message, hours * 3600 + minutes * 60 + seconds
+    return message, None
 
 
 def chat(base_url: str, api_key: str, model: str, prompt: str, temperature: float, retries: int = 5) -> str:
@@ -70,29 +101,42 @@ def chat(base_url: str, api_key: str, model: str, prompt: str, temperature: floa
                 raise APIError(f"empty response from {model}: {json.dumps(data)[:300]}")
             return content.strip()
         except urllib.error.HTTPError as exc:
+            message, delay = _error_details(exc)
+            if exc.code == 429 and delay is not None and delay > MAX_WAIT:
+                raise QuotaExhausted(f"{model} is out of quota: {message}") from exc
             # Bad requests, unknown models and rejected keys will never succeed; don't retry them.
             if exc.code not in RETRYABLE_STATUS or attempt == retries - 1:
-                raise APIError(f"HTTP {exc.code} from {base_url}: {_error_message(exc)}") from exc
-            reason = f"HTTP {exc.code}"
+                raise APIError(f"HTTP {exc.code} from {base_url}: {message}") from exc
+            reason, wait = f"HTTP {exc.code}", delay if delay is not None else 2 ** attempt * 5
         except (urllib.error.URLError, TimeoutError) as exc:
             if attempt == retries - 1:
                 raise APIError(f"could not reach {base_url}: {getattr(exc, 'reason', exc)}") from exc
-            reason = str(getattr(exc, "reason", exc))
-        wait = 2 ** attempt * 5
-        print(f"  request failed ({reason}); retrying in {wait}s", file=sys.stderr)
+            reason, wait = str(getattr(exc, "reason", exc)), 2 ** attempt * 5
+        print(f"  request failed ({reason}); retrying in {wait:.0f}s", file=sys.stderr)
         time.sleep(wait)
     raise AssertionError("unreachable")
 
 
+def _grade(value) -> int:
+    """PERSUADE grade levels arrive as floats (8.0) when the column has blanks; default to 10."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 10
+
+
 def main() -> int:
+    load_env()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--persuade", required=True, help="PERSUADE 2.0 CSV")
     parser.add_argument("--out", required=True)
-    parser.add_argument("--model", required=True)
+    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--fallback-model", default=FALLBACK_MODEL,
+                        help="switch to this model when --model is out of quota ('' to just stop)")
     parser.add_argument("--style", choices=["plain", "student", "humanize"], default="plain")
     parser.add_argument("--n", type=int, default=100)
-    parser.add_argument("--base-url", default=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
-    parser.add_argument("--api-key-env", default="OPENAI_API_KEY", help="environment variable holding the key")
+    parser.add_argument("--base-url", default=GEMINI_OPENAI_URL)
+    parser.add_argument("--api-key-env", default="GEMINI_API_KEY", help="environment variable holding the key")
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -118,29 +162,42 @@ def main() -> int:
     done = {json.loads(line)["id"] for line in out.read_text().splitlines() if line.strip()} if out.exists() else set()
     template = PROMPTS["student" if args.style == "student" else "plain"]
 
-    written = 0
+    def write_essay(model: str, prompt: str) -> str:
+        essay = chat(args.base_url, api_key, model, prompt, args.temperature)
+        if args.style == "humanize":
+            essay = chat(args.base_url, api_key, model, HUMANIZE.format(essay=essay), args.temperature)
+        return essay
+
+    model, written = args.model, 0
     with out.open("a") as f:
         for _, row in df.iterrows():
             source_id = str(row[id_col])
-            essay_id = f"{source_id}-{args.model}-{args.style}"
-            if essay_id in done:
-                continue
-            assignment, grade = row.get("assignment"), row.get("grade_level")
-            fields = {
-                "assignment": assignment if isinstance(assignment, str) else row.get("prompt_name", "an essay"),
-                "words": max(150, round(len(str(row[text_col]).split()), -1)),
-                "grade": int(grade) if pd.notna(grade) and str(grade).isdigit() else 10,
-            }
-            try:
-                essay = chat(args.base_url, api_key, args.model, template.format(**fields), args.temperature)
-                if args.style == "humanize":
-                    essay = chat(args.base_url, api_key, args.model, HUMANIZE.format(essay=essay), args.temperature)
-            except APIError as e:
-                print(f"Stopped after {written} new essays: {e}", file=sys.stderr)
-                return 1
+            assignment = row.get("assignment")
+            prompt = template.format(
+                assignment=assignment if isinstance(assignment, str) else row.get("prompt_name", "an essay"),
+                words=max(150, round(len(str(row[text_col]).split()), -1)),
+                grade=_grade(row.get("grade_level")),
+            )
+            essay = None
+            while f"{source_id}-{model}-{args.style}" not in done:
+                try:
+                    essay = write_essay(model, prompt)
+                    break
+                except QuotaExhausted as e:
+                    if not args.fallback_model or model == args.fallback_model:
+                        print(f"Stopped after {written} new essays: {e}", file=sys.stderr)
+                        return 1
+                    print(f"{e}\nSwitching to {args.fallback_model} for the rest of the run.", file=sys.stderr)
+                    model = args.fallback_model
+                except APIError as e:
+                    print(f"Stopped after {written} new essays: {e}", file=sys.stderr)
+                    return 1
+            if essay is None:
+                continue  # already written in an earlier run
+            essay_id = f"{source_id}-{model}-{args.style}"
             f.write(json.dumps({
                 "id": essay_id, "text": essay, "label": 1, "dataset": "persuade_mirror",
-                "domain": row.get("prompt_name", "essay"), "model": args.model, "attack": args.style,
+                "domain": row.get("prompt_name", "essay"), "model": model, "attack": args.style,
                 "group": "ai", "group_key": source_id,
             }) + "\n")
             f.flush()

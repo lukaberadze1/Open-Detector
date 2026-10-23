@@ -76,24 +76,38 @@ RAID flatters it. Watch the attacked slices and MAGE.
 **2. Student essays,** which is where false positives hurt. Download PERSUADE 2.0 (human essays
 from grades 6-12, with English-learner status) from
 [github.com/scrosseye/persuade_corpus_2.0](https://github.com/scrosseye/persuade_corpus_2.0).
-Then write AI essays on the same assignments with as many model families as you can reach
-through any OpenAI-compatible API:
+Then write AI essays on the same assignments. The generator defaults to Gemini through its
+OpenAI-compatible endpoint, using `GEMINI_API_KEY` from the project's `.env` file (see below):
 
 ```bash
 .venv/bin/python -m eval.featurize persuade --path persuade_2.0.csv --n 2000 --out eval/cache/persuade.jsonl
 ```
 
 ```bash
-OPENAI_API_KEY=... .venv/bin/python -m eval.generate_essays --persuade persuade_2.0.csv --n 300 --model gpt-5-mini --style student --out data/essays/gpt5mini_student.jsonl
+.venv/bin/python -m eval.generate_essays --persuade persuade_2.0.csv --n 300 --style student --out data/essays/gemini_student.jsonl
 ```
 
 ```bash
-.venv/bin/python -m eval.featurize local --path data/essays/gpt5mini_student.jsonl --out eval/cache/gpt5mini_student.jsonl
+.venv/bin/python -m eval.featurize local --path data/essays/gemini_student.jsonl --out eval/cache/gemini_student.jsonl
 ```
 
-Repeat the generation for other models (`--base-url` for OpenRouter or a local server) and
-for `--style humanize`, which is the attack you most need to resist. Any of your own labelled
+The free tier allows very few requests on `gemini-3.8-flash`. When its quota runs out, the
+generator prints Google's message and switches to `--fallback-model` (default
+`gemini-3.5-flash-lite`). Each essay records the model that actually wrote it, and rerunning
+the command resumes where it stopped.
+
+Repeat the generation for other model families and for `--style humanize`, which is the attack
+you most need to resist. For other providers, pass `--base-url` and `--api-key-env` (OpenAI,
+OpenRouter, or a local LM Studio/Ollama server, which needs no key). Any of your own labelled
 data works too: a JSONL with `text` and `label` (`human`/`ai`).
+
+**API keys** live in a `.env` file in the project root, which git ignores. The scripts load it
+automatically, and a variable already exported in your shell takes priority:
+
+```
+GEMINI_API_KEY=...
+ANTHROPIC_API_KEY=...
+```
 
 **3. Fit and read the report.**
 

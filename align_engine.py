@@ -26,6 +26,7 @@ from pathlib import Path
 import anthropic
 
 from opendetector import Detector, DetectorConfig, Report
+from opendetector.env import load_env
 
 # The original spec named claude-3-5-sonnet-20241022, which was retired in October 2025.
 MODEL = "claude-sonnet-5-5"
@@ -181,6 +182,7 @@ def main() -> int:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
+    load_env()  # picks up ANTHROPIC_API_KEY from .env if you put it there
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S", stream=sys.stderr)
     if args.max_attempts < 1 or not 0 < args.target < 1:
