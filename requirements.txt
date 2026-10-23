@@ -1,0 +1,18 @@
+# Detector and app
+torch>=2.4
+transformers>=4.46,<5
+sentencepiece
+protobuf
+numpy>=2
+streamlit>=1.40
+
+# Evaluation harness
+pandas>=2.2
+pyarrow
+scikit-learn>=1.5
+datasets>=3
+tqdm
+pytest
+
+# Red-team harness (align_engine.py)
+anthropic>=2
