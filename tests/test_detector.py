@@ -1,9 +1,12 @@
 """Pipeline tests with stand-in engines, so no model downloads are needed."""
 
+from dataclasses import asdict
+
 import numpy as np
+import pytest
 
 from opendetector import Detector, DetectorConfig
-from opendetector.combiner import fit_combiner
+from opendetector.combiner import fit_combiner, fit_logistic, set_thresholds
 
 HUMAN = "My grandmother kept bees behind the shed, and every summer we got stung at least once. "
 AI = "Furthermore, it is important to delve into the multifaceted tapestry of this topic. "
@@ -38,9 +41,23 @@ def make(min_words=40, combiner=None):
 def test_feature_names_and_values():
     det = make()
     feats = det.features(HUMAN * 6 + AI * 6)
-    assert set(feats) == {"fake_mean", "fake_max", "bino_doc", "bino_min"} == set(det.feature_names)
+    assert set(feats) == {"fake_mean", "fake_max", "bino_doc", "bino_min", "bino_burst",
+                          "style_len_cv", "style_mattr", "style_aiisms"} == set(det.feature_names)
     assert feats["fake_max"] > feats["fake_mean"]
     assert feats["bino_min"] == 0.7
+    # Six sentences score 1.0 and six 0.7, so the sentence-to-sentence spread is 0.15.
+    assert feats["bino_burst"] == pytest.approx(0.15)
+
+
+def test_stylometry_can_be_switched_off():
+    det = make()
+    det.config.stylometry = False
+    assert not any(f.startswith("style_") for f in det.features(HUMAN * 6))
+    assert not any(f.startswith("style_") for f in det.feature_names)
+
+
+def test_burstiness_needs_enough_sentences():
+    assert np.isnan(make().features(HUMAN * 3)["bino_burst"])
 
 
 def test_short_text_abstains_without_running_models():
@@ -88,3 +105,28 @@ def test_hidden_characters_are_reported():
     report = make().analyze((HUMAN * 6).replace("bees", "be​es"))
     assert report.normalization.invisible_chars == 6
     assert "be​es" not in report.text
+
+
+def fitted(det):
+    rng = np.random.default_rng(0)
+    texts = [(HUMAN * int(rng.integers(6, 12)), 0) for _ in range(150)] + \
+            [(HUMAN * int(rng.integers(0, 3)) + AI * int(rng.integers(6, 12)), 1) for _ in range(150)]
+    X = np.array([[det.features(t)[f] for f in det.feature_names] for t, _ in texts])
+    y = np.array([label for _, label in texts])
+    return fit_combiner(X, y, det.feature_names, X, y), X, y
+
+
+def test_paraphrase_head_is_only_asked_about_ai_text():
+    det = make()
+    det.combiner, X, y = fitted(det)
+    assert det.analyze(AI * 10).paraphrase_probability is None, "no head fitted, no category"
+
+    # A head that calls text 'paraphrased' when it has the fewest 'delve' sentences.
+    head = fit_logistic(X[y == 1], (X[y == 1, 0] < np.median(X[y == 1, 0])).astype(int), det.feature_names)
+    det.combiner.paraphrase = asdict(set_thresholds(head, head.predict_matrix(X[y == 1]), {"paraphrased": 0.5}))
+    ai = det.analyze(AI * 10)
+    threshold = det.combiner.paraphrase_head.thresholds["paraphrased"]
+    assert ai.verdict == "likely_ai" and 0 <= ai.paraphrase_probability <= 1
+    assert ai.ai_paraphrased == (ai.paraphrase_probability > threshold)
+    human = det.analyze(HUMAN * 10)
+    assert human.paraphrase_probability is None and human.ai_paraphrased is None

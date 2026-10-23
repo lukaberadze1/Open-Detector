@@ -30,6 +30,9 @@ class DetectorConfig:
     # Below this many words we return no verdict. Turnitin's reported minimum is ~300.
     min_words: int = 150
 
+    # Model-free style features (burstiness, vocabulary spread, AI-typical phrasing); see stylometry.py.
+    stylometry: bool = True
+
     combiner_path: Path = ROOT / "models" / "combiner.json"
 
     @classmethod

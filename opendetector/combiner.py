@@ -18,6 +18,8 @@ from .metrics import conformal_threshold
 
 # Verdict bands: "ai" is the flag threshold, "review" a looser band for a human look.
 DEFAULT_ALPHAS = {"ai": 0.01, "review": 0.05}
+# Share of AI texts used as-is that the paraphrase head may wrongly call paraphrased.
+PARAPHRASE_ALPHA = 0.05
 
 
 @dataclass
@@ -30,6 +32,13 @@ class Combiner:
     intercept: float
     thresholds: dict[str, float] = field(default_factory=dict)
     info: dict = field(default_factory=dict)
+    # Optional second head, stored as a nested Combiner: among AI texts, was this one rewritten by a
+    # paraphraser, word spinner or humanizer? Its threshold is thresholds["paraphrased"].
+    paraphrase: dict | None = None
+
+    @property
+    def paraphrase_head(self) -> Combiner | None:
+        return Combiner(**self.paraphrase) if self.paraphrase else None
 
     def predict_matrix(self, X: np.ndarray) -> np.ndarray:
         X = np.asarray(X, dtype=float)

@@ -6,11 +6,12 @@ Set OPENDETECTOR_PROFILE=slim to run Desklib alone on the CPU, for small hosts.
 from __future__ import annotations
 
 import html
+import math
 import os
 
 import streamlit as st
 
-from opendetector import Detector, DetectorConfig
+from opendetector import Detector, DetectorConfig, stylometry
 from opendetector.combiner import Combiner
 
 st.set_page_config(page_title="Open Detector", page_icon="🔎", layout="wide")
@@ -22,6 +23,17 @@ ENGINE_LABELS = {
     "desklib": "Desklib · DeBERTa-v3-large classifier",
     "bino": "Binoculars · zero-shot (two small LMs)",
 }
+SIGNALS = {
+    "style_len_cv": "Sentence-length variation (burstiness)",
+    "bino_burst": "Predictability variation between sentences",
+    "style_mattr": "Vocabulary spread (moving type-token ratio)",
+    "style_aiisms": "AI-typical phrases per 1,000 words",
+}
+LOW_SCORE_HELP = (
+    "Scores below the review threshold aren't shown. Down there, human and AI texts overlap too much for "
+    "the number to mean anything, and a precise-looking score invites suspicion it can't support. "
+    "Turnitin hides scores under 20% for the same reason."
+)
 
 PROFILE = os.environ.get("OPENDETECTOR_PROFILE", "full")
 CONFIG = DetectorConfig.for_profile(PROFILE)
@@ -47,6 +59,65 @@ def load_engine(name: str):
     from opendetector.engines import build_engine
 
     return build_engine(name, CONFIG)
+
+
+def signal_value(name: str, value: float) -> str:
+    if value is None or math.isnan(value):
+        return "–"
+    return f"{math.expm1(value):.1f}" if name == "style_aiisms" else f"{value:.2f}"  # stored as log1p(rate)
+
+
+def show_highlights(report, detector: Detector, nested: bool) -> None:
+    st.caption(
+        "Each sentence takes the average score of the ~100-word windows around it, so sentences next "
+        "to a strongly AI-like passage get pulled toward it. Highlights show where to look; the "
+        "document score above is the number to go by."
+    )
+    parts, cursor = [], 0
+    for s in report.sentences:
+        parts.append(html.escape(report.text[cursor : s.start]).replace("\n", "<br>"))
+        band = detector.verdict(s.ai_probability)
+        body = html.escape(s.text)
+        if band in HIGHLIGHT:
+            tip = html.escape(f"{s.ai_probability:.0%} AI likelihood", quote=True)
+            style = f"background:{HIGHLIGHT[band]};border-radius:3px;padding:1px 2px"
+            body = f"<span title='{tip}' style='{style}'>{body}</span>"
+        parts.append(body)
+        cursor = s.end
+    st.markdown(f"<div style='line-height:1.8;font-size:16px'>{''.join(parts)}</div>", unsafe_allow_html=True)
+
+    rows = [{"#": i, "AI likelihood": f"{s.ai_probability:.0%}", "sentence": s.text}
+            for i, s in enumerate(report.sentences, 1)]
+    if nested:  # Streamlit doesn't allow an expander inside an expander
+        st.dataframe(rows, hide_index=True, width="stretch")
+    else:
+        with st.expander("Sentence scores"):
+            st.dataframe(rows, hide_index=True, width="stretch")
+
+
+def show_signals(report, detector: Detector) -> None:
+    measured = [name for name in SIGNALS if name in report.features]
+    if not measured:
+        return
+    reference = detector.combiner.info.get("feature_reference", {}) if detector.combiner else {}
+    with st.expander("What the detector measured"):
+        rows = []
+        for name in measured:
+            ref = reference.get(name, {})
+            rows.append({"signal": SIGNALS[name], "this text": signal_value(name, report.features[name]),
+                         "human average": signal_value(name, ref.get("human")),
+                         "AI average": signal_value(name, ref.get("ai"))})
+        st.dataframe(rows, hide_index=True, width="stretch")
+        st.caption(
+            "People mix long and short sentences and vary how predictable they are; raw model output keeps an "
+            "even rhythm. These signals feed the calibrated score above, weighted by how much they proved worth "
+            "on labelled data. None of them decides anything alone."
+            + (" Averages are over the labelled texts the combiner was fitted on." if reference else "")
+        )
+        counts = stylometry.phrase_counts(report.text)
+        if counts:
+            found = ", ".join(f"“{phrase}” ×{n}" if n > 1 else f"“{phrase}”" for phrase, n in counts.most_common())
+            st.markdown(f"**AI-typical phrasing found:** {html.escape(found)}")
 
 
 classifiers = [load_engine(n) for n in ("glyph", "desklib") if enabled.get(n)]
@@ -112,41 +183,35 @@ if st.button("Analyze", type="primary"):
         )
         st.stop()
 
+    low = report.verdict == "likely_human"
     cols = st.columns(2 + len(report.engines))
     cols[0].metric("Verdict", VERDICT_LABELS[report.verdict])
-    cols[1].metric("AI likelihood" + ("" if report.calibrated else " (uncalibrated)"), f"{report.ai_probability:.0%}")
+    cols[1].metric("AI likelihood" + ("" if report.calibrated else " (uncalibrated)"),
+                   "*%" if low else f"{report.ai_probability:.0%}", help=LOW_SCORE_HELP if low else None)
     names = {"glyph": "GLYPH P(AI)", "desklib": "Desklib P(AI)", "bino": "Binoculars"}
     for col, (name, value) in zip(cols[2:], report.engines.items(), strict=True):
         col.metric(names.get(name, name), f"{value:.2f}" if name == "bino" else f"{value:.0%}",
                    help="Lower means more AI-like." if name == "bino" else None)
 
-    if report.sentences:
-        st.subheader("Where the signal is")
-        st.caption(
-            "Each sentence takes the average score of the ~100-word windows around it, so sentences next "
-            "to a strongly AI-like passage get pulled toward it. Highlights show where to look; the "
-            "document score above is the number to go by."
-        )
-        parts, cursor = [], 0
-        for s in report.sentences:
-            parts.append(html.escape(report.text[cursor : s.start]).replace("\n", "<br>"))
-            band = detector.verdict(s.ai_probability)
-            body = html.escape(s.text)
-            if band in HIGHLIGHT:
-                tip = html.escape(f"{s.ai_probability:.0%} AI likelihood", quote=True)
-                style = f"background:{HIGHLIGHT[band]};border-radius:3px;padding:1px 2px"
-                body = f"<span title='{tip}' style='{style}'>{body}</span>"
-            parts.append(body)
-            cursor = s.end
-        st.markdown(f"<div style='line-height:1.8;font-size:16px'>{''.join(parts)}</div>", unsafe_allow_html=True)
+    # Turnitin's two categories: AI-generated, and AI-generated then AI-paraphrased.
+    if report.ai_paraphrased:
+        st.info("**AI-generated, then AI-paraphrased.** The text also looks like it was run through a "
+                "paraphraser, word spinner or humanizer.")
+    elif report.ai_paraphrased is not None:
+        st.caption("Category: AI-generated. No clear sign it was then run through a paraphraser or humanizer.")
 
-        with st.expander("Sentence scores"):
-            st.dataframe(
-                [{"#": i, "AI likelihood": f"{s.ai_probability:.0%}", "sentence": s.text}
-                 for i, s in enumerate(report.sentences, 1)],
-                hide_index=True,
-                width="stretch",
-            )
+    if report.sentences:
+        if low:
+            # A likely-human document gets no highlights by default: low-level flags on human writing
+            # are the false positives that hurt, and they are noise at this level.
+            with st.expander("Show sentence-level signal anyway"):
+                st.caption("The document scored as likely human, so these highlights are mostly noise.")
+                show_highlights(report, detector, nested=True)
+        else:
+            st.subheader("Where the signal is")
+            show_highlights(report, detector, nested=False)
+
+    show_signals(report, detector)
 
     st.caption(
         "A detector score is statistical evidence, not proof of authorship. Don't use it as the "

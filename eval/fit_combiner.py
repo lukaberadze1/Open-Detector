@@ -7,21 +7,27 @@ cross-fitting: the development set is cut into 5 folds, each fold is scored by a
 fitted on the other four, and the flag thresholds come from those out-of-fold scores on
 every development human text. The final model is then fitted on all of development, and
 every number in the report comes from the untouched test split.
+
+A second head, fitted the same way on AI texts only, tells AI text used as written from AI text
+that was then rewritten to pass as human (paraphrasers, word spinners, humanizers). This is
+Turnitin's "AI-generated text that was AI-paraphrased" category.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import math
+from dataclasses import asdict
 from datetime import date
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from opendetector.combiner import DEFAULT_ALPHAS, fit_logistic, set_thresholds
+from opendetector.combiner import DEFAULT_ALPHAS, PARAPHRASE_ALPHA, fit_logistic, set_thresholds
 from opendetector.config import DetectorConfig
-from opendetector.metrics import auroc, tpr_at_fpr, wilson_interval
+from opendetector.metrics import auroc, conformal_threshold, tpr_at_fpr, wilson_interval
 
 from .datasets import COLUMNS
 
@@ -29,6 +35,26 @@ META = set(COLUMNS) | {"words"}
 # Each engine's headline feature, oriented so that higher = more AI-like.
 SINGLE_ENGINE = {"GLYPH": ("glyph_mean", 1), "Desklib": ("desklib_mean", 1), "Binoculars": ("bino_doc", -1)}
 FOLDS = 5
+# A feature missing from more than this share of one dataset's rows (a cache written before the
+# feature existed) is left out of the fit: imputing it would teach the combiner a fake signal.
+MAX_MISSING = 0.5
+
+# Attacks that rewrite AI text to pass as human, and labels for AI text used as written. RAID's
+# synonym attack is a word spinner and its paraphrase attack is DIPPER; "humanize" comes from
+# eval.generate_essays, and rewrite_1, rewrite_2, ... are align_engine's detector-guided rewrites
+# (rewrite_0 is the first draft).
+REWRITE_ATTACKS = {"paraphrase", "synonym", "humanize"}
+AS_WRITTEN = {"none", "plain", "student", "rewrite_0"}
+MIN_PARAPHRASE_ROWS = 20  # of each kind in development, to fit the head and set its threshold
+
+
+def rewritten(attack: str) -> float:
+    """1 for AI text rewritten to pass as human, 0 for AI text as the model wrote it, NaN for other
+    attacks (character tricks, deletions), which the paraphrase head neither learns from nor is
+    judged on."""
+    if attack in REWRITE_ATTACKS or (attack.startswith("rewrite_") and attack != "rewrite_0"):
+        return 1.0
+    return 0.0 if attack in AS_WRITTEN else math.nan
 
 
 def _hash(seed: int, salt: str, key: str) -> int:
@@ -39,15 +65,45 @@ def assign_split(keys: pd.Series, seed: int) -> pd.Series:
     return keys.map(lambda k: "dev" if _hash(seed, "", k) / 0x100000000 < 0.8 else "test")
 
 
-def out_of_fold_scores(dev: pd.DataFrame, features: list[str], seed: int) -> np.ndarray:
+def out_of_fold_scores(dev: pd.DataFrame, features: list[str], seed: int, target: str = "label") -> np.ndarray:
     """Score each development row with a model that never saw its source document."""
     folds = dev.group_key.map(lambda k: _hash(seed, "fold:", k) % FOLDS).values
     scores = np.empty(len(dev))
     for k in range(FOLDS):
         held = folds == k
-        model = fit_logistic(dev[features].values[~held], dev.label.values[~held], features)
+        model = fit_logistic(dev[features].values[~held], dev[target].values[~held], features)
         scores[held] = model.predict_matrix(dev[features].values[held])
     return scores
+
+
+def sparse_features(df: pd.DataFrame, features: list[str]) -> list[str]:
+    """Features some dataset mostly lacks, usually because its cache predates them."""
+    missing = df.groupby("dataset")[features].agg(lambda c: c.isna().mean())
+    return [f for f in features if (missing[f] > MAX_MISSING).any()]
+
+
+def fit_paraphrase_head(dev: pd.DataFrame, features: list[str], seed: int):
+    """Among development AI texts, separate rewritten ones from texts used as written. The threshold
+    lets at most PARAPHRASE_ALPHA of as-written AI texts be called paraphrased, set on out-of-fold
+    scores like the main thresholds. Returns None when there is too little data of either kind."""
+    rows = dev[dev.label == 1].assign(target=dev.attack.map(rewritten)).dropna(subset=["target"])
+    rows = rows.reset_index(drop=True)
+    n_rewritten, n_as_written = int(rows.target.sum()), int((rows.target == 0).sum())
+    if min(n_rewritten, n_as_written) < MIN_PARAPHRASE_ROWS:
+        return None, n_rewritten, n_as_written
+    oof = out_of_fold_scores(rows, features, seed, target="target")
+    head = fit_logistic(rows[features].values, rows.target.values, features,
+                        info={"n_fit": len(rows), "n_rewritten": n_rewritten, "n_as_written": n_as_written})
+    head.thresholds = {"paraphrased": conformal_threshold(oof[rows.target.values == 0], PARAPHRASE_ALPHA)}
+    head.info["alpha"] = PARAPHRASE_ALPHA
+    return head, n_rewritten, n_as_written
+
+
+def feature_reference(dev: pd.DataFrame, features: list[str]) -> dict[str, dict[str, float]]:
+    """Average of each feature on development human and AI texts, so the app can say what's typical.
+    Averages, not medians: most texts have no AI-typical phrase, so that median is 0 for both."""
+    return {f: {"human": float(dev.loc[dev.label == 0, f].mean()), "ai": float(dev.loc[dev.label == 1, f].mean())}
+            for f in features}
 
 
 def source_level(sources: np.ndarray, flags: np.ndarray) -> tuple[int, int]:
@@ -78,6 +134,33 @@ def slice_table(test: pd.DataFrame, flagged: np.ndarray, column: str) -> list[st
     return lines
 
 
+def paraphrase_section(test: pd.DataFrame, features: list[str], head, n_rewritten: int,
+                       n_as_written: int) -> list[str]:
+    lines = ["## AI-paraphrased category", ""]
+    if head is None:
+        return [*lines, f"Not fitted: development has {n_rewritten} rewritten and {n_as_written} as-written AI "
+                        f"texts, and the head needs at least {MIN_PARAPHRASE_ROWS} of each.", ""]
+    ai = test[test.label == 1].reset_index(drop=True)
+    p = head.predict_matrix(ai[features].values)
+    called = p > head.thresholds["paraphrased"]
+    target = ai.attack.map(rewritten).values
+    known = ~np.isnan(target)
+    lines += [
+        f"Fitted on {n_rewritten} rewritten and {n_as_written} as-written development AI texts. Called "
+        f"paraphrased when p > {head.thresholds['paraphrased']:.4f}, which lets at most {PARAPHRASE_ALPHA:.0%} "
+        "of as-written AI texts through as paraphrased.", "",
+    ]
+    if known.any() and 0 < target[known].sum() < known.sum():
+        rw, aw = target == 1, target == 0
+        lines += [f"On test AI texts: AUROC {auroc(target[known], p[known]):.4f}; catches "
+                  f"{called[rw].mean():.1%} of {int(rw.sum())} rewritten texts and calls {called[aw].mean():.1%} "
+                  f"of {int(aw.sum())} as-written texts paraphrased.", ""]
+    lines += ["| attack | AI n | called paraphrased |", "|---|---|---|"]
+    for attack, part in ai.groupby("attack"):
+        lines.append(f"| {attack} | {len(part)} | {called[part.index].mean():.1%} |")
+    return [*lines, ""]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("caches", nargs="+", help="JSONL files written by eval.featurize")
@@ -98,12 +181,19 @@ def main() -> None:
     ai_rewritten = (df.dataset == "raid") & (df.label == 0) & (df.attack == "paraphrase")
     df = df[~short & ~ai_rewritten].reset_index(drop=True)
     features = [c for c in df.columns if c not in META and not df[c].isna().all()]
+    sparse = []
     if args.features:
         wanted = [f.strip() for f in args.features.split(",") if f.strip()]
         missing = sorted(set(wanted) - set(features))
         if missing:
             raise SystemExit(f"features not in the cache: {', '.join(missing)} (available: {', '.join(features)})")
         features = wanted
+    else:
+        sparse = sparse_features(df, features)
+        features = [f for f in features if f not in sparse]
+        if sparse:
+            print(f"Leaving out {', '.join(sparse)}: missing from most rows of at least one dataset "
+                  "(refresh that cache with eval.featurize --refresh to use them)")
     df["split"] = assign_split(df.group_key, args.seed)
     dev = df[df.split == "dev"].reset_index(drop=True)
     test = df[df.split == "test"].reset_index(drop=True)
@@ -121,6 +211,10 @@ def main() -> None:
               "threshold_method": f"{FOLDS}-fold out-of-fold conformal"},
     )
     set_thresholds(combiner, oof[dev.label.values == 0])
+    combiner.info["feature_reference"] = feature_reference(dev, features)
+    head, n_rewritten, n_as_written = fit_paraphrase_head(dev, features, args.seed)
+    if head is not None:
+        combiner.paraphrase = asdict(head)
 
     y = test.label.values
     p = combiner.predict_matrix(test[features].values)
@@ -146,6 +240,7 @@ def main() -> None:
         "test_source_fpr_at_ai_threshold": src_fp / n_src if n_src else None,
         "test_tpr_at_ai_threshold": float(flagged[ai].mean()) if ai.any() else None,
     })
+    para_lines = paraphrase_section(test, features, head, n_rewritten, n_as_written)
     combiner.save(args.out)
 
     def verdict_on_target(observed: float, alpha: float, lower: float) -> str:
@@ -174,6 +269,9 @@ def main() -> None:
         + verdict_on_target(rev_fp / n_src, DEFAULT_ALPHAS["review"], rev_lo), "",
         "## Combiner weights (standardized features)", "",
         *[f"- `{f}`: {w:+.3f}" for f, w in weights], "",
+        *([f"Left out (missing from most rows of a dataset): {', '.join(f'`{f}`' for f in sparse)}.", ""]
+          if sparse else []),
+        *para_lines,
     ]
     for column in ("dataset", "domain", "attack", "model", "group"):
         if test[column].nunique() > 1:

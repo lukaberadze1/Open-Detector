@@ -3,8 +3,10 @@
 ```
 text ─► normalize ─► sentences ─► overlapping windows ─┬─► GLYPH (DeBERTa-v3-base)   ─┐
         (zero-width,  (spans)     doc: ~350 words      ├─► Desklib (DeBERTa-v3-large) ├─► combiner ─► calibrated p ─► verdict
-         homoglyphs)              local: ~100 words    └─► Binoculars (Qwen pair)     ─┘  (logistic    (thresholds set on
-                                                                                         regression)  held-out human text)
+         homoglyphs)              local: ~100 words    ├─► Binoculars (Qwen pair)     │  (logistic    (thresholds set on
+                                                       └─► stylometry (no model)     ─┘  regression)  held-out human text)
+                                                                                            │
+                                                                                            └─► paraphrase head ─► AI-generated, or AI-generated then AI-paraphrased
 ```
 
 - **Whole document, never truncated.** Text is cut into overlapping windows of whole sentences,
@@ -17,12 +19,27 @@ text ─► normalize ─► sentences ─► overlapping windows ─┬─► G
   features, fitted on labelled data. The *Likely AI* threshold is set on held-out human texts
   for a 1% false-positive rate, and *Needs review* for 5%, using a conformal quantile that
   carries a finite-sample guarantee.
+- **Burstiness and AI-typical phrasing feed the combiner.** These are sentence-length variation,
+  sentence-to-sentence variation in Binoculars predictability, vocabulary spread, and a list of words
+  LLMs overuse ("delve", "a rich tapestry", "it's worth noting"). Generic connectives like
+  "furthermore" and "in conclusion" are left out, because students use them all the time. The
+  combiner decides what each signal is worth; none decides anything alone, and the thresholds still
+  come from held-out human text. See `opendetector/stylometry.py`.
+- **Two AI categories, as in Turnitin's report.** A second logistic head, fitted on AI texts only,
+  tells AI text used as written from AI text that was then run through a paraphraser, word spinner
+  or humanizer. Its threshold lets at most 5% of as-written AI texts be called paraphrased. It is
+  only asked about text already rated Likely AI or Needs review.
+- **Low scores aren't shown.** Below the review threshold, the app shows `*%` and hides the sentence
+  highlights unless asked, much as Turnitin hides scores under 20%. Down there, human and AI texts
+  overlap too much for the number to mean anything.
 - **Evasion tricks are removed and reported.** Zero-width characters and Cyrillic/Greek
   look-alike letters are stripped before scoring, and the app says how many it found.
 - **It abstains on short text** (under 150 words; Turnitin reportedly needs about 300).
 
 The shipped `models/combiner.json` is fitted on a 1,400-text RAID sample. On RAID's held-out
-test split, it flags 1 of 125 human documents (0.8%) as Likely AI and catches 87% of AI texts.
+test split, it flags 1 of 125 human documents (0.8%) as Likely AI and catches 89% of AI texts
+(87% without the style features, a difference within sampling error). Its paraphrase head tells
+rewritten from as-written AI text with an AUROC of 0.86, measured on only 30 test texts.
 The full numbers are in `eval/reports/latest.md`. Without a combiner file, the app runs
 **uncalibrated**: it averages the two classifiers and labels the result that way.
 
@@ -69,6 +86,16 @@ under its paraphrase attack are left out: an AI paraphraser rewrote them.
 .venv/bin/python -m eval.featurize mage --out eval/cache/mage.jsonl --n 3000
 ```
 
+When features are added or changed, recompute just that pass for the cached texts. The style pass
+takes seconds; the Binoculars pass takes about an hour on the RAID sample:
+
+```bash
+.venv/bin/python -m eval.featurize raid --out eval/cache/raid.jsonl --refresh style
+```
+
+A feature that some cache mostly lacks is left out of the fit, and the report says so: filling it
+in with a typical value would teach the combiner a fake signal.
+
 The RAID run reads 300 random 1 MB slices of RAID-train (about 300 MB, all 11 attacks and 8
 domains) instead of downloading 11.8 GB. GLYPH was trained on RAID's non-adversarial data, so
 RAID flatters it. Watch the attacked slices and MAGE.
@@ -97,7 +124,9 @@ generator prints Google's message and switches to `--fallback-model` (default
 the command resumes where it stopped.
 
 Repeat the generation for other model families and for `--style humanize`, which is the attack
-you most need to resist. For other providers, pass `--base-url` and `--api-key-env` (OpenAI,
+you most need to resist. Humanized essays, RAID's synonym and paraphrase attacks, and
+`align_engine.py`'s rewrites (`rewrite_1` onwards) are what the paraphrase head learns from;
+the more humanizer output it sees, the better it gets, which is how Turnitin trains its own. For other providers, pass `--base-url` and `--api-key-env` (OpenAI,
 OpenRouter, or a local LM Studio/Ollama server, which needs no key). Any of your own labelled
 data works too: a JSONL with `text` and `label` (`human`/`ai`).
 
@@ -122,6 +151,7 @@ This writes `models/combiner.json`, which the app picks up automatically, and
 - the real test FPR at the deployed threshold, with a 95% Wilson interval
 - FPR and TPR broken down by dataset, domain, attack, generator and group, including the
   English-learner slice
+- the paraphrase head: its AUROC on test AI texts, and how often each attack is called paraphrased
 
 **A low overall FPR with a high English-learner FPR is a failing result.**
 
@@ -140,9 +170,10 @@ Community Cloud's free tier caps an app at about 2.7 GB of RAM, too little for t
 ensemble. The **slim** profile runs Desklib alone, the strongest single engine, in float32 on
 the CPU. It peaks around 1.5 GB, its scores match the full build's Desklib scores (correlation
 1.000), and it has its own combiner, `models/combiner_slim.json`, so its verdicts are still
-calibrated. The same `app.py` runs both builds; `deploy/streamlit_cloud/streamlit_app.py` just
-selects the slim profile. (bfloat16 and int8 were measured and rejected: bfloat16 is emulated on
-most CPUs and took minutes per essay, and int8 cut Desklib's AUROC from 0.998 to 0.934.)
+calibrated. That combiner also uses the style features, which need no model. The same `app.py`
+runs both builds; `deploy/streamlit_cloud/streamlit_app.py` just selects the slim profile.
+(bfloat16 and int8 were measured and rejected: bfloat16 is emulated on most CPUs and took
+minutes per essay, and int8 cut Desklib's AUROC from 0.998 to 0.934.)
 
 1. Sign in at [share.streamlit.io](https://share.streamlit.io) with GitHub, and allow access to
    private repositories if asked.
@@ -220,7 +251,14 @@ The tests use stand-in engines, so they need no model downloads.
   with all three engines loaded. It didn't recur in later runs. If it happens, switch off
   Binoculars in the sidebar.
 - The 0.5B Binoculars pair is weaker than the paper's 7B pair.
-- Commercial humanizers remain the hardest case. The way to fix that is training a model on
-  humanized text, which is Phase 2 of the roadmap.
+- Commercial humanizers remain the hardest case. The paraphrase head and the style features have
+  only seen RAID's word-spinner and DIPPER attacks (101 rewritten texts), and on RAID they add 1–2
+  points of recall, within noise. Scoring `--style humanize` essays and `align_engine.py` drafts
+  will show whether they help against modern humanizers. Training a model on humanized text is
+  still Phase 2 of the roadmap.
+- The shipped combiners don't use `bino_burst` yet, because the RAID cache predates it. Refresh
+  the bino pass (`--refresh bino`) and refit to add it.
+- The AI-typical phrase list is English and hand-picked. Watch the English-learner slice: a
+  phrase list can hit some writers harder than others.
 - A score is statistical evidence, not proof. Don't use it as the only basis for an academic
   integrity decision.

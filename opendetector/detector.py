@@ -8,6 +8,7 @@ from typing import Protocol
 
 import numpy as np
 
+from . import stylometry
 from .combiner import Combiner
 from .config import DetectorConfig
 from .normalize import NormalizationReport, normalize
@@ -18,6 +19,10 @@ from .segment import Sentence, Window, count_words, sentence_windows, split_sent
 FALLBACK_THRESHOLDS = {"ai": 0.9, "review": 0.6}
 
 VERDICTS = ("insufficient_text", "likely_human", "needs_review", "likely_ai")
+
+BINO_FEATURES = ("bino_doc", "bino_min", "bino_burst")
+# Sentence-level Binoculars scores needed before their spread (bino_burst) means anything.
+MIN_BURST_SENTENCES = 4
 
 
 class WindowClassifier(Protocol):
@@ -52,6 +57,10 @@ class Report:
     engines: dict[str, float] = field(default_factory=dict)
     sentences: list[SentenceScore] = field(default_factory=list)
     normalization: NormalizationReport = field(default_factory=NormalizationReport)
+    # For text flagged as AI: the chance it was then run through a paraphraser, word spinner or
+    # humanizer, and whether that clears the paraphrase head's threshold. None without a head.
+    paraphrase_probability: float | None = None
+    ai_paraphrased: bool | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -59,6 +68,11 @@ class Report:
 
 def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
+
+
+def _spread(values: np.ndarray) -> float:
+    values = values[~np.isnan(values)]
+    return float(values.std()) if len(values) >= MIN_BURST_SENTENCES else math.nan
 
 
 class Detector:
@@ -89,7 +103,9 @@ class Detector:
     def feature_names(self) -> list[str]:
         names = [f"{c.name}_{stat}" for c in self.classifiers for stat in ("mean", "max")]
         if self.binoculars is not None:
-            names += ["bino_doc", "bino_min"]
+            names += BINO_FEATURES
+        if self.config.stylometry:
+            names += stylometry.FEATURES
         return names
 
     @property
@@ -99,16 +115,23 @@ class Detector:
 
     # -- scoring --------------------------------------------------------------------
 
-    def _engine_scores(self, text: str, windows: list[Window]) -> tuple[dict[str, np.ndarray], float]:
-        """Raw score of every engine on every window, plus Binoculars on the whole text."""
+    def _engine_scores(self, text: str, windows: list[Window],
+                       sentences: list[Sentence]) -> tuple[dict[str, np.ndarray], float]:
+        """Raw score of every engine on every window, plus Binoculars on the whole text and on
+        each sentence (scores["bino_sent"]). Binoculars reads the text once, so the extra spans
+        cost almost nothing."""
         chunks = [text[w.start : w.end] for w in windows]
         scores = {c.name: np.asarray(c.window_logits(chunks), dtype=float) for c in self.classifiers}
         bino_doc = math.nan
         if self.binoculars is not None:
-            spans = [(0, len(text))] + [(w.start, w.end) for w in windows]
+            spans = [(0, len(text))] + [(w.start, w.end) for w in windows] + [(s.start, s.end) for s in sentences]
             bino = np.asarray(self.binoculars.span_scores(text, spans), dtype=float)
-            bino_doc, scores["bino"] = float(bino[0]), bino[1:]
+            nw = len(windows)
+            bino_doc, scores["bino"], scores["bino_sent"] = float(bino[0]), bino[1 : nw + 1], bino[nw + 1 :]
         return scores, bino_doc
+
+    def _style_features(self, text: str, sentences: list[Sentence]) -> dict[str, float]:
+        return stylometry.features(text, sentences) if self.config.stylometry else {}
 
     def _doc_features(self, scores: dict[str, np.ndarray], windows: list[Window], bino_doc: float) -> dict[str, float]:
         weights = np.array([w.words for w in windows], dtype=float)
@@ -121,16 +144,30 @@ class Detector:
             bino = scores["bino"]
             feats["bino_doc"] = bino_doc
             feats["bino_min"] = float(np.nanmin(bino)) if not np.isnan(bino).all() else bino_doc
+            # Burstiness in the perplexity sense: how much predictability varies from sentence to sentence.
+            feats["bino_burst"] = _spread(scores["bino_sent"])
         return feats
 
-    def _window_features(self, scores: dict[str, np.ndarray], k: int) -> dict[str, float]:
+    def _window_features(self, scores: dict[str, np.ndarray], k: int, text: str, window: Window,
+                         sentences: list[Sentence]) -> dict[str, float]:
         """Treat one local window as a tiny document."""
         feats = {}
         for c in self.classifiers:
             feats[f"{c.name}_mean"] = feats[f"{c.name}_max"] = float(scores[c.name][k])
         if self.binoculars is not None:
             feats["bino_doc"] = feats["bino_min"] = float(scores["bino"][k])
+            feats["bino_burst"] = _spread(scores["bino_sent"][window.first : window.last + 1])
+        feats.update(self._style_features(text, sentences[window.first : window.last + 1]))
         return feats
+
+    def _paraphrase(self, feats: dict[str, float], verdict: str) -> tuple[float | None, bool | None]:
+        """Turnitin's second category: AI text that was then AI-paraphrased. Only asked of text
+        the detector already considers AI, which is the only text the head was trained on."""
+        head = self.combiner.paraphrase_head if self.combiner else None
+        if head is None or verdict not in ("likely_ai", "needs_review"):
+            return None, None
+        p = float(head.predict_proba([feats])[0])
+        return p, p > head.thresholds["paraphrased"]
 
     def _probabilities(self, rows: list[dict[str, float]]) -> np.ndarray:
         if self.combiner is not None:
@@ -166,8 +203,8 @@ class Detector:
             return {name: math.nan for name in self.feature_names}
         cfg = self.config
         windows = sentence_windows(sentences, cfg.doc_window_words, cfg.doc_stride_words)
-        scores, bino_doc = self._engine_scores(clean, windows)
-        return self._doc_features(scores, windows, bino_doc)
+        scores, bino_doc = self._engine_scores(clean, windows, sentences)
+        return self._doc_features(scores, windows, bino_doc) | self._style_features(clean, sentences)
 
     def score(self, text: str) -> float:
         return float(self._probabilities([self.features(text)])[0])
@@ -183,13 +220,15 @@ class Detector:
 
         doc_windows = sentence_windows(sents, cfg.doc_window_words, cfg.doc_stride_words)
         local_windows = sentence_windows(sents, cfg.local_window_words, cfg.local_stride_words) if sentences else []
-        scores, bino_doc = self._engine_scores(clean, doc_windows + local_windows)
+        scores, bino_doc = self._engine_scores(clean, doc_windows + local_windows, sents)
         nd = len(doc_windows)
-        doc_scores = {k: v[:nd] for k, v in scores.items()}
-        local_scores = {k: v[nd:] for k, v in scores.items()}
+        doc_scores = {k: v if k == "bino_sent" else v[:nd] for k, v in scores.items()}
+        local_scores = {k: v if k == "bino_sent" else v[nd:] for k, v in scores.items()}
 
-        feats = self._doc_features(doc_scores, doc_windows, bino_doc)
+        feats = self._doc_features(doc_scores, doc_windows, bino_doc) | self._style_features(clean, sents)
         p = float(self._probabilities([feats])[0])
+        verdict = self.verdict(p)
+        paraphrase_p, paraphrased = self._paraphrase(feats, verdict)
 
         engines = {c.name: _sigmoid(feats[f"{c.name}_mean"]) for c in self.classifiers}
         if self.binoculars is not None:
@@ -197,7 +236,8 @@ class Detector:
 
         sentence_scores = []
         if local_windows:
-            window_p = self._probabilities([self._window_features(local_scores, k) for k in range(len(local_windows))])
+            window_p = self._probabilities([self._window_features(local_scores, k, clean, w, sents)
+                                            for k, w in enumerate(local_windows)])
             totals, counts = np.zeros(len(sents)), np.zeros(len(sents))
             for w, wp in zip(local_windows, window_p, strict=True):
                 totals[w.first : w.last + 1] += wp
@@ -205,5 +245,6 @@ class Detector:
             for s, total, count in zip(sents, totals, counts, strict=True):
                 sentence_scores.append(SentenceScore(s.start, s.end, clean[s.start : s.end], float(total / count)))
 
-        return Report(verdict=self.verdict(p), ai_probability=p, features=feats, engines=engines,
-                      sentences=sentence_scores, **base)
+        return Report(verdict=verdict, ai_probability=p, features=feats, engines=engines,
+                      sentences=sentence_scores, paraphrase_probability=paraphrase_p,
+                      ai_paraphrased=paraphrased, **base)
