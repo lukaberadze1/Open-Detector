@@ -4,7 +4,14 @@ Pairing each human essay with an AI essay on the same prompt means the detector 
 on style, not topic. Defaults to Gemini through its OpenAI-compatible endpoint, with the key
 read from GEMINI_API_KEY (or the project's .env). Any OpenAI-compatible endpoint works
 (OpenAI, OpenRouter, a local LM Studio or Ollama server) via --base-url and --api-key-env,
-so you can cover many model families.
+so you can cover many model families. A local server needs no key and gets a 30-minute
+timeout per request, since a small model on a laptop can take minutes per essay:
+
+    python -m eval.generate_essays --persuade persuade_2.0.csv --n 50 \\
+        --base-url http://localhost:11434/v1 --model gemma3:4b --out data/essays/mirrors_gemma.jsonl
+
+Replies are unwrapped before they are saved: chat preambles ("Here's my essay!"), sign-offs
+("Would you like me to...?"), --- rules and Markdown emphasis are removed.
 
     python -m eval.generate_essays --persuade persuade_2.0.csv --n 200 \\
         --style student --out data/essays/mirrors_gemini_student.jsonl
@@ -109,8 +116,51 @@ def style_instructions(profile: dict) -> str:
     return "\n".join(lines)
 
 
+_RULE = re.compile(r"^ {0,3}([-*_])(?: *\1){2,} *$")
+_HEADING = re.compile(r"^ {0,3}#{1,6} +", re.M)
+_BOLD = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1")
+_ITALIC = re.compile(r"(?<![\w*])([*_])(?=\S)(.+?)(?<=\S)\1(?![\w*])")
+# An opening that announces the essay, or one that ends in a colon.
+_PREAMBLE = re.compile(r"\b(?:here(?:['\u2019]s| is| are)|below is)\b.{0,60}?\b(?:essay|letter|draft|version|response|"
+                       r"rewrite)|:$", re.I)
+_SIGN_OFF = re.compile(r"^\(?(?:(?:i )?hope (?:this|that|it) helps|let me know if you|would you like me|do you want me|"
+                       r"want me to|feel free to (?:ask|let me)|is there anything else|note:|word count)", re.I)
+
+
+def clean_essay(reply: str) -> str:
+    """The essay inside a chat reply. Models wrap it ("Okay, here's my essay!", a --- rule, a Markdown
+    title, "Would you like me to change the tone?"), and a detector trained on the wrapper learns to
+    spot chat replies, not AI writing. Markdown emphasis goes too: an essay pasted into a form has none.
+    A short opening paragraph is only dropped when it announces the essay, and a short closing one when
+    it talks to the requester, so "Here is why..." and "I hope you agree." stay."""
+    blocks, current = [], []
+    for line in reply.replace("\r\n", "\n").split("\n"):
+        if _RULE.match(line):
+            blocks.append(current)
+            current = []
+        else:
+            current.append(line)
+    blocks.append(current)
+    # A rule separates the essay from the chat around it, so the essay is the longest block.
+    body = "\n".join(max(blocks, key=lambda b: len(" ".join(b).split())))
+    body = _ITALIC.sub(r"\2", _BOLD.sub(r"\2", _HEADING.sub("", body)))
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+
+    def chatter(p: str, pattern: re.Pattern) -> bool:
+        return len(p.split()) <= 40 and bool(pattern.search(p))
+
+    if len(paragraphs) > 1 and chatter(paragraphs[0], _PREAMBLE):
+        paragraphs.pop(0)
+    while len(paragraphs) > 1 and chatter(paragraphs[-1], _SIGN_OFF):
+        paragraphs.pop()
+    return "\n\n".join(paragraphs) or reply.strip()
+
+
 RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 MAX_WAIT = 120  # seconds; a server asking us to wait longer than this means a spent quota
+# Seconds per request. A small model on a small machine can take minutes per essay, and a request
+# that times out starts over, so a local server gets far longer than a hosted API.
+REMOTE_TIMEOUT, LOCAL_TIMEOUT = 300, 1800
 _RETRY_IN = re.compile(r"retry in (?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s)?")
 
 
@@ -149,7 +199,7 @@ def _error_details(exc: urllib.error.HTTPError) -> tuple[str, float | None]:
 
 
 def chat(base_url: str, api_key: str, model: str, prompt: str, temperature: float, retries: int = 5,
-         system: str | None = None, timeout: int = 300) -> str:
+         system: str | None = None, timeout: int = REMOTE_TIMEOUT) -> str:
     messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
     body = json.dumps({"model": model, "messages": messages, "temperature": temperature}).encode()
     headers = {"Content-Type": "application/json"}
@@ -215,6 +265,7 @@ def main() -> int:
     if not api_key and not is_local(args.base_url):
         parser.error(f"${args.api_key_env} is not set. Export your key for {args.base_url}, point "
                      "--api-key-env at the variable that holds it, or use a local --base-url.")
+    timeout = LOCAL_TIMEOUT if is_local(args.base_url) else REMOTE_TIMEOUT
     system, attack = None, args.style
     if args.style_profile:
         try:
@@ -237,10 +288,11 @@ def main() -> int:
     template = PROMPTS["student" if args.style == "student" else "plain"]
 
     def write_essay(model: str, prompt: str) -> str:
-        essay = chat(args.base_url, api_key, model, prompt, args.temperature, system=system)
+        essay = clean_essay(chat(args.base_url, api_key, model, prompt, args.temperature, system=system,
+                                 timeout=timeout))
         if args.style == "humanize":
-            essay = chat(args.base_url, api_key, model, HUMANIZE.format(essay=essay), args.temperature,
-                         system=system)
+            essay = clean_essay(chat(args.base_url, api_key, model, HUMANIZE.format(essay=essay), args.temperature,
+                                     system=system, timeout=timeout))
         return essay
 
     model, written = args.model, 0

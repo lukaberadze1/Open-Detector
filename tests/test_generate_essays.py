@@ -159,6 +159,72 @@ def test_empty_content_is_an_error_not_a_crash(monkeypatch, tmp_path, csv, capsy
     assert code == 1 and "empty response" in capsys.readouterr().err
 
 
+# The shape gemma3:4b replied in: a preamble behind a rule, a bold title, emphasis, then a question.
+WRAPPED = """Okay, here\u2019s my essay \u2013 hopefully it\u2019s good!
+
+---
+
+**Should Drivers Be Allowed to Use Cell Phones? Absolutely Not.**
+
+Seriously, letting drivers use their phones is *wrong*. A second is all it takes.
+
+## Why it matters
+
+People always say they're careful, but __nobody__ is careful enough.
+
+---
+
+Would you like me to make it sound younger, or add a counterargument?"""
+
+
+def test_clean_essay_strips_the_chat_wrapper_and_markdown():
+    assert generate_essays.clean_essay(WRAPPED) == (
+        "Should Drivers Be Allowed to Use Cell Phones? Absolutely Not.\n\n"
+        "Seriously, letting drivers use their phones is wrong. A second is all it takes.\n\n"
+        "Why it matters\n\n"
+        "People always say they're careful, but nobody is careful enough.")
+    no_rules = ("Sure! Here is a persuasive letter to your principal:\n\nDear Principal,\n\n"
+                "Service should be a choice.\n\nI hope this helps!\n\n(Word count: 9)")
+    assert generate_essays.clean_essay(no_rules) == "Dear Principal,\n\nService should be a choice."
+
+
+def test_clean_essay_keeps_openings_and_closings_that_belong_to_the_essay():
+    essay = ("Here is why phones and driving don't mix.\n\nMy cousin crashed at 5 mph, 2 * 3 feet from home, "
+             "while checking her user_name.\n\nI hope you agree.\n\nSincerely,\nA Student")
+    assert generate_essays.clean_essay(essay) == essay
+    assert generate_essays.clean_essay("Here is my essay:") == "Here is my essay:", "never empty"
+
+
+def test_saved_essays_and_humanize_drafts_are_unwrapped(monkeypatch, tmp_path, csv):
+    server = FakeServer([completion("Okay, here's my essay!\n\n---\n\n**Draft** body, longer than the chat around it."),
+                         completion("Here is the rewritten essay:\n\nFinal *body*.")])
+    out = tmp_path / "o.jsonl"
+    try:
+        assert run(monkeypatch, ["--persuade", str(csv), "--model", "m", "--style", "humanize", "--n", "1",
+                                 "--out", str(out), "--base-url", server.url]) == 0
+    finally:
+        server.close()
+    rewrite_prompt = server.requests[1]["body"]["messages"][-1]["content"]
+    assert rewrite_prompt.endswith("\n\nDraft body, longer than the chat around it.") and "Okay" not in rewrite_prompt
+    assert json.loads(out.read_text())["text"] == "Final body."
+
+
+def test_local_servers_get_a_longer_timeout(monkeypatch, tmp_path, csv):
+    timeouts = []
+
+    def fake_chat(*args, timeout, **kwargs):
+        timeouts.append(timeout)
+        return "Essay."
+
+    monkeypatch.setattr(generate_essays, "chat", fake_chat)
+    monkeypatch.setenv("GEMINI_API_KEY", "not-a-real-key")
+    for i, url in enumerate(("http://localhost:11434/v1", "https://api.example.com/v1")):
+        assert run(monkeypatch, ["--persuade", str(csv), "--model", "m", "--n", "1",
+                                 "--out", str(tmp_path / f"{i}.jsonl"), "--base-url", url]) == 0
+    assert timeouts == [generate_essays.LOCAL_TIMEOUT, generate_essays.REMOTE_TIMEOUT]
+    assert generate_essays.LOCAL_TIMEOUT > generate_essays.REMOTE_TIMEOUT
+
+
 def test_missing_csv_and_missing_key_are_reported_up_front(monkeypatch, tmp_path, csv, capsys):
     with pytest.raises(SystemExit):
         run(monkeypatch, ["--persuade", str(tmp_path / "nope.csv"), "--model", "m", "--out", "o.jsonl"])
