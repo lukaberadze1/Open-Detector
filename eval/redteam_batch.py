@@ -114,15 +114,17 @@ class BatchWorker(threading.Thread):
 
     `phase` moves from "generating" to "scoring" (when there is a `score` function) and ends as
     "done", "stopped" or "failed", with the exception in `error`. `stop()` takes effect once the
-    block in progress is saved. `status` is a dict the callbacks may fill for the page to show;
-    `seconds` holds how long each block took, per pass, for an estimate of the time left."""
+    block in progress is saved. `finish`, if given, runs once both passes are complete. `status` is
+    a dict the callbacks may fill for the page to show; `seconds` holds how long each block took,
+    per pass, for an estimate of the time left."""
 
     def __init__(self, checkpoint: Checkpoint, keys: list[str], generate: Callable[[str], tuple[str, str]],
                  score: Callable[[str], dict | None] | None = None,
-                 before_scoring: Callable[[], None] | None = None, status: dict | None = None):
+                 before_scoring: Callable[[], None] | None = None, finish: Callable[[], None] | None = None,
+                 status: dict | None = None):
         super().__init__(daemon=True)
         self.checkpoint, self.keys = checkpoint, keys
-        self._generate, self._score, self._before_scoring = generate, score, before_scoring
+        self._generate, self._score, self._before_scoring, self._finish = generate, score, before_scoring, finish
         self._stop_requested = threading.Event()
         self.status = status if status is not None else {}
         self.phase = "generating"
@@ -157,6 +159,8 @@ class BatchWorker(threading.Thread):
                 if self._before_scoring:
                     self._before_scoring()
                 score_missing(self.checkpoint, self.keys, self._timed(self._score, "scored"), self._between_blocks)
+            if self._finish:
+                self._finish()
             self.phase = "done"
         except StopRequested:
             self.phase = "stopped"

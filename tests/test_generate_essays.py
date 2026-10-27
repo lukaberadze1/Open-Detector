@@ -20,7 +20,12 @@ class FakeServer:
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
-                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                self.reply(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+
+            def do_GET(self):
+                self.reply(None)
+
+            def reply(self, body):
                 server.requests.append({"auth": self.headers.get("Authorization"), "body": body, "path": self.path})
                 status, reply = server.replies.pop(0)
                 payload = json.dumps(reply).encode()
@@ -297,6 +302,21 @@ def test_unload_local_model_asks_ollama_to_drop_it_now():
     assert server.requests[0]["path"] == "/api/generate"
     assert server.requests[0]["body"] == {"model": "gemma3:4b", "keep_alive": 0}
     assert generate_essays.unload_local_model("http://127.0.0.1:9/v1", "gemma3:4b") is False
+
+
+def test_local_model_problem_says_what_to_run():
+    tags = {"models": [{"name": "gemma3:4b"}, {"name": "llama3.2:latest"}]}
+    server = FakeServer([(200, tags), (200, tags), (200, tags), (404, {"error": "not found"})])
+    try:
+        assert generate_essays.local_model_problem(server.url, "gemma3:4b") is None
+        assert generate_essays.local_model_problem(server.url, "llama3.2") is None, "no tag means :latest"
+        missing = generate_essays.local_model_problem(server.url, "qwen3:4b")
+        assert "isn't downloaded" in missing and "ollama pull qwen3:4b" in missing
+        assert generate_essays.local_model_problem(server.url, "any") is None, "a non-Ollama server is running"
+    finally:
+        server.close()
+    assert server.requests[0]["path"] == "/api/tags"
+    assert "ollama serve" in generate_essays.local_model_problem("http://127.0.0.1:9/v1", "gemma3:4b")
 
 
 def test_missing_csv_and_missing_key_are_reported_up_front(monkeypatch, tmp_path, csv, capsys):

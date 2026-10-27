@@ -21,6 +21,7 @@ from eval.generate_essays import (
     clean_essay,
     generate_with_fallback,
     load_style_profile,
+    local_model_problem,
     style_instructions,
     unload_local_model,
 )
@@ -69,6 +70,10 @@ def person_instruction(*samples: str) -> str:
             "second-person language if it is absent."
         )
     return f"Write in {person}, matching the source text. Keep that grammatical person consistent throughout."
+
+
+# Checked on every rerun to show in the sidebar, so the answer is kept for a few seconds.
+local_fallback_problem = st.cache_data(ttl=15, show_spinner=False)(local_model_problem)
 
 
 st.set_page_config(page_title="Open Detector · Red-team generator", page_icon="🧪")
@@ -147,6 +152,11 @@ with st.sidebar:
              "`ollama serve` running and the model fetched with `ollama pull`. Clear to turn it off.",
     ).strip()
     local_url = st.text_input("Local fallback URL", LOCAL_URL).strip()
+    if local_model:
+        if problem := local_fallback_problem(local_url, local_model):
+            st.warning(f"The local fallback can't run: {problem}")
+        else:
+            st.caption(f"Local fallback ready: {local_model}.")
     api_key_env = st.text_input("API key environment variable", "GEMINI_API_KEY")
     api_key = os.environ.get(api_key_env, "")
     if api_key:
@@ -435,6 +445,28 @@ def export_batch(checkpoint: Checkpoint, partial: bool) -> None:
             **(item.get("score") or {}),
         })
         checkpoint.blocks[item["key"]]["recorded"] = True
+    # The whole regenerated text is a sample of its own: unlike most single blocks, it is long enough
+    # for the detector and for the evaluation, which drops texts under 150 words.
+    document_score = None if partial else checkpoint.meta.get("document_score")
+    if document_score and not checkpoint.meta.get("document_recorded"):
+        models = {item["model"] for item in items}
+        model_tag = models.pop() if len(models) == 1 else "mixed"
+        rows.append({
+            "id": f"local-{checkpoint.meta['created']}-{source_hash}-document-{model_tag}-{attack}",
+            "text": "\n\n".join(item["text"] for item in items),
+            "label": 1,
+            "dataset": "local_redteam",
+            "domain": "document_combined",
+            "model": model_tag,
+            "attack": attack,
+            "group": "ai",
+            "group_key": f"document-{source_hash}",
+            "prompt": f"Every regenerated block of {source_upload.name}, in document order.",
+            "source_file": source_upload.name,
+            "target_section": None,
+            **{key: value for key, value in document_score.items() if key != "words"},
+        })
+        checkpoint.meta["document_recorded"] = True
     if rows:
         OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
         with OUTPUT_PATH.open("a", encoding="utf-8") as output:
@@ -457,7 +489,17 @@ def export_batch(checkpoint: Checkpoint, partial: bool) -> None:
     st.session_state["last_generated_result"] = {
         "essay": "\n\n".join(answers_text),
         "row": rows[0] if rows else {},
-        "score": None,
+        "score": (
+            {
+                "probability": document_score["ai_probability"],
+                "verdict": document_score["verdict"],
+                "calibrated": document_score["calibrated"],
+                "words": document_score["words"],
+            }
+            if document_score
+            else None
+        ),
+        "score_label": "Whole regenerated document: AI likelihood",
         "attachment": text_attachment,
         "filename": text_name,
         "path": str((EXPORT_DIR / text_name).relative_to(ROOT)),
@@ -648,10 +690,19 @@ if st.button(button_label, type="primary", disabled=worker is not None):
             get_detector(detector_profile)
             status["note"] = None
 
+        def score_document() -> None:
+            # Answer boxes are mostly under the detector's 150-word minimum, so the regenerated text is
+            # also scored as one document: the verdict a reader of the whole file would get.
+            whole = "\n\n".join(checkpoint.blocks[key]["text"] for key in checkpoint.generated(keys))
+            status["note"] = "Scoring the whole regenerated document…"
+            checkpoint.meta["document_score"] = {**score_text(whole, detector_profile), "words": count_words(whole)}
+            checkpoint.save()
+            status["note"] = None
+
         worker = BatchWorker(
             checkpoint, keys, generate_block,
             score=(lambda text: score_text(text, detector_profile)) if score_with_detector else None,
-            before_scoring=before_scoring, status=status,
+            before_scoring=before_scoring, finish=score_document if score_with_detector else None, status=status,
         )
         running_batches()[str(checkpoint_path)] = worker
         worker.start()
@@ -792,7 +843,7 @@ if result := st.session_state.get("last_generated_result"):
     if score_result:
         if score_result["verdict"] not in ("insufficient_text", "not_prose"):
             st.metric(
-                "Detector AI likelihood",
+                result.get("score_label", "Detector AI likelihood"),
                 f"{score_result['probability']:.1%}",
                 help=f"{score_result['verdict'].replace('_', ' ').title()} · "
                 f"{'calibrated' if score_result['calibrated'] else 'uncalibrated'} · "

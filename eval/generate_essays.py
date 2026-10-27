@@ -339,6 +339,24 @@ def unload_local_model(local_url: str, model: str, timeout: float = 30) -> bool:
         return False
 
 
+def local_model_problem(local_url: str, model: str, timeout: float = 2) -> str | None:
+    """Why `model` can't be used on the local server right now, or None if it can. Asks Ollama for
+    its downloaded models; a server without that endpoint (LM Studio) answered, so it is running,
+    and is assumed to have the model."""
+    parsed = urllib.parse.urlparse(local_url)
+    server = f"{parsed.scheme}://{parsed.netloc}"
+    try:
+        with urllib.request.urlopen(f"{server}/api/tags", timeout=timeout) as response:
+            downloaded = {entry.get("name") for entry in json.load(response).get("models", [])}
+    except urllib.error.HTTPError:
+        return None
+    except (OSError, ValueError):
+        return f"nothing is answering at {server}. Start Ollama with `ollama serve`."
+    if (model if ":" in model else f"{model}:latest") not in downloaded:
+        return f"{model} isn't downloaded. Fetch it with `ollama pull {model}`."
+    return None
+
+
 def _grade(value) -> int:
     """PERSUADE grade levels arrive as floats (8.0) when the column has blanks; default to 10."""
     try:

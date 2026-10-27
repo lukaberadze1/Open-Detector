@@ -80,11 +80,12 @@ def test_worker_generates_then_scores_on_its_own_thread(tmp_path):
     order = []
     worker = BatchWorker(checkpoint, KEYS, lambda key: (order.append("generate") or key[:3], "m"),
                          score=lambda text: order.append("score") or {"verdict": "likely_ai"},
-                         before_scoring=lambda: order.append("unload"))
+                         before_scoring=lambda: order.append("unload"), finish=lambda: order.append("finish"))
     worker.start()
     worker.join(5)
     assert worker.phase == "done" and worker.error is None
-    assert order == ["generate"] * 3 + ["unload"] + ["score"] * 3, "every block is generated before any is scored"
+    assert order == ["generate"] * 3 + ["unload"] + ["score"] * 3 + ["finish"], (
+        "every block is generated before any is scored, and the whole is scored last")
     assert Checkpoint.load(checkpoint.path).scored(KEYS) == KEYS
     assert len(worker.seconds["generated"]) == len(worker.seconds["scored"]) == 3
 
@@ -98,13 +99,15 @@ def test_worker_stops_after_the_block_in_progress(tmp_path):
         release.wait(5)
         return "written", "m"
 
-    worker = BatchWorker(checkpoint, KEYS, slow, score=lambda text: {"verdict": "likely_ai"})
+    finished = []
+    worker = BatchWorker(checkpoint, KEYS, slow, score=lambda text: {"verdict": "likely_ai"},
+                         finish=lambda: finished.append(True))
     worker.start()
     assert in_progress.wait(5)
     worker.stop()  # pressed while the first block is still being written
     release.set()
     worker.join(5)
-    assert worker.phase == "stopped" and worker.stopping
+    assert worker.phase == "stopped" and worker.stopping and not finished
     saved = Checkpoint.load(checkpoint.path)
     assert saved.generated(KEYS) == [KEYS[0]] and saved.scored(KEYS) == [], "the block in progress is kept"
 
