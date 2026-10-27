@@ -33,24 +33,26 @@ def pptx_bytes():
     return buffer.getvalue()
 
 
-def test_docx_paragraphs_and_table_rows_keep_their_locations():
+def test_docx_paragraphs_and_table_cells_keep_their_locations():
     assert extract_document("essay.DOCX", docx_bytes()) == [
-        DocumentSection("Paragraph 1", "First paragraph."),
-        DocumentSection("Paragraph 3", "Second paragraph."),
-        DocumentSection("Table 1, row 1", "a | b"),
+        DocumentSection("Paragraph 1", "First paragraph.", "docx_paragraph", (0,)),
+        DocumentSection("Paragraph 3", "Second paragraph.", "docx_paragraph", (2,)),
+        DocumentSection("Table 1, row 1, cell 1", "a", "docx_table_cell", (0, 0, 0)),
+        DocumentSection("Table 1, row 1, cell 2", "b", "docx_table_cell", (0, 0, 1)),
     ]
 
 
-def test_pptx_shapes_and_table_rows_are_separate_sections():
+def test_pptx_shapes_and_table_cells_are_separate_sections():
     assert extract_document("deck.pptx", pptx_bytes()) == [
-        DocumentSection("Slide 1, Title 1", "Title"),
-        DocumentSection("Slide 1, Table 1, row 1", "x | y"),
+        DocumentSection("Slide 1, Title 1", "Title", "pptx_shape", (0, 0)),
+        DocumentSection("Slide 1, Table 1, row 1, cell 1", "x", "pptx_table_cell", (0, 1, 0, 0)),
+        DocumentSection("Slide 1, Table 1, row 1, cell 2", "y", "pptx_table_cell", (0, 1, 0, 1)),
     ]
 
 
 @pytest.mark.parametrize("name", ["essay.txt", "no_extension"])
 def test_unsupported_types_are_rejected(name):
-    with pytest.raises(ValueError, match=r"Upload a \.docx"):
+    with pytest.raises(ValueError, match=r"Upload a \.md"):
         extract_document(name, b"text")
 
 
