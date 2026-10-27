@@ -3,8 +3,10 @@ combiners, and a stand-in text model on the Red team page writing to a temporary
 
 import io
 import json
+import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -110,8 +112,9 @@ def red_team_page():
 
 
 @pytest.fixture
-def prompts(monkeypatch, tmp_path):
-    """The Red team page writing to tmp_path, with a stand-in text model. Yields the prompts it gets."""
+def stub_model(monkeypatch, tmp_path):
+    """The Red team page writing to tmp_path, with a stand-in text model that records its prompts and
+    waits for `gate` before answering."""
     from ui import redteam
 
     for name, path in (("ROOT", tmp_path), ("OUTPUT_PATH", tmp_path / "local_redteam.jsonl"),
@@ -121,17 +124,32 @@ def prompts(monkeypatch, tmp_path):
     monkeypatch.setattr(redteam, "load_env", lambda: None)  # never read the real .env
     monkeypatch.setattr(redteam, "local_fallback_problem", lambda url, model: None)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    received = []
+    stub = SimpleNamespace(prompts=[], gate=threading.Event())
+    stub.gate.set()
 
     def write(base_url, api_key, models, prompt, *args):
-        received.append(prompt)
+        stub.prompts.append(prompt)
+        assert stub.gate.wait(30)
         return AI * 15, "stub-model", []
 
     monkeypatch.setattr(redteam, "generate_with_fallback", write)
-    return received
+    yield stub
+    stub.gate.set()  # never leave a worker waiting
 
 
-def test_red_team_sample_is_recorded_as_ai_with_its_score(prompts, tmp_path):
+def run_until_batch_ends(at):
+    from ui.redteam import NOTICE
+
+    for _ in range(100):  # the batch runs on a worker thread; each run checks whether it has ended
+        if NOTICE in at.session_state:
+            break
+        time.sleep(0.1)
+        at.run()
+    assert not at.exception, at.exception
+    return at.session_state[NOTICE]
+
+
+def test_red_team_sample_is_recorded_as_ai_with_its_score(stub_model, tmp_path):
     at = AppTest.from_function(red_team_page, default_timeout=60)
     at.session_state["profile"] = "slim"
     at.run()
@@ -165,30 +183,29 @@ def essay_docx():
     return buffer.getvalue()
 
 
-def test_red_team_rewrites_every_block_of_a_word_document(prompts, tmp_path):
+def word_document_page():
     from ui.components import Upload
-    from ui.redteam import NOTICE
 
     at = AppTest.from_function(red_team_page, default_timeout=60)
     at.session_state["profile"] = "slim"
     at.session_state["upload:redteam:file"] = Upload("bees.docx", essay_docx())
     at.session_state["keep:redteam:task"] = "blocks"
     at.run()
+    return at
+
+
+def test_red_team_rewrites_every_block_of_a_word_document(stub_model, tmp_path):
+    at = word_document_page()
     assert not at.exception, at.exception
     assert any("Fill answer boxes** isn't available for this file: found no question/answer pairs" in caption.value
                for caption in at.caption)
 
     button(at, "Rewrite 2 blocks").click()
     at.run()
-    for _ in range(100):  # the batch runs on a worker thread; each run checks whether it has ended
-        if NOTICE in at.session_state:
-            break
-        time.sleep(0.1)
-        at.run()
-    assert not at.exception, at.exception
-    assert at.session_state[NOTICE] == ("success", "All 2 blocks are done and exported below.")
+    assert run_until_batch_ends(at) == ("success", "All 2 blocks of bees.docx are done and exported.")
+    assert [toast.value for toast in at.toast] == ["All 2 blocks of bees.docx are done and exported."]
 
-    assert [prompt.split(". ")[0] for prompt in prompts] == [
+    assert [prompt.split(". ")[0] for prompt in stub_model.prompts] == [
         "Rewrite only the existing text block labelled Paragraph 2",
         "Rewrite only the existing text block labelled Paragraph 4",
     ]
@@ -204,3 +221,33 @@ def test_red_team_rewrites_every_block_of_a_word_document(prompts, tmp_path):
     ]
     assert all(row["verdict"] == "likely_ai" for row in rows)
     assert not list((tmp_path / "batches").glob("*.json")), "a finished batch's checkpoint is discarded"
+
+
+def test_a_running_batch_stays_in_view_and_blocks_a_second_one(stub_model, tmp_path):
+    stub_model.gate.clear()  # hold the first block until the end of the test
+    at = word_document_page()
+    button(at, "Rewrite 2 blocks").click()
+    at.run()
+    assert not at.exception, at.exception
+
+    def progress_shown():
+        return any("Generating 2 blocks** of bees.docx · Rewrite every block" in m.value for m in at.markdown)
+
+    assert progress_shown()
+    assert not [b.label for b in at.button if b.label.startswith(("Rewrite", "Resume", "Fill"))]
+
+    # Other settings mean another batch: it can't start while this one runs, and this one stays in view.
+    at.session_state["keep:redteam:match"] = False
+    at.run()
+    assert progress_shown()
+    assert not [b.label for b in at.button if b.label.startswith(("Rewrite", "Resume", "Fill"))]
+    at.session_state["keep:redteam:task"] = "sample"
+    at.run()
+    assert progress_shown()
+    assert "Generate sample" in [b.label for b in at.button]
+
+    # It ends while the page is set to something else, and is exported with its own settings.
+    stub_model.gate.set()
+    assert run_until_batch_ends(at)[0] == "success"
+    assert len(list((tmp_path / "exports").glob("AI_REDTEAM_full_document_*.docx"))) == 1
+    assert "Aim for about 11 words" in stub_model.prompts[0], "the batch kept its match-the-length setting"

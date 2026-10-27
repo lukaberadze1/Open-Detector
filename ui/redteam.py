@@ -546,7 +546,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
 
 
 @st.fragment(run_every=2)
-def _batch_progress(worker: BatchWorker, keys: list[str]) -> None:
+def _batch_progress(worker: BatchWorker) -> None:
     """Live progress of a running batch, refreshed every two seconds without rerunning the page."""
     if not worker.is_alive():
         st.rerun()  # the whole page: export the result and show it
@@ -554,70 +554,76 @@ def _batch_progress(worker: BatchWorker, keys: list[str]) -> None:
     saved = Checkpoint.load(worker.checkpoint.path) or worker.checkpoint
     scoring = worker.phase == "scoring"
     verb = "scored" if scoring else "generated"
-    total = len(keys)
+    keys, total = worker.keys, len(worker.keys)
     done = len(saved.scored(keys) if scoring else saved.generated(keys))
     times, left = worker.seconds[verb], total - done
     eta = f" · about {duration(sum(times) / len(times) * left)} left" if times and left else ""
     with st.container(border=True):
         model_note = f" · {worker.status['model']}" if not scoring and worker.status.get("model") else ""
-        st.markdown(f"**{'Scoring' if scoring else 'Generating'} {total} blocks**{model_note}")
+        st.markdown(f":material/autorenew: **{'Scoring' if scoring else 'Generating'} {total} blocks** of "
+                    f"{worker.plan.upload.name} · {TASKS[worker.plan.task][0]}{model_note}")
         st.progress(done / total, text=f"{done} of {total} blocks {verb}{eta}")
         if note := worker.status.get("note"):
             st.caption(note)
         for line in worker.status.get("log", [])[-4:]:
             st.caption(line)
         if worker.stopping:
-            st.button("Stopping after the block in progress…", disabled=True, icon=":material/hourglass_top:")
-        elif st.button("Stop", icon=":material/stop_circle:",
+            st.button("Stopping after the block in progress…", disabled=True, icon=":material/hourglass_top:",
+                      key=f"stopping:{worker.checkpoint.path}")
+        elif st.button("Stop", icon=":material/stop_circle:", key=f"stop:{worker.checkpoint.path}",
                        help="Finishes the block in progress, then stops. Every block written so far is saved and "
                             "exported; press Resume to continue."):
             worker.stop()
             st.rerun(scope="fragment")
+        st.caption("One batch runs at a time. It carries on if you change the settings, switch pages or close "
+                   "the tab.")
 
 
-def _batch_status(plan: Plan, jobs: list[dict], path: Path) -> tuple[Checkpoint | None, BatchWorker | None]:
-    """Export a batch that has just ended and say how it ended, show a running one's progress, or offer
-    a saved one's progress to resume."""
-    keys = [job["key"] for job in jobs]
-    checkpoint = Checkpoint.load(path)
-    worker = running_batches().get(str(path))
-    if worker and not worker.is_alive():
-        running_batches().pop(str(path), None)
-        checkpoint = Checkpoint.load(path) or worker.checkpoint
-        saved = len(checkpoint.generated(keys))
+def _finish_ended_batches() -> None:
+    """Export every batch that has ended since the page last looked, with the settings it ran with,
+    whatever the page is set to now, and say how it ended."""
+    for path, worker in list(running_batches().items()):
+        if worker.is_alive():
+            continue
+        running_batches().pop(path, None)
+        plan, jobs, keys = worker.plan, worker.jobs, worker.keys
+        checkpoint = Checkpoint.load(Path(path)) or worker.checkpoint
+        saved, name = len(checkpoint.generated(keys)), plan.upload.name
         if worker.phase == "done":
             _export_batch(plan, jobs, checkpoint, partial=False)
             checkpoint.discard()
-            checkpoint = None
-            st.session_state[NOTICE] = ("success", f"All {len(keys)} blocks are done and exported below.")
+            notice = ("success", f"All {len(keys)} blocks of {name} are done and exported.")
         else:
             _export_batch(plan, jobs, checkpoint, partial=True)
             if worker.phase == "stopped":
-                st.session_state[NOTICE] = ("warning", f"Stopped after {saved} of {len(keys)} blocks. They are "
-                                                       "saved and exported below; press Resume to continue.")
+                notice = ("warning", f"Stopped after {saved} of {len(keys)} blocks of {name}. They are saved and "
+                                     "exported; press Resume to continue.")
             elif saved < len(keys):
-                st.session_state[NOTICE] = ("error", f"Generation stopped at block {saved + 1} of {len(keys)}. "
-                                                     f"The {saved} blocks written before it are saved and exported "
-                                                     f"below. Fix the cause, then press Resume.\n\n{worker.error}")
+                notice = ("error", f"Generation stopped at block {saved + 1} of {len(keys)} of {name}. The {saved} "
+                                   "blocks written before it are saved and exported. Fix the cause, then "
+                                   f"press Resume.\n\n{worker.error}")
             else:
-                st.session_state[NOTICE] = ("error", f"Scoring stopped: {worker.error}. All {saved} blocks are "
-                                                     "generated, saved and exported below. Press Resume to retry "
-                                                     "scoring, or turn scoring off and Resume to finish without "
-                                                     "scores.")
-        worker = None
-    if worker:
-        _batch_progress(worker, keys)
-    elif checkpoint:
-        saved, scored = len(checkpoint.generated(keys)), len(checkpoint.scored(keys))
-        with st.container(border=True):
-            st.markdown(f":material/save: **Saved progress for this document:** {saved} of {len(keys)} blocks "
-                        "generated" + (f", {scored} scored" if plan.score else "")
-                        + (f". Resume continues from block {saved + 1}." if saved < len(keys)
-                           else ". Resume finishes the batch."))
-            if st.button("Discard and start over", icon=":material/delete:", type="tertiary"):
-                checkpoint.discard()
-                st.rerun()
-    return checkpoint, worker
+                notice = ("error", f"Scoring stopped: {worker.error}. All {saved} blocks of {name} are generated, "
+                                   "saved and exported. Press Resume to retry scoring, or turn scoring off "
+                                   "and Resume to finish without scores.")
+        st.session_state[NOTICE] = notice
+        st.toast(notice[1].split(". ")[0].rstrip(".") + ".", icon={"success": ":material/check_circle:",
+                                                        "warning": ":material/pause_circle:"}.get(
+                                                            notice[0], ":material/error:"))
+
+
+def _saved_progress(plan: Plan, jobs: list[dict], checkpoint: Checkpoint) -> None:
+    """Offer a batch's saved progress, from an earlier run with these settings, to resume or discard."""
+    keys = [job["key"] for job in jobs]
+    saved, scored = len(checkpoint.generated(keys)), len(checkpoint.scored(keys))
+    with st.container(border=True):
+        st.markdown(f":material/save: **Saved progress for this document:** {saved} of {len(keys)} blocks "
+                    "generated" + (f", {scored} scored" if plan.score else "")
+                    + (f". Resume continues from block {saved + 1}." if saved < len(keys)
+                       else ". Resume finishes the batch."))
+        if st.button("Discard and start over", icon=":material/delete:", type="tertiary"):
+            checkpoint.discard()
+            st.rerun()
 
 
 def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, checkpoint: Checkpoint | None,
@@ -714,6 +720,9 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         score=(lambda text: score_text(text, plan.profile)) if plan.score else None,
         before_scoring=before_scoring, finish=score_document if plan.score else None, status=status,
     )
+    # Kept on the worker so that whichever page run sees it end can export it, even after the page's
+    # settings have changed.
+    worker.plan, worker.jobs = plan, jobs
     running_batches()[str(path)] = worker
     worker.start()
 
@@ -1045,27 +1054,32 @@ def render() -> None:
 
     generate_tab, saved_tab = st.tabs(["Generate", "Saved samples"])
     with generate_tab:
+        _finish_ended_batches()
+        running = [worker for worker in running_batches().values() if worker.is_alive()]
         setup, output = st.columns([1.1, 1], gap="large")
         with setup:
             plan = _setup(profile)
-        jobs = _batch_jobs(plan) if plan.batch else []
-        path = _checkpoint_path(plan) if plan.batch else None
-        checkpoint = worker = None
-        with output:
-            if plan.batch:
-                checkpoint, worker = _batch_status(plan, jobs, path)
-
-        with setup:
-            if checkpoint:
-                saved = len(checkpoint.generated([job["key"] for job in jobs]))
-                label, icon = f"Resume · {saved} of {len(jobs)} blocks saved", ":material/play_arrow:"
-            elif plan.rewrite_all_blocks:
-                label, icon = f"Rewrite {len(jobs)} blocks", ":material/auto_awesome:"
-            elif plan.fill_answer_boxes:
-                label, icon = f"Fill {len(jobs)} answer boxes", ":material/auto_awesome:"
+            jobs = _batch_jobs(plan) if plan.batch else []
+            path = _checkpoint_path(plan) if plan.batch else None
+            checkpoint = Checkpoint.load(path) if plan.batch else None
+            for worker in running:
+                _batch_progress(worker)
+            if notice := st.session_state.get(NOTICE):
+                getattr(st, notice[0])(notice[1])
+            if running and plan.batch:
+                clicked = False  # one batch at a time
             else:
-                label, icon = "Generate sample", ":material/auto_awesome:"
-            clicked = st.button(label, type="primary", icon=icon, disabled=worker is not None, width="stretch")
+                if checkpoint:
+                    _saved_progress(plan, jobs, checkpoint)
+                    saved = len(checkpoint.generated([job["key"] for job in jobs]))
+                    label, icon = f"Resume · {saved} of {len(jobs)} blocks saved", ":material/play_arrow:"
+                elif plan.rewrite_all_blocks:
+                    label, icon = f"Rewrite {len(jobs)} blocks", ":material/auto_awesome:"
+                elif plan.fill_answer_boxes:
+                    label, icon = f"Fill {len(jobs)} answer boxes", ":material/auto_awesome:"
+                else:
+                    label, icon = "Generate sample", ":material/auto_awesome:"
+                clicked = st.button(label, type="primary", icon=icon, width="stretch")
             problem = _problem(plan, conn) if clicked else None
             if problem:
                 st.error(problem)
@@ -1084,11 +1098,9 @@ def render() -> None:
                     _start_batch(plan, conn, jobs, path, checkpoint, system)
                     st.rerun()
                 _generate_sample(plan, conn, system)
-            if notice := st.session_state.get(NOTICE):
-                getattr(st, notice[0])(notice[1])
             if result := st.session_state.get(RESULT):
                 _show_result(result, profile)
-            elif not worker:
+            elif not running:
                 st.info("Set up a sample on the left and generate it. It appears here with its detector score.",
                         icon=":material/auto_awesome:")
 
