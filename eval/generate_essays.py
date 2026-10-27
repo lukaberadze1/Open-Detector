@@ -1,7 +1,7 @@
 """Write AI "mirrors" of human essays: same assignment, similar length, different author.
 
 Pairing each human essay with an AI essay on the same prompt means the detector is judged
-on style, not topic. Defaults to Gemini through its OpenAI-compatible endpoint, with the key
+on style, not topic. Defaults to Gemini through its Interactions API, with the key
 read from GEMINI_API_KEY (or the project's .env). Any OpenAI-compatible endpoint works
 (OpenAI, OpenRouter, a local LM Studio or Ollama server) via --base-url and --api-key-env,
 so you can cover many model families. A local server needs no key and gets a 30-minute
@@ -9,6 +9,10 @@ timeout per request, since a small model on a laptop can take minutes per essay:
 
     python -m eval.generate_essays --persuade persuade_2.0.csv --n 50 \\
         --base-url http://localhost:11434/v1 --model gemma3:4b --out data/essays/mirrors_gemma.jsonl
+
+When the hosted models fail (a spent quota, a rejected key, an outage), the rest of the run
+switches to a local Ollama model, gemma3:4b by default; --local-fallback '' turns that off.
+Each essay's model column says which model wrote it.
 
 Replies are unwrapped before they are saved: chat preambles ("Here's my essay!"), sign-offs
 ("Would you like me to...?"), --- rules and Markdown emphasis are removed.
@@ -46,11 +50,15 @@ import pandas as pd
 
 from opendetector.env import load_env
 
-GEMINI_OPENAI_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com"
+GEMINI_OPENAI_URL = f"{GEMINI_API_URL}/v1beta/openai"
 DEFAULT_MODEL = "gemini-3.8-flash"
 # The free tier allows very few requests on the newest Flash model (20 when this was written);
 # Flash-Lite's allowance is larger, so it is the fallback when the main model's quota runs out.
 FALLBACK_MODEL = "gemini-3.5-flash-lite"
+# The last resort once the hosted models fail: a model on a local Ollama server, with no key or quota.
+LOCAL_URL = "http://localhost:11434/v1"
+LOCAL_MODEL = "gemma3:4b"
 
 PROMPTS = {
     "plain": "Write an essay responding to the assignment below. Aim for about {words} words. "
@@ -200,6 +208,10 @@ def _error_details(exc: urllib.error.HTTPError) -> tuple[str, float | None]:
 
 def chat(base_url: str, api_key: str, model: str, prompt: str, temperature: float, retries: int = 5,
          system: str | None = None, timeout: int = REMOTE_TIMEOUT) -> str:
+    """Use Google's current Interactions API for Gemini, or another provider's OpenAI API."""
+    if urllib.parse.urlparse(base_url).hostname == "generativelanguage.googleapis.com":
+        return _gemini_interaction(model, api_key, prompt, temperature, retries, system, timeout)
+
     messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
     body = json.dumps({"model": model, "messages": messages, "temperature": temperature}).encode()
     headers = {"Content-Type": "application/json"}
@@ -231,6 +243,87 @@ def chat(base_url: str, api_key: str, model: str, prompt: str, temperature: floa
     raise AssertionError("unreachable")
 
 
+def _gemini_interaction(model: str, api_key: str, prompt: str, temperature: float,
+                        retries: int, system: str | None, timeout: int) -> str:
+    """Create a text interaction through Google's first-party Gemini API."""
+    payload = {"model": model, "input": prompt}
+    if system:
+        payload["system_instruction"] = system
+    if model not in {"gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash"}:
+        payload["generation_config"] = {"temperature": temperature}
+    req = urllib.request.Request(
+        "https://generativelanguage.googleapis.com/v1beta/interactions",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+    )
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                data = json.load(response)
+            if data.get("status") not in (None, "completed"):
+                error = data.get("error")
+                message = error.get("message") if isinstance(error, dict) else str(error or "")
+                message = message or f"interaction status was {data.get('status')}"
+                raise APIError(f"{model}: {message}")
+            content = "".join(
+                part.get("text", "")
+                for step in data.get("steps", []) if step.get("type") == "model_output"
+                for part in step.get("content", []) if part.get("type") == "text"
+            ).strip()
+            if not content:
+                raise APIError(f"empty response from {model}")
+            return content
+        except urllib.error.HTTPError as exc:
+            message, delay = _error_details(exc)
+            if exc.code == 429 and delay is not None and delay > MAX_WAIT:
+                raise QuotaExhausted(f"{model} is out of quota: {message}") from exc
+            if exc.code not in RETRYABLE_STATUS or attempt == retries - 1:
+                raise APIError(f"HTTP {exc.code} from Gemini Interactions API: {message}") from exc
+            reason, wait = f"HTTP {exc.code}", delay if delay is not None else 2 ** attempt * 5
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt == retries - 1:
+                raise APIError(f"could not reach Gemini Interactions API: {getattr(exc, 'reason', exc)}") from exc
+            reason, wait = str(getattr(exc, "reason", exc)), 2 ** attempt * 5
+        print(f"  Gemini request failed ({reason}); retrying in {wait:.0f}s", file=sys.stderr)
+        time.sleep(wait)
+    raise AssertionError("unreachable")
+
+
+def generate_with_fallback(base_url: str, api_key: str, models: list[str], prompt: str, temperature: float,
+                           system: str | None, local_url: str = "", local_model: str = "",
+                           ) -> tuple[str, str, list[str]]:
+    """Try the hosted models in order, advancing past quota and transient failures, then the local
+    model, which needs no key and has no quota. Returns the text, the model that wrote it and the
+    errors of the models that failed before it."""
+    attempted = []
+    errors = []
+    for model_name in dict.fromkeys(name.strip() for name in models if name.strip()):
+        attempted.append(model_name)
+        try:
+            result = chat(base_url, api_key, model_name, prompt, temperature, retries=1, system=system, timeout=60)
+            return result, model_name, errors
+        except APIError as exc:
+            errors.append(f"{model_name}: {exc}")
+            message = str(exc)
+            lower_message = message.lower()
+            endpoint_unreachable = "could not reach" in lower_message and not any(
+                word in lower_message for word in ("timed out", "timeout")
+            )
+            if any(status in message for status in ("HTTP 400", "HTTP 401", "HTTP 403")) or endpoint_unreachable:
+                break
+    if local_model:
+        attempted.append(local_model)
+        try:
+            result = chat(local_url, "", local_model, prompt, temperature, retries=1,
+                          system=system, timeout=LOCAL_TIMEOUT)
+            return result, local_model, errors
+        except APIError as exc:
+            errors.append(f"{local_model}: {exc}. Is Ollama running? Start it with `ollama serve` and "
+                          f"fetch the model with `ollama pull {local_model}`.")
+    details = "\n".join(f"- {error[:500]}" for error in errors) or "- No fallback models were configured."
+    raise APIError(f"Every configured text model failed ({', '.join(attempted)}):\n{details}")
+
+
 def _grade(value) -> int:
     """PERSUADE grade levels arrive as floats (8.0) when the column has blanks; default to 10."""
     try:
@@ -247,12 +340,15 @@ def main() -> int:
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--fallback-model", default=FALLBACK_MODEL,
                         help="switch to this model when --model is out of quota ('' to just stop)")
+    parser.add_argument("--local-fallback", default=LOCAL_MODEL,
+                        help="when the hosted models fail, switch to this model on --local-url ('' to just stop)")
+    parser.add_argument("--local-url", default=LOCAL_URL)
     parser.add_argument("--style", choices=["plain", "student", "humanize"], default="plain")
     parser.add_argument("--style-profile", type=Path,
                         help="JSON style profile to write in, sent as the system prompt; its file name is "
                              "added to the attack label (<style>+<name>)")
     parser.add_argument("--n", type=int, default=100)
-    parser.add_argument("--base-url", default=GEMINI_OPENAI_URL)
+    parser.add_argument("--base-url", default=GEMINI_API_URL)
     parser.add_argument("--api-key-env", default="GEMINI_API_KEY", help="environment variable holding the key")
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--seed", type=int, default=0)
@@ -265,7 +361,6 @@ def main() -> int:
     if not api_key and not is_local(args.base_url):
         parser.error(f"${args.api_key_env} is not set. Export your key for {args.base_url}, point "
                      "--api-key-env at the variable that holds it, or use a local --base-url.")
-    timeout = LOCAL_TIMEOUT if is_local(args.base_url) else REMOTE_TIMEOUT
     system, attack = None, args.style
     if args.style_profile:
         try:
@@ -287,15 +382,15 @@ def main() -> int:
     done = {json.loads(line)["id"] for line in out.read_text().splitlines() if line.strip()} if out.exists() else set()
     template = PROMPTS["student" if args.style == "student" else "plain"]
 
-    def write_essay(model: str, prompt: str) -> str:
-        essay = clean_essay(chat(args.base_url, api_key, model, prompt, args.temperature, system=system,
-                                 timeout=timeout))
+    def write_essay(base_url: str, key: str, model: str, prompt: str) -> str:
+        timeout = LOCAL_TIMEOUT if is_local(base_url) else REMOTE_TIMEOUT
+        essay = clean_essay(chat(base_url, key, model, prompt, args.temperature, system=system, timeout=timeout))
         if args.style == "humanize":
-            essay = clean_essay(chat(args.base_url, api_key, model, HUMANIZE.format(essay=essay), args.temperature,
+            essay = clean_essay(chat(base_url, key, model, HUMANIZE.format(essay=essay), args.temperature,
                                      system=system, timeout=timeout))
         return essay
 
-    model, written = args.model, 0
+    base_url, key, model, written = args.base_url, api_key, args.model, 0
     with out.open("a") as f:
         for _, row in df.iterrows():
             source_id = str(row[id_col])
@@ -308,17 +403,24 @@ def main() -> int:
             essay = None
             while f"{source_id}-{model}-{attack}" not in done:
                 try:
-                    essay = write_essay(model, prompt)
+                    essay = write_essay(base_url, key, model, prompt)
                     break
                 except QuotaExhausted as e:
-                    if not args.fallback_model or model == args.fallback_model:
-                        print(f"Stopped after {written} new essays: {e}", file=sys.stderr)
-                        return 1
-                    print(f"{e}\nSwitching to {args.fallback_model} for the rest of the run.", file=sys.stderr)
-                    model = args.fallback_model
+                    if args.fallback_model and model != args.fallback_model:
+                        print(f"{e}\nSwitching to {args.fallback_model} for the rest of the run.", file=sys.stderr)
+                        model = args.fallback_model
+                        continue
+                    failure = e
                 except APIError as e:
-                    print(f"Stopped after {written} new essays: {e}", file=sys.stderr)
+                    failure = e
+                if not args.local_fallback or base_url == args.local_url:
+                    hint = (f" Is the local server running? Start it with `ollama serve` and fetch the model with "
+                            f"`ollama pull {model}`.") if base_url == args.local_url else ""
+                    print(f"Stopped after {written} new essays: {failure}{hint}", file=sys.stderr)
                     return 1
+                print(f"{failure}\nSwitching to {args.local_fallback} on {args.local_url} for the rest of the run.",
+                      file=sys.stderr)
+                base_url, key, model = args.local_url, "", args.local_fallback
             if essay is None:
                 continue  # already written in an earlier run
             essay_id = f"{source_id}-{model}-{attack}"

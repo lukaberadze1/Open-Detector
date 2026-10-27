@@ -56,7 +56,8 @@ def csv(tmp_path):
 def run(monkeypatch, argv):
     # Never read the real .env in tests: a real key must not reach the fake server or the internet.
     monkeypatch.setattr(generate_essays, "load_env", lambda: None)
-    monkeypatch.setattr("sys.argv", ["generate_essays", *argv])
+    # Nor fall back to a real local model server; tests that want the fallback pass the flag again.
+    monkeypatch.setattr("sys.argv", ["generate_essays", "--local-fallback", "", *argv])
     monkeypatch.setattr(generate_essays.time, "sleep", lambda s: None)
     return generate_essays.main()
 
@@ -130,7 +131,8 @@ def test_short_rate_limit_waits_as_asked_then_retries(monkeypatch, tmp_path, csv
     server = FakeServer([gemini_quota_error("1.5s"), completion("Done.")])
     try:
         monkeypatch.setattr("sys.argv", ["g", "--persuade", str(csv), "--model", "m", "--out",
-                                         str(tmp_path / "o.jsonl"), "--base-url", server.url, "--n", "1"])
+                                         str(tmp_path / "o.jsonl"), "--base-url", server.url, "--n", "1",
+                                         "--local-fallback", ""])
         monkeypatch.setattr(generate_essays, "load_env", lambda: None)
         monkeypatch.setattr(generate_essays.time, "sleep", waits.append)
         assert generate_essays.main() == 0
@@ -223,6 +225,67 @@ def test_local_servers_get_a_longer_timeout(monkeypatch, tmp_path, csv):
                                  "--out", str(tmp_path / f"{i}.jsonl"), "--base-url", url]) == 0
     assert timeouts == [generate_essays.LOCAL_TIMEOUT, generate_essays.REMOTE_TIMEOUT]
     assert generate_essays.LOCAL_TIMEOUT > generate_essays.REMOTE_TIMEOUT
+
+
+def test_spent_hosted_models_hand_the_rest_of_the_run_to_the_local_model(monkeypatch, tmp_path, csv, capsys):
+    hosted = FakeServer([gemini_quota_error("19m15.12s"), gemini_quota_error("23h1m")])
+    local = FakeServer([completion("Local one."), completion("Local two.")])
+    out = tmp_path / "o.jsonl"
+    try:
+        assert run(monkeypatch, ["--persuade", str(csv), "--model", "m", "--fallback-model", "lite", "--out", str(out),
+                                 "--base-url", hosted.url, "--local-fallback", "gemma3:4b",
+                                 "--local-url", local.url]) == 0
+    finally:
+        hosted.close()
+        local.close()
+    assert [r["body"]["model"] for r in hosted.requests] == ["m", "lite"], "the second essay goes straight to local"
+    assert [r["body"]["model"] for r in local.requests] == ["gemma3:4b", "gemma3:4b"]
+    assert all(r["auth"] is None for r in local.requests), "the hosted key never reaches the local server"
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert {r["text"] for r in rows} == {"Local one.", "Local two."}
+    assert all(r["model"] == "gemma3:4b" and r["id"].endswith("-gemma3:4b-plain") for r in rows)
+    assert "Switching to gemma3:4b" in capsys.readouterr().err
+
+
+def test_unreachable_local_fallback_says_how_to_start_it(monkeypatch, tmp_path, csv, capsys):
+    hosted = FakeServer([(404, {"error": {"message": "model 'm' does not exist"}})])
+    try:
+        code = run(monkeypatch, ["--persuade", str(csv), "--model", "m", "--out", str(tmp_path / "o.jsonl"),
+                                 "--base-url", hosted.url, "--n", "1", "--local-fallback", "gemma3:4b",
+                                 "--local-url", "http://127.0.0.1:9/v1"])
+    finally:
+        hosted.close()
+    err = capsys.readouterr().err
+    assert code == 1 and "model 'm' does not exist" in err
+    assert "could not reach http://127.0.0.1:9/v1" in err and "ollama serve" in err and "ollama pull gemma3:4b" in err
+
+
+def test_app_fallback_tries_the_local_model_after_every_hosted_one():
+    hosted = FakeServer([(401, {"error": "API key not valid"})])
+    local = FakeServer([completion("From Gemma.")])
+    try:
+        text, model, errors = generate_essays.generate_with_fallback(
+            hosted.url, "key", ["a", "b"], "Write.", 0.8, None, local.url, "gemma3:4b")
+    finally:
+        hosted.close()
+        local.close()
+    assert (text, model) == ("From Gemma.", "gemma3:4b")
+    assert len(hosted.requests) == 1, "a rejected key skips the other hosted models"
+    assert len(errors) == 1 and "HTTP 401" in errors[0] and local.requests[0]["auth"] is None
+
+
+def test_app_fallback_without_a_working_local_model_reports_every_failure():
+    hosted = FakeServer([(503, {"error": "busy"}), (503, {"error": "busy"})])
+    try:
+        with pytest.raises(generate_essays.APIError) as failed:
+            generate_essays.generate_with_fallback(hosted.url, "key", ["a", "b"], "Write.", 0.8, None,
+                                                   "http://127.0.0.1:9/v1", "gemma3:4b")
+        with pytest.raises(generate_essays.APIError) as off:
+            generate_essays.generate_with_fallback("http://127.0.0.1:9/v1", "key", ["a"], "Write.", 0.8, None)
+    finally:
+        hosted.close()
+    assert "(a, b, gemma3:4b)" in str(failed.value) and "ollama serve" in str(failed.value)
+    assert "(a)" in str(off.value), "no local model configured, none tried"
 
 
 def test_missing_csv_and_missing_key_are_reported_up_front(monkeypatch, tmp_path, csv, capsys):
