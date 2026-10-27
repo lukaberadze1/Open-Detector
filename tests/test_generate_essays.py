@@ -21,7 +21,7 @@ class FakeServer:
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                server.requests.append({"auth": self.headers.get("Authorization"), "body": body})
+                server.requests.append({"auth": self.headers.get("Authorization"), "body": body, "path": self.path})
                 status, reply = server.replies.pop(0)
                 payload = json.dumps(reply).encode()
                 self.send_response(status)
@@ -286,6 +286,17 @@ def test_app_fallback_without_a_working_local_model_reports_every_failure():
         hosted.close()
     assert "(a, b, gemma3:4b)" in str(failed.value) and "ollama serve" in str(failed.value)
     assert "(a)" in str(off.value), "no local model configured, none tried"
+
+
+def test_unload_local_model_asks_ollama_to_drop_it_now():
+    server = FakeServer([(200, {"done_reason": "unload"})])
+    try:
+        assert generate_essays.unload_local_model(server.url, "gemma3:4b") is True
+    finally:
+        server.close()
+    assert server.requests[0]["path"] == "/api/generate"
+    assert server.requests[0]["body"] == {"model": "gemma3:4b", "keep_alive": 0}
+    assert generate_essays.unload_local_model("http://127.0.0.1:9/v1", "gemma3:4b") is False
 
 
 def test_missing_csv_and_missing_key_are_reported_up_front(monkeypatch, tmp_path, csv, capsys):

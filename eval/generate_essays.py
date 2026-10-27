@@ -324,6 +324,21 @@ def generate_with_fallback(base_url: str, api_key: str, models: list[str], promp
     raise APIError(f"Every configured text model failed ({', '.join(attempted)}):\n{details}")
 
 
+def unload_local_model(local_url: str, model: str, timeout: float = 30) -> bool:
+    """Ask an Ollama server to drop `model` from memory now rather than after its five-minute
+    keep-alive, so something else (the detector) has room. Other servers lack this endpoint;
+    then nothing happens and the result is False."""
+    parsed = urllib.parse.urlparse(local_url)
+    req = urllib.request.Request(f"{parsed.scheme}://{parsed.netloc}/api/generate",
+                                 data=json.dumps({"model": model, "keep_alive": 0}).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True
+    except (OSError, ValueError):  # URLError and HTTPError are OSErrors; a malformed URL is a ValueError
+        return False
+
+
 def _grade(value) -> int:
     """PERSUADE grade levels arrive as floats (8.0) when the column has blanks; default to 10."""
     try:
