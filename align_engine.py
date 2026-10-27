@@ -143,8 +143,11 @@ def generate_aligned_text(
         report = detector.analyze(draft)
         _record(log_path, run_id, group_key, attempt, draft, report.ai_probability, model)
         if report.ai_probability is None:
-            log.warning("Draft is %d words; the detector needs %d to score it. Returning it unscored.",
-                        report.words, detector.config.min_words)
+            if report.verdict == "not_prose":
+                log.warning("Draft isn't prose (poetry, a list); the detector doesn't score it. Returning it unscored.")
+            else:
+                log.warning("Draft is %d words; the detector needs %d to score it. Returning it unscored.",
+                            report.words, detector.config.min_words)
             return draft
 
         score = report.ai_probability

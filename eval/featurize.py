@@ -17,7 +17,8 @@ from pathlib import Path
 from tqdm import tqdm
 
 from opendetector import Detector, DetectorConfig
-from opendetector.segment import count_words
+from opendetector.normalize import normalize
+from opendetector.segment import count_words, looks_like_prose
 
 from . import datasets
 
@@ -52,6 +53,8 @@ def main() -> None:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--dtype", default="auto", help="auto, float32 or bfloat16; match the deployment's")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--annotate-prose", action="store_true",
+                        help="only add the prose flag to an existing --out cache (no scoring)")
     args = parser.parse_args()
     engines = [e.strip() for e in args.engines.split(",") if e.strip()]
     unknown = sorted(set(engines) - {"glyph", "desklib", "bino"})
@@ -65,6 +68,9 @@ def main() -> None:
     if args.limit:
         df = df.head(args.limit)
     out = Path(args.out)
+    if args.annotate_prose:
+        annotate_prose(out, df)
+        return
     out.parent.mkdir(parents=True, exist_ok=True)
     done = set()
     if out.exists():
@@ -104,10 +110,26 @@ def main() -> None:
             record = {c: str(getattr(row, c)) for c in datasets.COLUMNS if c not in ("text", "label")}
             record["label"] = int(row.label)
             record["words"] = count_words(texts[row.id])
+            record["prose"] = looks_like_prose(normalize(texts[row.id])[0])
             record.update(features[row.id])
             f.write(json.dumps(record) + "\n")
     for name in ENGINE_NAMES:
         out.with_name(f"{out.name}.{name}.partial").unlink(missing_ok=True)
+
+
+def annotate_prose(out: Path, df) -> None:
+    """Add the `prose` flag to a cache written before the flag existed, without re-scoring."""
+    if not out.exists():
+        raise SystemExit(f"{out} doesn't exist; nothing to annotate")
+    flags = {row.id: looks_like_prose(normalize(row.text if isinstance(row.text, str) else "")[0])
+             for row in df.itertuples(index=False)}
+    rows = [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
+    for r in rows:
+        if r["id"] in flags:
+            r["prose"] = flags[r["id"]]
+    out.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    found = sum(r["id"] in flags for r in rows)
+    print(f"Annotated {found} of {len(rows)} cached rows; {sum(not r.get('prose', True) for r in rows)} are not prose")
 
 
 def read_jsonl(path: Path) -> dict[str, dict]:

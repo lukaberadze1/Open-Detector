@@ -12,6 +12,8 @@ import streamlit as st
 
 from opendetector import Detector, DetectorConfig
 from opendetector.combiner import Combiner
+from opendetector.documents import extract_document
+from opendetector.segment import count_words
 
 st.set_page_config(page_title="Open Detector", page_icon="🔎", layout="wide")
 
@@ -85,7 +87,47 @@ elif detector.missing_features:
         "Their inputs are filled with typical values, which weakens the score."
     )
 
-text_input = st.text_area("Paste the text to check:", height=260, placeholder="Paste an essay or draft…")
+input_mode = st.radio("Input", ("Paste text", "Upload Word or PowerPoint"), horizontal=True)
+uploaded_sections = []
+if input_mode == "Paste text":
+    text_input = st.text_area("Paste the text to check:", height=260, placeholder="Paste an essay or draft…")
+else:
+    reference_uploads = st.file_uploader(
+        "Optional reference documents (Word or PowerPoint)",
+        type=("docx", "pptx"),
+        accept_multiple_files=True,
+        key="reference_uploads",
+        help="Reference files are extracted for review and kept separate from the document being scored.",
+    )
+    reference_sections = []
+    for reference in reference_uploads:
+        try:
+            reference_sections.extend(
+                (reference.name, section)
+                for section in extract_document(reference.name, reference.getvalue())
+            )
+        except (ImportError, ValueError) as exc:
+            st.error(f"Could not read {reference.name}: {exc}")
+    if reference_sections:
+        with st.expander(f"Review extracted reference material ({len(reference_sections)} sections)"):
+            for filename, section in reference_sections:
+                st.markdown(f"**{filename} · {section.label}**")
+                st.text(section.text)
+        st.caption("Reference material is not included in the scored document.")
+
+    uploaded = st.file_uploader("Choose a .docx or .pptx file", type=("docx", "pptx"))
+    text_input = ""
+    if uploaded:
+        try:
+            uploaded_sections = extract_document(uploaded.name, uploaded.getvalue())
+            text_input = "\n\n".join(section.text for section in uploaded_sections)
+            st.caption(f"Extracted {len(uploaded_sections)} sections from {uploaded.name}.")
+            with st.expander("Review extracted text by source location"):
+                for section in uploaded_sections:
+                    st.markdown(f"**{section.label}**")
+                    st.text(section.text)
+        except (ImportError, ValueError) as exc:
+            st.error(f"Could not read {uploaded.name}: {exc}")
 
 if st.button("Analyze", type="primary"):
     if not text_input.strip():
@@ -94,6 +136,35 @@ if st.button("Analyze", type="primary"):
 
     with st.spinner("Scoring windows with every engine…"):
         report = detector.analyze(text_input, sentences=show_sentences)
+
+    if uploaded_sections:
+        st.subheader("Document sections")
+        st.caption(
+            "The full document gets its own calibrated verdict. Sections with enough prose are "
+            "scored separately; short sections are shown without a verdict. Scores are statistical evidence, not proof."
+        )
+        section_results = []
+        for section in uploaded_sections:
+            words = count_words(section.text)
+            if words < detector.config.min_words:
+                section_results.append((section, words, None))
+            else:
+                with st.spinner(f"Scoring {section.label}…"):
+                    section_results.append((section, words, detector.analyze(section.text, sentences=False)))
+        for section, words, section_report in section_results:
+            title = section.label
+            if section_report and section_report.verdict in VERDICT_LABELS:
+                title += f" · {VERDICT_LABELS[section_report.verdict]} · {section_report.ai_probability:.0%}"
+            elif section_report:
+                title += f" · {section_report.verdict.replace('_', ' ').title()}"
+            else:
+                title += f" · Too short ({words} words)"
+            with st.expander(title):
+                st.write(section.text)
+                if section_report and section_report.verdict == "insufficient_text":
+                    st.caption(f"Need at least {detector.config.min_words} words for a verdict.")
+                elif section_report and section_report.verdict == "not_prose":
+                    st.caption("This section is not prose, so the detector abstains.")
 
     norm = report.normalization
     if norm.suspicious:
@@ -109,6 +180,13 @@ if st.button("Analyze", type="primary"):
         st.info(
             f"Need at least {detector.config.min_words} words of prose for a verdict "
             f"(got {report.words}). Short texts give confident but unreliable scores."
+        )
+        st.stop()
+    if report.verdict == "not_prose":
+        st.info(
+            "This looks like poetry, a list or another line-by-line format. The detector is built "
+            "for prose and gives unreliable scores on these, so it doesn't score them (Turnitin "
+            "skips poetry, scripts and lists too)."
         )
         st.stop()
 

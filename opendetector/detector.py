@@ -11,13 +11,13 @@ import numpy as np
 from .combiner import Combiner
 from .config import DetectorConfig
 from .normalize import NormalizationReport, normalize
-from .segment import Sentence, Window, count_words, sentence_windows, split_sentences
+from .segment import Sentence, Window, count_words, looks_like_prose, sentence_windows, split_sentences
 
 # Used only when no combiner has been fitted yet: a plain average of the classifiers'
 # probabilities, with conservative cut-offs. The app labels these results uncalibrated.
 FALLBACK_THRESHOLDS = {"ai": 0.9, "review": 0.6}
 
-VERDICTS = ("insufficient_text", "likely_human", "needs_review", "likely_ai")
+VERDICTS = ("insufficient_text", "not_prose", "likely_human", "needs_review", "likely_ai")
 
 
 class WindowClassifier(Protocol):
@@ -180,9 +180,12 @@ class Detector:
                     thresholds=self.thresholds, normalization=norm)
         if words < cfg.min_words or not sents:
             return Report(verdict="insufficient_text", ai_probability=None, **base)
+        if not looks_like_prose(clean):
+            return Report(verdict="not_prose", ai_probability=None, **base)
 
         doc_windows = sentence_windows(sents, cfg.doc_window_words, cfg.doc_stride_words)
-        local_windows = sentence_windows(sents, cfg.local_window_words, cfg.local_stride_words) if sentences else []
+        local_windows = (sentence_windows(sents, cfg.local_window_words, cfg.local_stride_words,
+                                          cfg.local_min_paragraph_words) if sentences else [])
         scores, bino_doc = self._engine_scores(clean, doc_windows + local_windows)
         nd = len(doc_windows)
         doc_scores = {k: v[:nd] for k, v in scores.items()}

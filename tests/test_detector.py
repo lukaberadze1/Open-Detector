@@ -68,6 +68,25 @@ def test_sentence_scores_follow_the_ai_passage():
     assert all(report.text[s.start : s.end] == s.text for s in report.sentences)
 
 
+def test_highlights_do_not_bleed_across_a_paragraph_break():
+    det = make()
+    report = det.analyze(HUMAN * 6 + "\n\n" + AI * 6)
+    human_part = [s.ai_probability for s in report.sentences[:6]]
+    ai_part = [s.ai_probability for s in report.sentences[6:]]
+    # Every human sentence scores like pure human text, even the one next to the AI paragraph.
+    assert max(human_part) < min(ai_part)
+    assert human_part[-1] == human_part[0]
+
+
+def test_poetry_and_lists_are_not_scored():
+    det = make(min_words=20)
+    poem = "\n".join(["the frost is on the field", "the crows are gone", "I walk the long road home",
+                      "past the empty barn", "where my father stood", "and the light goes down"] * 2)
+    report = det.analyze(poem)
+    assert report.verdict == "not_prose" and report.ai_probability is None
+    assert det.classifiers[0].calls == [], "no model runs on text it won't score"
+
+
 def test_uncalibrated_and_calibrated_verdicts():
     det = make()
     assert not det.analyze(HUMAN * 10).calibrated

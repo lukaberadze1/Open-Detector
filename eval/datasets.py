@@ -127,23 +127,30 @@ def load_raid(
 # -- MAGE ------------------------------------------------------------------------------
 
 def load_mage(split: str = "test", n: int = 2000, seed: int = 0) -> pd.DataFrame:
-    """MAGE (Li et al., 2024): 10 domains, 27 generators. Note MAGE's own `label` uses
-    1 = human, the reverse of ours, so we derive labels from `src` and check they agree."""
+    """MAGE (Li et al., 2024): 10 domains, 27 generators. MAGE's own `label` uses 1 = human,
+    the reverse of ours, so we derive labels from `src` and check they agree.
+
+    Sources ending in `_human_para` are human texts rewritten by an AI paraphraser. MAGE labels
+    them machine text and so do we: catching AI rewrites of human writing is part of the job.
+    They are tagged attack="paraphrase"."""
     from datasets import load_dataset
 
     df = load_dataset("yaful/MAGE", split=split).to_pandas()
     df = df.sample(n=min(n, len(df)), random_state=seed)
-    human = df["src"].str.contains("human")
+    src = df["src"]
+    human = src.str.endswith("_human")
     agreement = ((df["label"] == 1) == human).mean()
-    if agreement < 0.99:
+    if agreement < 0.999:
         raise ValueError(f"MAGE labels disagree with src for {1 - agreement:.1%} of rows; check the dataset card")
+    paraphrased = src.str.endswith("_para")
     out = pd.DataFrame({
         "id": "mage-" + df.index.astype(str),
         "text": df["text"],
         "label": (~human).astype(int),
         "dataset": "mage",
-        "domain": df["src"].str.split("_").str[0],
-        "model": df["src"].where(~human, "human"),
+        "domain": src.str.split("_").str[0],
+        "model": src.where(~human, "human").where(~src.str.endswith("_human_para"), "paraphraser"),
+        "attack": paraphrased.map({True: "paraphrase", False: "none"}),
     })
     return _finish(out)
 

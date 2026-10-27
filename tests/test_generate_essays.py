@@ -169,6 +169,58 @@ def test_missing_csv_and_missing_key_are_reported_up_front(monkeypatch, tmp_path
     assert "GEMINI_API_KEY is not set" in capsys.readouterr().err
 
 
+PROFILE = {"style_profile": {
+    "punctuation": {"em_dashes_frequency": "Never.",
+                    "banned_ai_cliches": ["delve", "tapestry", "pivotal", "foster", "robust", "seamless",
+                                          "myriad", "plethora", "beacon", "resonate"]},
+    "system_prompt_overrides": {
+        "negative_constraints": ["DO NOT use em-dashes anywhere."],
+        "positive_constraints": ["MUST write 'wether' for 'whether'."],
+        "golden_transformation_rule": "Write like an earnest student who types fast.",
+    },
+}}
+
+
+def test_style_profile_is_the_system_prompt_of_every_call_and_joins_the_attack_label(monkeypatch, tmp_path, csv):
+    profile = tmp_path / "mine.json"
+    profile.write_text(json.dumps(PROFILE))
+    server = FakeServer([completion("Draft."), completion("Humanized.")])
+    out = tmp_path / "o.jsonl"
+    try:
+        assert run(monkeypatch, ["--persuade", str(csv), "--model", "m", "--style", "humanize", "--n", "1",
+                                 "--style-profile", str(profile), "--out", str(out), "--base-url", server.url]) == 0
+    finally:
+        server.close()
+    systems = [req["body"]["messages"][0] for req in server.requests]
+    assert len(systems) == 2 and all(m["role"] == "system" for m in systems), "the rewrite keeps the style too"
+    system = systems[0]["content"]
+    golden, rules, reference = (system.index(s) for s in ("earnest student", "# Rules", "# Reference"))
+    assert golden < rules < reference
+    # Rules stay bullets however short they are; a long list of short phrases goes on one line.
+    assert "- DO NOT use em-dashes anywhere." in system and "- MUST write 'wether'" in system
+    assert "banned_ai_cliches: delve, tapestry, pivotal" in system and "golden_transformation_rule" not in system
+    row = json.loads(out.read_text())
+    assert row["text"] == "Humanized." and row["label"] == 1
+    assert row["attack"] == "humanize+mine" and row["id"].endswith("-m-humanize+mine")
+
+
+def test_profile_without_rules_is_all_reference():
+    stats = {"sentences": {"mean": 18.3, "percentiles": [6, 16, 35]}, "vocabulary": {"mattr": 0.68}}
+    system = generate_essays.style_instructions(stats)
+    assert "# Rules" not in system and "## sentences" in system and "percentiles: 6, 16, 35" in system
+
+
+def test_unreadable_style_profile_is_reported_up_front(monkeypatch, tmp_path, csv, capsys):
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"casing": "quotes like "this" break JSON"}')
+    for path in (bad, tmp_path / "missing.json"):
+        with pytest.raises(SystemExit):
+            run(monkeypatch, ["--persuade", str(csv), "--out", str(tmp_path / "o.jsonl"),
+                              "--base-url", "http://127.0.0.1:9/v1", "--style-profile", str(path)])
+        assert "could not read the style profile" in capsys.readouterr().err
+    assert not (tmp_path / "o.jsonl").exists()
+
+
 def test_load_env_reads_dotenv_without_overriding(monkeypatch, tmp_path):
     from opendetector.env import load_env
 

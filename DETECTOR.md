@@ -9,7 +9,9 @@ text ─► normalize ─► sentences ─► overlapping windows ─┬─► G
 
 - **Whole document, never truncated.** Text is cut into overlapping windows of whole sentences,
   and every window is scored. Sentences inherit the average score of the windows around them,
-  so no sentence is ever judged alone.
+  so no sentence is ever judged alone. The windows behind the highlights stay inside paragraphs
+  (very short paragraphs merge with a neighbour first), so a human paragraph next to an AI one
+  isn't coloured by it.
 - **Binoculars replaces raw perplexity.** Raw perplexity is the signal that flags simple prose
   and non-native writers. Binoculars normalizes it by how predictable *any* text looks to a
   second model.
@@ -19,7 +21,10 @@ text ─► normalize ─► sentences ─► overlapping windows ─┬─► G
   carries a finite-sample guarantee.
 - **Evasion tricks are removed and reported.** Zero-width characters and Cyrillic/Greek
   look-alike letters are stripped before scoring, and the app says how many it found.
-- **It abstains on short text** (under 150 words; Turnitin reportedly needs about 300).
+- **It abstains on short text and non-prose.** Under 150 words (Turnitin reportedly needs about
+  300) it gives no verdict. Poetry, lists and other line-by-line formats get none either: on RAID
+  this guard catches 84% of human poems and 92% of recipe-style lists, but only 0-2% of human
+  prose in other domains. Turnitin doesn't score poetry, scripts or lists either.
 
 The shipped `models/combiner.json` is fitted on a 1,400-text RAID sample. On RAID's held-out
 test split, it flags 1 of 125 human documents (0.8%) as Likely AI and catches 87% of AI texts.
@@ -27,6 +32,13 @@ The full numbers are in `eval/reports/latest.md`. Without a combiner file, the a
 **uncalibrated**: it averages the two classifiers and labels the result that way.
 
 ## Setup
+
+The Streamlit app accepts pasted text, `.docx` Word files, and `.pptx` PowerPoint files. Uploaded
+documents receive a full-document score, and each extracted paragraph, table row, or PowerPoint
+text box with at least 150 words of prose is also scored separately. Short sections are displayed with their
+source location but have no verdict. Optional reference documents can be uploaded and reviewed
+separately; their text is never mixed into the document being scored. The detector does not fill
+templates or rewrite content to target a score.
 
 ```bash
 uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
@@ -56,8 +68,12 @@ always land on the same side.
 Thresholds are cross-fitted. Each development text is scored by a model trained on the other
 four folds, and the 1% and 5% cut-offs come from those scores on every development human
 text, instead of from a small held-out slice. False-positive rates are reported per source
-document, because attacked copies of one text aren't independent errors. RAID's "human" texts
-under its paraphrase attack are left out: an AI paraphraser rewrote them.
+document, because attacked copies of one text aren't independent errors.
+
+Human writing rewritten by an AI paraphraser counts as **AI**: RAID's "human" texts under its
+paraphrase attack, and MAGE's `*_human_para` sources (MAGE labels those machine text too).
+Catching AI rewrites of human text is part of the job, and the report's `paraphrase` row shows
+how well the detector does at it.
 
 **1. Public benchmarks.**
 
@@ -100,6 +116,23 @@ Repeat the generation for other model families and for `--style humanize`, which
 you most need to resist. For other providers, pass `--base-url` and `--api-key-env` (OpenAI,
 OpenRouter, or a local LM Studio/Ollama server, which needs no key). Any of your own labelled
 data works too: a JSONL with `text` and `label` (`human`/`ai`).
+
+To test the detector against AI text that imitates one writer, add `--style-profile` with a
+JSON style profile. Its rules and measurements become the system prompt: sentence rhythm,
+vocabulary, banned phrases, and mechanical slips such as missing apostrophes. Keep profiles in
+`data/styles/`, which git ignores, because a profile of real writing is personal. The profile's
+file name joins the attack label (`plain+student_profile`), so the report gives it its own row:
+
+```bash
+.venv/bin/python -m eval.generate_essays --persuade persuade_2.0.csv --n 300 --style-profile data/styles/student_profile.json --out data/essays/gemini_profile.jsonl
+```
+
+The supplied writer profile is saved as `data/styles/pasted_style_profile.json`. To generate
+mirrors in that style, use:
+
+```bash
+.venv/bin/python -m eval.generate_essays --persuade persuade_2.0.csv --n 300 --style-profile data/styles/pasted_style_profile.json --out data/essays/gemini_pasted_style.jsonl
+```
 
 **API keys** live in a `.env` file in the project root, which git ignores. The scripts load it
 automatically, and a variable already exported in your shell takes priority:
@@ -213,9 +246,10 @@ The tests use stand-in engines, so they need no model downloads.
 
 - English only.
 - Sentence highlights reuse the document combiner on ~100-word windows. They show where to
-  look; only the document score is calibrated. A sentence on the edge of an AI-written passage
-  inherits some of its score, because its windows overlap the passage. Fixing this needs a
-  boundary-aware model (Phase 3).
+  look; only the document score is calibrated. Paragraph breaks are respected, but inside a
+  single paragraph that switches author mid-way, sentences near the switch still blend. Fixing
+  that needs a boundary-aware model (Phase 3).
+- AI paraphrasing of human writing is the weakest spot (see the `paraphrase` row in the report).
 - In testing on an 8 GB Mac, Streamlit crashed once (segfault) under heavy memory pressure
   with all three engines loaded. It didn't recur in later runs. If it happens, switch off
   Binoculars in the sidebar.

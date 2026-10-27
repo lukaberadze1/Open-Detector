@@ -7,3 +7,5 @@ sentencepiece
 protobuf
 numpy>=2
 streamlit>=1.40
+python-docx>=1.1
+python-pptx>=1.0

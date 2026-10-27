@@ -26,6 +26,8 @@ class DetectorConfig:
     doc_stride_words: int = 175
     local_window_words: int = 100
     local_stride_words: int = 50
+    # Local windows stay inside paragraphs; shorter paragraphs merge with a neighbour first.
+    local_min_paragraph_words: int = 60
 
     # Below this many words we return no verdict. Turnitin's reported minimum is ~300.
     min_words: int = 150

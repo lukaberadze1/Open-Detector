@@ -25,7 +25,7 @@ from opendetector.metrics import auroc, tpr_at_fpr, wilson_interval
 
 from .datasets import COLUMNS
 
-META = set(COLUMNS) | {"words"}
+META = set(COLUMNS) | {"words", "prose"}
 # Each engine's headline feature, oriented so that higher = more AI-like.
 SINGLE_ENGINE = {"GLYPH": ("glyph_mean", 1), "Desklib": ("desklib_mean", 1), "Binoculars": ("bino_doc", -1)}
 FOLDS = 5
@@ -94,9 +94,14 @@ def main() -> None:
                    ignore_index=True)
     short = df.words < args.min_words
     # RAID's "paraphrase" attack rewrites text with the DIPPER language model, so its "human"
-    # rows are machine-paraphrased; scoring them as human would count correct catches as errors.
+    # rows are AI rewrites of human writing. Count them as AI, as MAGE labels its own
+    # paraphrased human texts: catching AI rewrites of human text is part of the job.
     ai_rewritten = (df.dataset == "raid") & (df.label == 0) & (df.attack == "paraphrase")
-    df = df[~short & ~ai_rewritten].reset_index(drop=True)
+    df.loc[ai_rewritten, "label"] = 1
+    # Poetry, lists and similar formats: the deployed detector declines to score them. Rows from
+    # caches written before the flag existed (NaN) count as prose.
+    non_prose = df["prose"].eq(False) if "prose" in df else pd.Series(False, index=df.index)
+    df = df[~short & ~non_prose].reset_index(drop=True)
     features = [c for c in df.columns if c not in META and not df[c].isna().all()]
     if args.features:
         wanted = [f.strip() for f in args.features.split(",") if f.strip()]
@@ -157,7 +162,8 @@ def main() -> None:
     report = [
         f"# Evaluation report ({date.today().isoformat()})", "",
         f"Data: {', '.join(args.caches)}. Dropped {int(short.sum())} texts under {args.min_words} words and "
-        f"{int(ai_rewritten.sum())} RAID \"human\" texts rewritten by its AI paraphraser.",
+        f"{int((non_prose & ~short).sum())} that aren't prose (poetry, lists), which the detector doesn't score; "
+        f"counted {int(ai_rewritten.sum())} RAID \"human\" texts rewritten by its AI paraphraser as AI.",
         f"Split by source document: development {len(dev)} ({n_dev_human} human, thresholds set on "
         f"{FOLDS}-fold out-of-fold scores), test {len(test)} ({nh} human texts from {n_src} source documents, "
         f"{int(ai.sum())} AI).", "",

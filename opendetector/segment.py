@@ -9,8 +9,10 @@ of its tokenizer.
 
 from __future__ import annotations
 
+import bisect
 import itertools
 import re
+import statistics
 from dataclasses import dataclass
 
 _ABBREVIATIONS = {
@@ -22,6 +24,8 @@ _ABBREVIATIONS = {
 # Sentence-ending punctuation, optional closing quotes/brackets, then whitespace.
 _BOUNDARY_RE = re.compile(r"[.!?…]+[\"'”’)\]]*(?=\s)")
 _WORD_RE = re.compile(r"\S+")
+_PARAGRAPH_BREAK_RE = re.compile(r"\n[ \t]*\n")
+_LINE_END = (".", "!", "?", ":", ";", '"', "”", ")")
 
 
 @dataclass(frozen=True)
@@ -29,6 +33,7 @@ class Sentence:
     start: int
     end: int
     words: int
+    paragraph: int = 0  # index of the blank-line-separated paragraph it sits in
 
 
 @dataclass(frozen=True)
@@ -74,6 +79,7 @@ def split_sentences(text: str) -> list[Sentence]:
         cuts.append(match.end())
     cuts.append(len(text))
     bounds = sorted(set(cuts))
+    paragraph_breaks = [m.start() for m in _PARAGRAPH_BREAK_RE.finditer(text)]
 
     sentences = []
     for a, b in itertools.pairwise(bounds):
@@ -82,7 +88,8 @@ def split_sentences(text: str) -> list[Sentence]:
         while b > a and text[b - 1].isspace():
             b -= 1
         if b > a:
-            sentences.append(Sentence(a, b, len(_WORD_RE.findall(text[a:b]))))
+            paragraph = bisect.bisect_left(paragraph_breaks, a)
+            sentences.append(Sentence(a, b, len(_WORD_RE.findall(text[a:b])), paragraph))
     return sentences
 
 
@@ -90,17 +97,71 @@ def count_words(text: str) -> int:
     return len(_WORD_RE.findall(text))
 
 
-def sentence_windows(sentences: list[Sentence], target_words: int, stride_words: int) -> list[Window]:
+def _unwrap(lines: list[str]) -> list[str]:
+    """Rejoin hard-wrapped prose: a line that fills the width (45+ characters), doesn't end a
+    sentence, and is continued in lowercase. Verse lines are usually shorter than that, so
+    enjambed lowercase poems are not mistaken for wrapped prose."""
+    out: list[str] = []
+    previous = ""
+    for line in lines:
+        if out and len(previous) >= 45 and not out[-1].endswith(_LINE_END) and line[:1].islower():
+            out[-1] += " " + line
+        else:
+            out.append(line)
+        previous = line
+    return out
+
+
+def looks_like_prose(text: str, min_lines: int = 6, max_median_words: int = 10) -> bool:
+    """False for verse, lists and similar line-by-line formats, which the detector isn't built
+    for (Turnitin doesn't score poetry, scripts or lists either). On RAID's 150+ word texts this
+    flags 84% of human poems and 92% of human recipes, but 0-2% of human prose in other domains."""
+    lines = _unwrap([line.strip() for line in text.splitlines() if line.strip()])
+    if len(lines) < min_lines:
+        return True
+    return statistics.median(len(line.split()) for line in lines) > max_median_words
+
+
+def paragraph_blocks(sentences: list[Sentence], min_words: int) -> list[tuple[int, int]]:
+    """Sentence-index ranges (first, last) of paragraphs. A paragraph shorter than `min_words`
+    (a heading, a one-liner) is merged into the next one, or into the previous one at the
+    end, so every block is long enough to score reliably."""
+    blocks: list[tuple[int, int]] = []
+    start, words = 0, 0
+    for i, s in enumerate(sentences):
+        words += s.words
+        paragraph_ends = i + 1 == len(sentences) or sentences[i + 1].paragraph != s.paragraph
+        if paragraph_ends and words >= min_words:
+            blocks.append((start, i))
+            start, words = i + 1, 0
+    if start < len(sentences):  # a short tail joins the block before it
+        blocks[-1:] = [(blocks[-1][0] if blocks else start, len(sentences) - 1)]
+    return blocks
+
+
+def sentence_windows(sentences: list[Sentence], target_words: int, stride_words: int,
+                     min_paragraph_words: int | None = None) -> list[Window]:
     """Group consecutive sentences into windows of about `target_words`, advancing about
     `stride_words` each step. Every sentence is covered, and the final window is anchored
-    to the end of the text so the tail is scored with full context."""
-    n = len(sentences)
-    if n == 0:
+    to the end of the text so the tail is scored with full context.
+
+    With `min_paragraph_words`, windows never cross a paragraph break (see paragraph_blocks),
+    so a sentence isn't scored together with a differently written paragraph next to it."""
+    if min_paragraph_words is None:
+        return _windows(sentences, 0, len(sentences) - 1, target_words, stride_words)
+    return [w for first, last in paragraph_blocks(sentences, min_paragraph_words)
+            for w in _windows(sentences, first, last, target_words, stride_words)]
+
+
+def _windows(sentences: list[Sentence], lo: int, hi: int, target_words: int, stride_words: int) -> list[Window]:
+    """The sliding windows over sentences[lo..hi] (inclusive), with global indices."""
+    n = hi - lo + 1
+    if n <= 0:
         return []
-    counts = [max(s.words, 1) for s in sentences]
+    counts = [max(s.words, 1) for s in sentences[lo : hi + 1]]
 
     def make(i: int, j: int) -> Window:
-        return Window(i, j, sentences[i].start, sentences[j].end, sum(counts[i : j + 1]))
+        return Window(lo + i, lo + j, sentences[lo + i].start, sentences[lo + j].end, sum(counts[i : j + 1]))
 
     spans: list[tuple[int, int]] = []
     i = 0
