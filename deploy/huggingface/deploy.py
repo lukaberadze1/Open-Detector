@@ -4,9 +4,9 @@
     .venv/bin/python deploy/huggingface/deploy.py          # private Space <you>/open-detector
     .venv/bin/python deploy/huggingface/deploy.py --public --space you/name
 
-Uploads only what the app needs: app.py, the opendetector package, the fitted combiner, and
-the Dockerfile, README and requirements in this folder. No .env or API keys are uploaded; the
-app doesn't use any.
+Uploads only what the app needs: app.py, its ui package and theme without the Red team page, the
+opendetector package, the fitted combiner, and the Dockerfile, README and requirements in this
+folder. No .env or API keys are uploaded; the app doesn't use any.
 """
 
 from __future__ import annotations
@@ -29,6 +29,8 @@ def stage(dest: Path) -> None:
     for name in ("Dockerfile", "README.md", "requirements.txt"):
         shutil.copy(HERE / name, dest / name)
     shutil.copy(ROOT / "app.py", dest / "app.py")
+    shutil.copytree(ROOT / "ui", dest / "ui", ignore=shutil.ignore_patterns("__pycache__", "redteam.py"))
+    shutil.copytree(ROOT / ".streamlit", dest / ".streamlit", ignore=shutil.ignore_patterns("secrets.toml"))
     shutil.copytree(ROOT / "opendetector", dest / "opendetector", ignore=shutil.ignore_patterns("__pycache__"))
     (dest / "models").mkdir()
     shutil.copy(ROOT / "models" / "combiner.json", dest / "models" / "combiner.json")

@@ -42,21 +42,25 @@ model this code no longer uses.
 | `opendetector/env.py` | `load_env()`: loads the gitignored `.env` into the environment. Variables already set take priority. |
 | `opendetector/__main__.py` | Command line: `python -m opendetector essay.txt` prints a JSON report. Reads `.md`, `.docx` and `.pptx` like the app (whole document plus every 150-word section); `--answers-only` scores just a worksheet's answer cells; `--profile slim`. |
 | `.claude/skills/ai-detect/` | The `/ai-detect` Claude Code skill: scores a file or pasted text through the command line and summarizes the JSON with `summarize.py`. |
-| `app.py` | Streamlit UI. `OPENDETECTOR_PROFILE=slim` selects the slim profile. Shows only the engines the profile provides. |
+| `app.py` | Streamlit entrypoint: page config, logo, theme, the sidebar's detector build, and top navigation between the Detect and Red team pages. `OPENDETECTOR_PROFILE` pins a profile; `OPENDETECTOR_REDTEAM=off` leaves out the Red team page. |
+| `ui/models.py` | The loaded engines, shared by both pages, every session and batch worker threads. Holds one profile at a time (`get_detector`, `release`); defaults to slim on machines with 8 GB or less. |
+| `ui/detect.py` | The Detect page: pasted text or an uploaded `.md`/`.docx`/`.pptx` (with an answers-only toggle for worksheets), verdict card, engine readings, sentence highlights, section scores and calibration details. Shows only the engines the profile provides. |
+| `ui/redteam.py` | The Red team page: labelled AI samples from a prompt or an uploaded `.md`/`.docx`/`.pptx`, including batch regeneration of every answer box or Markdown block, with detector scores per block and for the whole document, an *Analyze in Detect* hand-off, and a Saved samples tab summarizing `data/essays/local_redteam.jsonl` by attack. |
+| `ui/components.py` | Shared UI: the verdict card and highlight HTML with their CSS, `keep()` for widget state that survives page switches, and `persistent_upload()`. |
+| `.streamlit/config.toml`, `ui/assets/` | The theme (Inter, indigo accent, light and dark palettes) and the logo. |
 | `models/combiner.json`, `models/combiner_slim.json` | Fitted combiners for the full and slim profiles. The app loads them automatically. |
 | `eval/datasets.py` | Loaders returning one column schema (`COLUMNS`): RAID, MAGE, PERSUADE and local JSONL/CSV. |
 | `eval/featurize.py` | Runs the engines over a dataset and caches document features to `eval/cache/*.jsonl` (gitignored). |
 | `eval/fit_combiner.py` | Splits data, fits the combiner, sets thresholds and writes the evaluation report. |
 | `eval/reports/latest.md`, `eval/reports/slim.md` | The current evaluation reports for the full and slim combiners. |
 | `eval/raid_submit.py` | Writes `predictions.json` for the public RAID leaderboard (about 672k texts; GPU job). |
-| `eval/generate_essays.py` | Red-team data: AI "mirror" essays on PERSUADE assignments, via Gemini's Interactions API (default) or any OpenAI-compatible API. When the hosted models fail it switches to a local Ollama model (`--local-fallback`, default `gemma3:4b`). `clean_essay` strips chat preambles and Markdown before saving. `--style-profile` sends a JSON style profile (kept in gitignored `data/styles/`) as the system prompt and adds its name to the attack label. Also holds the helpers `generator_app.py` uses: `generate_with_fallback`, `unload_local_model`, `local_model_problem`. |
-| `generator_app.py` | Streamlit red-team generator: labelled AI samples from a prompt or an uploaded `.md`/`.docx`/`.pptx`, including batch regeneration of every answer box or Markdown block, with detector scores per block and for the whole document. |
-| `eval/redteam_batch.py` | The generator's batches. `Checkpoint` saves each block to `data/essays/batches/` as it is generated and scored; `BatchWorker` runs a batch on its own thread, so reruns, reconnects and closed tabs don't end it. A stopped or failed batch is exported as it stands and resumes from the next block. |
+| `eval/generate_essays.py` | Red-team data: AI "mirror" essays on PERSUADE assignments, via Gemini's Interactions API (default) or any OpenAI-compatible API. When the hosted models fail it switches to a local Ollama model (`--local-fallback`, default `gemma3:4b`). `clean_essay` strips chat preambles and Markdown before saving. `--style-profile` sends a JSON style profile (kept in gitignored `data/styles/`) as the system prompt and adds its name to the attack label. Also holds the helpers the Red team page uses: `generate_with_fallback`, `unload_local_model`, `local_model_problem`. |
+| `eval/redteam_batch.py` | The Red team page's batches. `Checkpoint` saves each block to `data/essays/batches/` as it is generated and scored; `BatchWorker` runs a batch on its own thread, so reruns, reconnects and closed tabs don't end it. A stopped or failed batch is exported as it stands and resumes from the next block. |
 | `align_engine.py` | Red-team harness: Claude writes, the detector scores, and Claude rewrites flagged passages. Every draft is logged as labelled AI data (`--log`). |
 | `extract_baseline.py` | Stylometric profile of a writing sample (sentence-length burstiness, TTR/MATTR, punctuation, transitions) written to `style_profile.json`. |
 | `update_style_profile.py` | The living style profile `data/styles/alexandria_profile.json`, fed weekly from the writer's Obsidian vault (The Alexandria Archive, in iCloud). Keeps every paragraph ever seen in `data/styles/alexandria/corpus.jsonl` with its ISO week, skips callouts, review notes and pasted lines, and writes recency-weighted measurements (12-week half-life, floor 0.25) blended with the starting profile `data/styles/pasted_style_profile.json`. Snapshots the profile each week to `history/`; `--check` verifies it keeps the template's exact JSON format. |
 | `.claude/skills/style-profile/` | The `/style-profile` skill: runs the script, then revises the profile's prose in place so it stacks (keep, add with a week tag, revise only on 3+ weeks of evidence, never delete). The scheduled task `weekly-style-profile` runs it Sundays at 20:00. |
-| `deploy/streamlit_cloud/` | `streamlit_app.py` sets the slim profile and runs `app.py`; `requirements.txt` installs CPU-only PyTorch. |
+| `deploy/streamlit_cloud/` | `streamlit_app.py` pins the slim profile, turns off the Red team page and runs `app.py`; `requirements.txt` installs CPU-only PyTorch. |
 | `deploy/huggingface/` | Docker Space for the full profile with `deploy.py`. Blocked: Hugging Face now needs PRO for Docker Spaces. |
 | `tests/` | pytest suite with stand-in engines: no model downloads, about 10–25 s. |
 | `DETECTOR.md` | User guide: setup, evaluation workflow, deployment, red-teaming, known limits. |
@@ -180,10 +184,15 @@ To regenerate both shipped combiners after the caches change:
 - **Gemini quota.** The free tier allows very few requests on `gemini-3.8-flash`, so
   `eval/generate_essays.py` switches to `gemini-3.5-flash-lite` on a spent quota, and both
   generators fall back to `gemma3:4b` on Ollama after that. Ollama must be running (`ollama serve`)
-  with the model pulled; the generator app's sidebar says when it isn't.
+  with the model pulled; the Red team page's sidebar says when it isn't.
 - **Memory with a local model.** On the 8 GB Mac, `gemma3:4b` (about 3 GB) and the full detector
-  don't fit together. The generator app generates every block before scoring any, unloads the local
-  model in between, and scores with the slim detector by default on machines with 8 GB or less.
+  don't fit together. The Red team page generates every block before scoring any and unloads the
+  local model in between. The app starts on the slim build on machines with 8 GB or less, and both
+  pages share one loaded profile.
+- **Widget state across pages.** Streamlit drops the state of widgets the current page doesn't
+  draw. Widgets keyed `keep:…` survive a page switch because `app.py` writes those keys back on
+  every run; give them their starting value with `ui.components.keep()`, never a `value=` argument.
+  File uploaders can't be kept that way, so pages use `persistent_upload()`.
 - **Unicode in source is deliberate.** Cyrillic and Greek look-alike letters and curly quotes in
   `opendetector/normalize.py`, `opendetector/segment.py` and some tests are intentional;
   `ruff.toml` exempts those files.
@@ -204,17 +213,13 @@ Each of these is one command.
   ```bash
   .venv/bin/ruff check
   ```
-- Run the full app:
+- Run the app (Detect and Red team pages):
   ```bash
   .venv/bin/streamlit run app.py
   ```
-- Run the slim app:
+- Run it as the public deploy does, slim and detector-only:
   ```bash
-  OPENDETECTOR_PROFILE=slim .venv/bin/streamlit run app.py
-  ```
-- Run the red-team generator app:
-  ```bash
-  .venv/bin/streamlit run generator_app.py
+  OPENDETECTOR_PROFILE=slim OPENDETECTOR_REDTEAM=off .venv/bin/streamlit run app.py
   ```
 - Score one file from the command line (`.txt`, `.md`, `.docx` or `.pptx`; add `--answers-only`
   for a worksheet, or use `/ai-detect <file>` in Claude Code):
@@ -234,7 +239,7 @@ Each of these is one command.
 ## Scope
 
 This project builds and evaluates a detector. The generation tools (`align_engine.py`,
-`eval/generate_essays.py`, `generator_app.py`) exist to produce adversarial test data, and they
+`eval/generate_essays.py`, `ui/redteam.py`) exist to produce adversarial test data, and they
 log what they write as labelled AI text. Keep them that way.
 
 ## Known limits and roadmap

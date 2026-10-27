@@ -33,13 +33,6 @@ The full numbers are in `eval/reports/latest.md`. Without a combiner file, the a
 
 ## Setup
 
-The Streamlit app accepts pasted text, `.docx` Word files, and `.pptx` PowerPoint files. Uploaded
-documents receive a full-document score, and each extracted paragraph, table row, or PowerPoint
-text box with at least 150 words of prose is also scored separately. Short sections are displayed with their
-source location but have no verdict. Optional reference documents can be uploaded and reviewed
-separately; their text is never mixed into the document being scored. The detector does not fill
-templates or rewrite content to target a score.
-
 ```bash
 uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
 ```
@@ -47,6 +40,43 @@ uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requi
 ```bash
 .venv/bin/streamlit run app.py
 ```
+
+The app has two pages, linked from the bar at the top. The sidebar picks the detector build both
+pages use: **Full** (all three engines, about 3.5 GB) or **Slim** (Desklib alone on the CPU, about
+1.5 GB). Machines with 8 GB of RAM or less start on Slim, which scores as well as Full on the
+held-out test. Inputs and results stay put when you switch pages.
+
+**Detect** accepts pasted text, `.md` Markdown files, `.docx` Word files and `.pptx` PowerPoint
+files. The result shows the verdict and AI likelihood against the two cut-offs, each engine's
+reading, sentence highlights, a sentence table and the calibration details. An uploaded document
+gets a full-document score, and each extracted paragraph, table cell or text box with at least 150
+words of prose is also scored on its own; shorter sections are listed without a verdict. For a
+worksheet, a toggle scores just the filled-in answer cells of its question/answer tables.
+Reference documents can be uploaded alongside to read; their text is never scored. The detector
+does not fill templates or rewrite content to target a score.
+
+**Red team** generates labelled AI samples to test the detector with. Enter a test prompt or upload
+a Markdown, Word or PowerPoint source, then pick a task: a new sample, a rewrite of one section, a
+new answer in every paired left-question/right-answer box (Markdown tables with question and answer
+columns included), or a rewrite of every Markdown text block that keeps headings and question-only
+blocks fixed. Document tasks export a separate Markdown/DOCX/PPTX copy that keeps the uploaded
+structure; the original is left unchanged. The two batch tasks run in the background, save each
+block as it is written, and resume where they stopped.
+
+Each sample can be scored once with the detector, and its probability, verdict, calibration state
+and detector build are recorded next to `label: 1` in `data/essays/local_redteam.jsonl`. These
+scores help measure false negatives; the generator does not revise text based on a score. The
+latest sample downloads as a `.txt` file, and it and any document copy are also saved under
+`data/essays/exports/` with an `AI_REDTEAM_` filename. **Analyze in Detect** sends it to the Detect
+page for a full analysis with highlights. The **Saved samples** tab totals every recorded sample:
+how many the detector scored, and how often each attack passed as human.
+
+The page uses Gemini's Interactions API with the key in `GEMINI_API_KEY` (the project `.env`), and
+tries a configurable fallback list after quota or temporary service errors. Its defaults include
+`gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.1-flash-lite`, and `gemini-3-flash-preview`.
+The older 2.5 Flash models are omitted because Google restricts them for new users. After those it
+falls back to a local Ollama model (`gemma3:4b` by default), and the sidebar says whether that can
+run. The public deploys leave the page out with `OPENDETECTOR_REDTEAM=off`.
 
 ```bash
 .venv/bin/python -m opendetector essay.txt
@@ -174,8 +204,10 @@ ensemble. The **slim** profile runs Desklib alone, the strongest single engine, 
 the CPU. It peaks around 1.5 GB, its scores match the full build's Desklib scores (correlation
 1.000), and it has its own combiner, `models/combiner_slim.json`, so its verdicts are still
 calibrated. The same `app.py` runs both builds; `deploy/streamlit_cloud/streamlit_app.py` just
-selects the slim profile. (bfloat16 and int8 were measured and rejected: bfloat16 is emulated on
-most CPUs and took minutes per essay, and int8 cut Desklib's AUROC from 0.998 to 0.934.)
+pins the slim profile and leaves out the Red team page. The theme comes from
+`.streamlit/config.toml` at the repository root. (bfloat16 and int8 were measured and rejected:
+bfloat16 is emulated on most CPUs and took minutes per essay, and int8 cut Desklib's AUROC from
+0.998 to 0.934.)
 
 1. Sign in at [share.streamlit.io](https://share.streamlit.io) with GitHub, and allow access to
    private repositories if asked.
@@ -208,9 +240,10 @@ precision. Sign in once with a **write** token from huggingface.co/settings/toke
 .venv/bin/python deploy/huggingface/deploy.py
 ```
 
-This creates a private Space, `<your-username>/open-detector`, and uploads only `app.py`, the
-`opendetector` package, the fitted combiner and the files in `deploy/huggingface/`. No `.env` or
-API keys are uploaded. Run the same command again to redeploy after changes. Add `--public` for a
+This creates a private Space, `<your-username>/open-detector`, and uploads only `app.py` with its
+`ui` package and theme (without the Red team page), the `opendetector` package, the fitted
+combiner and the files in `deploy/huggingface/`. No `.env` or API keys are uploaded. Run the same
+command again to redeploy after changes. Add `--public` for a
 public Space, or change its visibility later in the Space's settings. The first analysis after a
 restart downloads about 4 GB of models and takes a few minutes.
 

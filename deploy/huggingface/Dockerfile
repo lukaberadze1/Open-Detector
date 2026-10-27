@@ -6,7 +6,8 @@ USER user
 ENV HOME=/home/user \
     PATH=/home/user/.local/bin:$PATH \
     HF_HOME=/home/user/.cache/huggingface \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    OPENDETECTOR_REDTEAM=off
 WORKDIR /home/user/app
 
 # CPU-only PyTorch: Spaces' free hardware has no GPU, and the CPU wheels are much smaller.

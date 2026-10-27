@@ -1,4 +1,5 @@
-"""Streamlit Community Cloud entrypoint: the slim detector (Desklib alone, float32 on the CPU).
+"""Streamlit Community Cloud entrypoint: the slim detector (Desklib alone, float32 on the CPU),
+without the Red team page, which needs local data and API keys.
 
 At share.streamlit.io, create an app from this repository with:
     branch:          feat/phase1-ensemble (or main once merged)
@@ -16,4 +17,5 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 os.environ["OPENDETECTOR_PROFILE"] = "slim"
+os.environ["OPENDETECTOR_REDTEAM"] = "off"
 runpy.run_path(str(ROOT / "app.py"), run_name="__main__")
