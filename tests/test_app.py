@@ -1,11 +1,14 @@
 """The Streamlit app run headless: stand-in engines (no model downloads) against the shipped
 combiners, and a stand-in text model on the Red team page writing to a temporary folder."""
 
+import io
 import json
+import time
 from pathlib import Path
 
 import numpy as np
 import pytest
+from docx import Document
 from streamlit.testing.v1 import AppTest
 
 APP = str(Path(__file__).resolve().parent.parent / "app.py")
@@ -106,7 +109,9 @@ def red_team_page():
     redteam.render()
 
 
-def test_red_team_sample_is_recorded_as_ai_with_its_score(monkeypatch, tmp_path):
+@pytest.fixture
+def prompts(monkeypatch, tmp_path):
+    """The Red team page writing to tmp_path, with a stand-in text model. Yields the prompts it gets."""
     from ui import redteam
 
     for name, path in (("ROOT", tmp_path), ("OUTPUT_PATH", tmp_path / "local_redteam.jsonl"),
@@ -115,9 +120,18 @@ def test_red_team_sample_is_recorded_as_ai_with_its_score(monkeypatch, tmp_path)
         monkeypatch.setattr(redteam, name, path)
     monkeypatch.setattr(redteam, "load_env", lambda: None)  # never read the real .env
     monkeypatch.setattr(redteam, "local_fallback_problem", lambda url, model: None)
-    monkeypatch.setattr(redteam, "generate_with_fallback", lambda *args, **kwargs: (AI * 30, "stub-model", []))
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    received = []
 
+    def write(base_url, api_key, models, prompt, *args):
+        received.append(prompt)
+        return AI * 15, "stub-model", []
+
+    monkeypatch.setattr(redteam, "generate_with_fallback", write)
+    return received
+
+
+def test_red_team_sample_is_recorded_as_ai_with_its_score(prompts, tmp_path):
     at = AppTest.from_function(red_team_page, default_timeout=60)
     at.session_state["profile"] = "slim"
     at.run()
@@ -138,3 +152,55 @@ def test_red_team_sample_is_recorded_as_ai_with_its_score(monkeypatch, tmp_path)
     assert rows[0]["ai_probability"] > 0.9
     assert len(list((tmp_path / "exports").glob("AI_REDTEAM_prompt_*.txt"))) == 1
     assert at.session_state["last_generated_result"]["detect_text"] == rows[0]["text"]
+
+
+def essay_docx():
+    document = Document()
+    document.add_heading("Keeping bees", level=1)
+    document.add_paragraph("Bees need a dry hive and a nearby source of water.")
+    document.add_paragraph("What do bees eat?")
+    document.add_paragraph("They live on nectar and pollen from flowers.")
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def test_red_team_rewrites_every_block_of_a_word_document(prompts, tmp_path):
+    from ui.components import Upload
+    from ui.redteam import NOTICE
+
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.session_state["upload:redteam:file"] = Upload("bees.docx", essay_docx())
+    at.session_state["keep:redteam:task"] = "blocks"
+    at.run()
+    assert not at.exception, at.exception
+    assert any("Fill answer boxes** isn't available for this file: found no question/answer pairs" in caption.value
+               for caption in at.caption)
+
+    button(at, "Rewrite 2 blocks").click()
+    at.run()
+    for _ in range(100):  # the batch runs on a worker thread; each run checks whether it has ended
+        if NOTICE in at.session_state:
+            break
+        time.sleep(0.1)
+        at.run()
+    assert not at.exception, at.exception
+    assert at.session_state[NOTICE] == ("success", "All 2 blocks are done and exported below.")
+
+    assert [prompt.split(". ")[0] for prompt in prompts] == [
+        "Rewrite only the existing text block labelled Paragraph 2",
+        "Rewrite only the existing text block labelled Paragraph 4",
+    ]
+    (exported,) = (tmp_path / "exports").glob("AI_REDTEAM_full_document_*.docx")
+    assert [p.text for p in Document(exported).paragraphs] == [
+        "Keeping bees", (AI * 15).strip(), "What do bees eat?", (AI * 15).strip(),
+    ]
+    rows = [json.loads(line) for line in (tmp_path / "local_redteam.jsonl").read_text().splitlines()]
+    assert [(row["domain"], row["attack"], row["label"]) for row in rows] == [
+        ("document_text_block", "full_document+plain", 1),
+        ("document_text_block", "full_document+plain", 1),
+        ("document_combined", "full_document+plain", 1),
+    ]
+    assert all(row["verdict"] == "likely_ai" for row in rows)
+    assert not list((tmp_path / "batches").glob("*.json")), "a finished batch's checkpoint is discarded"

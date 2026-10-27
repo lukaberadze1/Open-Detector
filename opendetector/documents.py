@@ -167,6 +167,50 @@ def extract_answer_slots(filename: str, data: bytes) -> list[AnswerSlot]:
     raise ValueError("Answer box detection supports .md, .docx, and .pptx files.")
 
 
+def rewritable_blocks(filename: str, data: bytes) -> list[DocumentSection]:
+    """The prose blocks a whole-document rewrite changes: Markdown text blocks, Word body paragraphs
+    and PowerPoint text boxes. Headings, titles, questions, tables and PowerPoint question/answer box
+    pairs stay as they are; answer boxes have their own task."""
+    suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    sections = extract_document(filename, data)
+    kept, questions = set(), set()
+    if suffix == "md":
+        kind = "markdown_block"
+    elif suffix == "docx":
+        from docx import Document
+
+        kind = "docx_paragraph"
+        for index, paragraph in enumerate(Document(BytesIO(data)).paragraphs):
+            style = (paragraph.style.name if paragraph.style is not None else "").casefold()
+            if style.startswith("heading") or style in ("title", "subtitle"):
+                kept.add((index,))
+    else:
+        from pptx import Presentation
+        from pptx.enum.shapes import PP_PLACEHOLDER
+
+        kind = "pptx_shape"
+        titles = {PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE, PP_PLACEHOLDER.SUBTITLE,
+                  PP_PLACEHOLDER.VERTICAL_TITLE, PP_PLACEHOLDER.FOOTER, PP_PLACEHOLDER.SLIDE_NUMBER,
+                  PP_PLACEHOLDER.DATE}
+        for slide_index, slide in enumerate(Presentation(BytesIO(data)).slides):
+            for shape_index, shape in enumerate(slide.shapes):
+                if shape.is_placeholder and shape.placeholder_format.type in titles:
+                    kept.add((slide_index, shape_index))
+        for slot in extract_answer_slots(filename, data):
+            questions.add(slot.question)
+            if slot.target.kind == kind:
+                kept.add(slot.target.locator)
+    return [
+        section
+        for section in sections
+        if section.kind == kind
+        and section.locator not in kept
+        and section.text not in questions
+        and "?" not in section.text
+        and not section.text.strip().casefold().startswith(("question:", "prompt:"))
+    ]
+
+
 def _markdown_cell_spans(line: str) -> list[tuple[int, int, str]]:
     """Return cell content spans for a pipe-delimited Markdown table row."""
     pipe_positions = [match.start() for match in re.finditer(r"(?<!\\)\|", line)]

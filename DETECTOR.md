@@ -58,10 +58,11 @@ does not fill templates or rewrite content to target a score.
 **Red team** generates labelled AI samples to test the detector with. Enter a test prompt or upload
 a Markdown, Word or PowerPoint source, then pick a task: a new sample, a rewrite of one section, a
 new answer in every paired left-question/right-answer box (Markdown tables with question and answer
-columns included), or a rewrite of every Markdown text block that keeps headings and question-only
-blocks fixed. Document tasks export a separate Markdown/DOCX/PPTX copy that keeps the uploaded
-structure; the original is left unchanged. The two batch tasks run in the background, save each
-block as it is written, and resume where they stopped.
+columns included), or a rewrite of every text block, which keeps headings, titles, questions and
+tables fixed. If a file doesn't support a task, the page says why. Document tasks export a
+separate Markdown/DOCX/PPTX copy that keeps the uploaded structure; the original is left unchanged.
+The two batch tasks run in the background, save each block as it is written, and resume where they
+stopped.
 
 Each sample can be scored once with the detector, and its probability, verdict, calibration state
 and detector build are recorded next to `label: 1` in `data/essays/local_redteam.jsonl`. These

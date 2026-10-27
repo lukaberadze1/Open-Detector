@@ -40,6 +40,7 @@ from opendetector.documents import (
     extract_answer_slots,
     extract_document,
     replace_document_section,
+    rewritable_blocks,
 )
 from opendetector.env import load_env
 from opendetector.segment import count_words
@@ -71,8 +72,8 @@ TASKS = {
                                      "rest of it as context."),
     "answers": ("Fill answer boxes", "Write a new answer in every right-hand answer box of the document's "
                                      "question/answer tables or slides, then export a filled copy."),
-    "blocks": ("Rewrite every block", "Rewrite each Markdown text block in turn, keeping headings and question "
-                                      "blocks, then export the rewritten file."),
+    "blocks": ("Rewrite every block", "Rewrite each text block in turn, keeping headings, titles, questions and "
+                                      "tables, then export the rewritten file."),
 }
 RESULT = "last_generated_result"
 NOTICE = "redteam:notice"  # how the last batch ended, shown until the next run starts
@@ -124,11 +125,11 @@ class Plan:
     upload: Upload | None
     sections: list[DocumentSection]
     answer_slots: list[AnswerSlot]
-    markdown_targets: list[DocumentSection]
+    blocks: list[DocumentSection]
     task: str
     profile: str
     fill_answer_boxes: bool = False
-    rewrite_all_markdown: bool = False
+    rewrite_all_blocks: bool = False
     target_section: DocumentSection | None = None
     context_sections: list[DocumentSection] = field(default_factory=list)
     export_document: bool = False
@@ -141,15 +142,21 @@ class Plan:
 
     @property
     def batch(self) -> bool:
-        return self.fill_answer_boxes or self.rewrite_all_markdown
+        return self.fill_answer_boxes or self.rewrite_all_blocks
 
     @property
     def style_name(self) -> str:
         return STYLE_PATH.stem if self.use_profile else "plain"
 
     @property
+    def markdown(self) -> bool:
+        return self.upload is not None and self.upload.suffix == ".md"
+
+    @property
     def mode_tag(self) -> str:
-        return "full_markdown" if self.rewrite_all_markdown else "filled_answers"
+        if self.rewrite_all_blocks:
+            return "full_markdown" if self.markdown else "full_document"
+        return "filled_answers"
 
     @property
     def source_hash(self) -> str:
@@ -235,11 +242,12 @@ def _setup(profile: str) -> Plan:
         help="A Markdown, Word or PowerPoint file. Its text is context for the sample, and it lets you rewrite "
              "its sections or fill its answer boxes. The file itself is never changed.",
     )
-    sections, slots = [], []
+    sections, slots, blocks = [], [], []
     if upload:
         try:
             sections = extract_document(upload.name, upload.data)
             slots = extract_answer_slots(upload.name, upload.data)
+            blocks = rewritable_blocks(upload.name, upload.data)
         except (ImportError, ValueError) as exc:
             st.error(f"Could not read {upload.name}: {exc}")
             upload = None
@@ -248,25 +256,23 @@ def _setup(profile: str) -> Plan:
                 for section in sections:
                     st.markdown(f"**{section.label}**")
                     st.text(section.text)
-    markdown_targets = [
-        section
-        for section in sections
-        if section.kind == "markdown_block"
-        and "?" not in section.text
-        and not section.text.strip().casefold().startswith(("question:", "prompt:"))
-    ] if upload and upload.suffix == ".md" else []
-    plan = Plan(prompt, upload, sections, slots, markdown_targets, "sample", profile)
+    plan = Plan(prompt, upload, sections, slots, blocks, "sample", profile)
 
     st.markdown("##### :material/task_alt: Task")
-    options = ["sample"] + (["section"] if sections else []) + (["answers"] if slots else []) \
-        + (["blocks"] if markdown_targets else [])
+    unavailable = _unavailable_tasks(upload, sections, slots, blocks)
+    options = [task for task in TASKS if task not in unavailable]
     task_key = keep("keep:redteam:task", "sample")
     if st.session_state[task_key] not in options:
         st.session_state[task_key] = "sample"
     plan.task = st.segmented_control("Task", options, format_func=lambda task: TASKS[task][0], key=task_key,
                                      required=True, label_visibility="collapsed")
-    st.caption(TASKS[plan.task][1] + ("" if upload else " Upload a document to rewrite its sections or fill its "
-                                                         "answer boxes."))
+    st.caption(TASKS[plan.task][1])
+    if not upload:
+        st.caption(":material/upload_file: Upload a Markdown, Word or PowerPoint document to rewrite a section, "
+                   "fill its answer boxes or rewrite every block.")
+    else:
+        for task, reason in unavailable.items():
+            st.caption(f":material/block: **{TASKS[task][0]}** isn't available for this file: {reason}")
 
     plan.context_sections = sections
     if plan.task == "section":
@@ -295,12 +301,16 @@ def _setup(profile: str) -> Plan:
                 st.write(f"Question: {slot.question}")
                 st.write(f"Current answer: {slot.previous_answer or '(blank)'}")
     elif plan.task == "blocks":
-        plan.rewrite_all_markdown = plan.export_document = True
+        plan.rewrite_all_blocks = plan.export_document = True
         if slots:
-            plan.fill_answer_boxes = st.toggle(f"Also fill the {len(slots)} answer cells in its tables",
+            plan.fill_answer_boxes = st.toggle(f"Also fill the {len(slots)} answer boxes",
                                                key=keep("keep:redteam:also_answers", False))
-        st.caption(f"Rewrites {len(markdown_targets)} text blocks, one model call each. Headings, question blocks "
-                   "and table cells stay as they are" + (" unless you fill the answer cells too." if slots else "."))
+        st.caption(f"Rewrites {len(blocks)} text blocks, one model call each. Headings, titles, questions and "
+                   "tables stay as they are" + (" unless you fill the answer boxes too." if slots else "."))
+        with st.expander(f"Blocks to rewrite · {len(blocks)}", icon=":material/segment:"):
+            for block in blocks:
+                st.markdown(f"**{block.label}**")
+                st.text(block.text if len(block.text) <= 300 else block.text[:300] + "…")
 
     st.markdown("##### :material/tune: Length, style and scoring")
     if plan.batch:
@@ -330,6 +340,26 @@ def _setup(profile: str) -> Plan:
     return plan
 
 
+def _unavailable_tasks(upload: Upload | None, sections: list, slots: list, blocks: list) -> dict[str, str]:
+    """The document tasks the uploaded file doesn't support, with the reason for each. Without a file,
+    none of them is available."""
+    if not upload:
+        return {"section": "", "answers": "", "blocks": ""}
+    reasons = {}
+    if not sections:
+        reasons["section"] = f"found no text in {upload.name}."
+    if not slots:
+        reasons["answers"] = (
+            "found no question/answer pairs. It looks for tables with the question in the left column and the "
+            "answer in the right one"
+            + (", or a text box on the left half of a slide with one level with it on the right half."
+               if upload.suffix == ".pptx" else ".")
+        )
+    if not blocks:
+        reasons["blocks"] = "found no prose to rewrite outside headings, titles, questions and tables."
+    return reasons
+
+
 def _problem(plan: Plan, conn: Connection) -> str | None:
     """Why the plan can't run, if it can't."""
     if not plan.prompt.strip() and not plan.sections:
@@ -357,16 +387,16 @@ def _batch_jobs(plan: Plan) -> list[dict]:
             }
             for slot in plan.answer_slots
         )
-    if plan.rewrite_all_markdown:
+    if plan.rewrite_all_blocks:
         jobs.extend(
             {
-                "kind": "markdown_block",
+                "kind": "markdown_block" if plan.markdown else "text_block",
                 "label": section.label,
                 "question": "",
                 "previous": section.text,
                 "target": section,
             }
-            for section in plan.markdown_targets
+            for section in plan.blocks
         )
     # Labels can repeat (two shapes with the same name), so a block's position is part of its key.
     for index, job in enumerate(jobs, 1):
@@ -376,7 +406,7 @@ def _batch_jobs(plan: Plan) -> list[dict]:
 
 def _checkpoint_path(plan: Plan) -> Path:
     return BATCH_DIR / (
-        batch_key(plan.source_hash, plan.fill_answer_boxes, plan.rewrite_all_markdown, plan.prompt.strip(),
+        batch_key(plan.source_hash, plan.fill_answer_boxes, plan.rewrite_all_blocks, plan.prompt.strip(),
                   plan.use_profile, plan.answer_words, plan.match_existing_lengths) + ".json"
     )
 
@@ -424,7 +454,8 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
             "text": item["text"],
             "label": 1,
             "dataset": "local_redteam",
-            "domain": "document_answer_box" if item["kind"] == "answer_box" else "markdown_text_block",
+            "domain": {"answer_box": "document_answer_box", "markdown_block": "markdown_text_block"}.get(
+                item["kind"], "document_text_block"),
             "model": item["model"],
             "attack": attack,
             "group": "ai",
@@ -476,7 +507,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
         f"Regenerated blocks: {len(items)} of {len(jobs)}\n\n" + "\n\n".join(answers_text) + "\n"
     )
     (EXPORT_DIR / text_name).write_text(text_attachment, encoding="utf-8")
-    noun = "Markdown text blocks" if plan.rewrite_all_markdown else "answer boxes"
+    noun = ("Markdown text blocks" if plan.markdown else "text blocks") if plan.rewrite_all_blocks else "answer boxes"
     st.session_state[RESULT] = {
         "essay": "\n\n".join(answers_text),
         "detect_text": "\n\n".join(item["text"] for item in items),
@@ -499,7 +530,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
         "document_filename": document_name,
         "document_path": document_path,
         "batch_summary": (
-            f"{'Regenerated' if plan.rewrite_all_markdown else 'Filled'} {len(items)} of {len(jobs)} {noun}"
+            f"{'Regenerated' if plan.rewrite_all_blocks else 'Filled'} {len(items)} of {len(jobs)} {noun}"
             + (" so far" if partial else "")
         ),
         "batch_answers": [
@@ -607,7 +638,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         if job["kind"] == "answer_box":
             voice_samples.extend(slot.previous_answer for slot in plan.answer_slots if slot.previous_answer)
         else:
-            voice_samples.extend(section.text for section in plan.markdown_targets if section.text != job["previous"])
+            voice_samples.extend(section.text for section in plan.blocks if section.text != job["previous"])
         voice_rule = person_instruction(*voice_samples)
         target_words = (
             count_words(job["previous"])
@@ -630,7 +661,8 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
             )
         else:
             generation_prompt = (
-                f"Rewrite only the existing Markdown text block labelled {job['label']}. "
+                f"Rewrite only the existing {'Markdown text' if job['kind'] == 'markdown_block' else 'text'} block "
+                f"labelled {job['label']}. "
                 f"Aim for about {target_words} words. "
                 f"{voice_rule} "
                 "Keep its meaning and role in the document, using the surrounding document as context. "
@@ -1027,7 +1059,7 @@ def render() -> None:
             if checkpoint:
                 saved = len(checkpoint.generated([job["key"] for job in jobs]))
                 label, icon = f"Resume · {saved} of {len(jobs)} blocks saved", ":material/play_arrow:"
-            elif plan.rewrite_all_markdown:
+            elif plan.rewrite_all_blocks:
                 label, icon = f"Rewrite {len(jobs)} blocks", ":material/auto_awesome:"
             elif plan.fill_answer_boxes:
                 label, icon = f"Fill {len(jobs)} answer boxes", ":material/auto_awesome:"

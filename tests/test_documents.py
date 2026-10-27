@@ -6,7 +6,7 @@ from docx import Document
 from pptx import Presentation
 from pptx.util import Inches
 
-from opendetector.documents import DocumentSection, extract_document
+from opendetector.documents import DocumentSection, extract_document, rewritable_blocks
 
 
 def docx_bytes():
@@ -63,3 +63,44 @@ def test_damaged_or_renamed_files_raise_value_error():
     for name, data in [("a.docx", b"not a zip"), ("a.pptx", other_zip.getvalue()), ("a.pptx", docx_bytes())]:
         with pytest.raises(ValueError, match=r"isn't a valid \.(docx|pptx) file"):
             extract_document(name, data)
+
+
+def worksheet_docx_bytes():
+    document = Document()
+    document.add_heading("Keeping bees", level=1)
+    document.add_paragraph("Bees need a dry hive and a nearby source of water.")
+    document.add_paragraph("What do bees eat?")
+    document.add_paragraph("They live on nectar and pollen from flowers.")
+    table = document.add_table(rows=1, cols=2)
+    table.cell(0, 0).text, table.cell(0, 1).text = "Why keep bees", "For the honey."
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def test_rewriting_a_word_document_skips_headings_questions_and_tables():
+    assert [block.text for block in rewritable_blocks("w.docx", worksheet_docx_bytes())] == [
+        "Bees need a dry hive and a nearby source of water.",
+        "They live on nectar and pollen from flowers.",
+    ]
+
+
+def test_rewriting_slides_skips_titles_and_question_answer_box_pairs():
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[5])  # title only
+    slide.shapes.title.text = "Keeping bees"
+    for left, top, width, text in ((0.5, 1.5, 9, "A hive needs shelter from the wind."),
+                                   (0.5, 5.5, 4, "Describe the hive"), (5.5, 5.5, 4, "A wooden box.")):
+        slide.shapes.add_textbox(Inches(left), Inches(top), Inches(width), Inches(1)).text = text
+    buffer = io.BytesIO()
+    presentation.save(buffer)
+    assert [block.text for block in rewritable_blocks("deck.pptx", buffer.getvalue())] == [
+        "A hive needs shelter from the wind.",
+    ]
+
+
+def test_rewriting_markdown_keeps_headings_questions_and_tables():
+    text = "# Bees\n\nBees make honey.\n\nQuestion: why?\n\n| a | b |\n|---|---|\n| c | d |\n\nThey sting.\n"
+    assert [block.text for block in rewritable_blocks("notes.md", text.encode())] == [
+        "Bees make honey.", "They sting.",
+    ]
