@@ -133,3 +133,14 @@ def test_the_standalone_executable_compiles(tmp_path):
                        prefix / "lib" / f"libpython{version}.dylib", prefix / "include" / f"python{version}", out)
     assert os.access(out, os.X_OK)
     assert b"Library/Application Support/Open Detector" in out.read_bytes()
+
+
+def test_the_standalone_app_leaves_out_headers_and_test_suites(tmp_path):
+    for name in ("torch/include/ATen/core.h", "torch/share/cmake/Torch.cmake", "torch/fx/passes/tests/test_x.py",
+                 "sympy/core/tests/test_basic.py", "sympy/core/tests/deeper/tests/x.py", "pandas/tests/test_x.py",
+                 "torch/__init__.py", "torch/testing/__init__.py", "sympy/core/basic.py", "pkg/tests.py"):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("")
+    build_app.prune_packages(tmp_path)
+    left = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*") if path.is_file())
+    assert left == ["pkg/tests.py", "sympy/core/basic.py", "torch/__init__.py", "torch/testing/__init__.py"]

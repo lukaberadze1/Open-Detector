@@ -224,6 +224,7 @@ def bundle_python(root: Path, resources: Path, out: Path) -> None:
                                        capture_output=True, text=True, check=True).stdout)
         subprocess.run([uv, "pip", "install", "--python", str(python), "--link-mode", "copy", "--no-progress",
                         "-r", str(root / "deploy/macos/requirements.txt"), "-c", str(pins)], check=True)
+    prune_packages(lib / f"python{version}" / "site-packages")
     # Byte-compile everything now, checked by hash rather than file times, since the app can't write
     # its own bundle. Files that don't compile (test data shipped in some packages) are never imported.
     subprocess.run([str(python), "-m", "compileall", "-q", "-j", "0", "--invalidation-mode", "unchecked-hash",
@@ -236,6 +237,17 @@ def bundle_python(root: Path, resources: Path, out: Path) -> None:
     # The executable is the app's Python from here on; the copy's own programs and headers can go.
     shutil.rmtree(home / "bin")
     shutil.rmtree(home / "include")
+
+
+def prune_packages(packages: Path) -> None:
+    """Remove what the app never loads from the installed packages: torch's C++ headers and CMake files,
+    which only build extensions, and every package's own test suite. That is about 15,000 files and
+    160 MB, and macOS checks every file of a downloaded app the first time it opens."""
+    unused = [packages / "torch/include", packages / "torch/share",
+              *(path for path in packages.rglob("tests") if path.is_dir())]
+    for path in sorted(unused, key=lambda path: len(path.parts)):
+        if path.is_dir():  # not already gone with a folder around it
+            shutil.rmtree(path)
 
 
 def sign_code(folder: Path) -> None:
