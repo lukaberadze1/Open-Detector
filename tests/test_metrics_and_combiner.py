@@ -61,3 +61,12 @@ def test_combiner_learns_signal_and_round_trips(tmp_path):
     row = dict(zip(["a", "b", "noise"], X_test[0], strict=True))
     assert loaded.predict_proba([row])[0] == pytest.approx(p[0])
     assert np.isfinite(loaded.predict_proba([{"a": 1.0}])[0]), "absent features fall back to medians"
+
+
+def test_contributions_add_up_to_the_prediction():
+    combiner = Combiner.load("models/combiner.json")
+    row = {"glyph_mean": 2.0, "glyph_max": 5.0, "desklib_mean": 4.0, "desklib_max": 6.0, "bino_doc": 0.8}
+    terms = combiner.contributions(row)  # bino_min is missing and counts at its median
+    assert list(terms) == combiner.features
+    expected = combiner.predict_proba([row])[0]
+    assert 1 / (1 + np.exp(-(combiner.intercept + sum(terms.values())))) == pytest.approx(expected)

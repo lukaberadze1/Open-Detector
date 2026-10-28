@@ -11,10 +11,23 @@ from opendetector.documents import extract_answer_slots, extract_document
 from opendetector.segment import count_words
 
 from . import models
-from .components import VERDICTS, highlighted_text, keep, persistent_upload, verdict_badge, verdict_card
+from .components import (
+    VERDICTS,
+    Reading,
+    contribution_chart,
+    engine_panel,
+    highlighted_text,
+    keep,
+    persistent_upload,
+    score_bars,
+    sentence_chart,
+    verdict_badge,
+    verdict_card,
+)
 
 DOCUMENT_TYPES = ("md", "docx", "pptx")
 SOURCES = ("Paste text", "Upload a file")
+HIGHLIGHTS = ("Every sentence", "Flagged only")
 MIN_WORDS = 150  # DetectorConfig.min_words, for the hint under the input
 RESULT = "detect:result"
 # Set by the Red team page to send a sample here: the text goes in the paste box and is analyzed.
@@ -138,25 +151,37 @@ def _analyze(text: str, source: str, sections: list | None, profile: str, enable
         "digest": _digest(text),
         "missing": detector.missing_features,
         "info": detector.combiner.info if detector.combiner else None,
+        "contributions": (detector.combiner.contributions(report.features)
+                          if detector.combiner and report.features else None),
+        "intercept": detector.combiner.intercept if detector.combiner else None,
         "min_words": detector.config.min_words,
     }
 
 
-def _engine_metrics(report) -> None:
-    with st.container(horizontal=True, gap="small"):
-        for name, value in report.engines.items():
-            label, description = models.ENGINES[name]
-            if name == "bino":
-                st.metric(label, f"{value:.2f}", border=True,
-                          help=f"{description}. A perplexity ratio: lower is more AI-like.")
-            else:
-                st.metric(label, f"{value:.0%}", border=True, help=f"{description}. Its own P(AI), uncalibrated.")
-        st.metric("Words", f"{report.words:,}", border=True)
+def _engine_readings(report, bands: list[str]) -> None:
+    readings = []
+    for name, value in report.engines.items():
+        label, description = models.ENGINES[name]
+        if name == "bino":
+            readings.append(Reading(label, f"{value:.2f}", f"{description}. A perplexity ratio: lower is more "
+                                                            "AI-like."))
+        else:
+            readings.append(Reading(label, f"{value:.0%}", f"{description}. Its own P(AI), before calibration.",
+                                    value))
+    stats = [(f"{report.words:,}", "words")]
+    if report.sentences:
+        words = [count_words(s.text) for s in report.sentences]
+        flagged = sum(w for w, band in zip(words, bands, strict=True) if band in ("likely_ai", "needs_review"))
+        stats += [(f"{len(report.sentences):,}", "sentences"), (f"{flagged / max(sum(words), 1):.0%}", "words flagged")]
+    engine_panel(readings, stats)
 
 
-def _sections_table(rows: list[dict], min_words: int) -> None:
+def _sections_table(rows: list[dict], min_words: int, thresholds: dict[str, float]) -> None:
     st.caption(f"Each section with {min_words} words or more is scored on its own. Shorter ones are too short "
-               "for a reliable verdict.")
+               f"for a reliable verdict. The dashed lines are the cut-offs at {thresholds['review']:.0%} and "
+               f"{thresholds['ai']:.0%}.")
+    if chart := score_bars(rows, thresholds):
+        st.altair_chart(chart, width="stretch")
     st.dataframe(
         [{"Section": row["label"], "Words": row["words"],
           "Verdict": VERDICTS[row["verdict"]][0] if row["verdict"] else "Too short",
@@ -173,8 +198,32 @@ def _sections_table(rows: list[dict], min_words: int) -> None:
             st.text(row["text"])
 
 
+def _engine_pushes(result: dict) -> None:
+    """What moved the score: each engine's terms in the combiner's log-odds, when there are two or more
+    engines to compare."""
+    terms, intercept = result.get("contributions"), result.get("intercept")
+    if not terms or intercept is None:
+        return
+    pushes: dict[str, float] = {}
+    for feature, value in terms.items():
+        name = feature.split("_")[0]
+        label = models.ENGINES[name][0] + ("" if name in result["engines"] else " (off)")
+        pushes[label] = pushes.get(label, 0.0) + value
+    if len(pushes) < 2:
+        return
+    st.markdown("**What moved the score**")
+    st.altair_chart(contribution_chart(pushes), width="stretch")
+    total = intercept + sum(pushes.values())
+    off = " An engine that is off counts at a typical value." if any("(off)" in label for label in pushes) else ""
+    st.caption(f"The combiner starts at {intercept:+.2f} and adds each engine's push, for {total:+.2f} in all. "
+               f"The AI likelihood is that total through a logistic curve: {result['report'].ai_probability:.1%}."
+               + off)
+
+
 def _details(result: dict) -> None:
     report = result["report"]
+    if report.ai_probability is not None:
+        _engine_pushes(result)
     info = result["info"]
     build = models.PROFILE_LABELS[result["profile"]]
     engines = ", ".join(models.ENGINES[name][0] for name in result["engines"])
@@ -234,7 +283,7 @@ def _results(result: dict, digest: str) -> None:
                     + f" · cut-offs at {report.thresholds['review']:.0%} and {report.thresholds['ai']:.0%}")
             verdict_card(report.verdict, report.ai_probability, report.thresholds, report.calibrated, foot)
         with right:
-            _engine_metrics(report)
+            _engine_readings(report, result["bands"])
 
     names = (["Highlights"] if report.ai_probability is not None else []) \
         + (["Sentences"] if report.sentences else []) + (["Sections"] if result["sections"] else []) + ["Details"]
@@ -242,22 +291,33 @@ def _results(result: dict, digest: str) -> None:
         with tab:
             if name == "Highlights":
                 if report.sentences:
-                    st.caption("Each sentence takes the average score of the ~100-word windows around it, so "
-                               "sentences next to a strongly AI-like passage get pulled toward it. Highlights show "
-                               "where to look; the document score is the number to go by.")
-                    st.html(highlighted_text(report.text, report.sentences, result["bands"]))
+                    mode = st.segmented_control("Highlight", HIGHLIGHTS, key=keep("keep:detect:highlight",
+                                                                                  HIGHLIGHTS[0]),
+                                                required=True, label_visibility="collapsed")
+                    st.html(highlighted_text(report.text, report.sentences, result["bands"], report.thresholds,
+                                             flagged_only=mode == HIGHLIGHTS[1]),
+                            unsafe_allow_javascript=True)
+                    st.caption("Stronger shades sit deeper in their band. Likely AI is underlined, Needs review "
+                               "dotted. Each sentence takes the average score of the ~100-word windows around "
+                               "it, so sentences next to a strongly AI-like passage get pulled toward it. "
+                               "Highlights show where to look; the document score is the number to go by.")
                 else:
                     st.caption("Sentence highlights are off. Switch them on in the sidebar and analyze again.")
             elif name == "Sentences":
+                st.caption("Each bar is one sentence, as wide as its word count, in reading order. The dashed "
+                           "lines are the document's cut-offs; sentence scores aren't calibrated on their own.")
+                st.altair_chart(sentence_chart(report.sentences, result["bands"], report.thresholds),
+                                width="stretch")
                 st.dataframe(
-                    [{"#": i, "AI likelihood": s.ai_probability, "Sentence": s.text}
-                     for i, s in enumerate(report.sentences, 1)],
+                    [{"#": i, "AI likelihood": s.ai_probability, "Band": VERDICTS[band][0], "Sentence": s.text}
+                     for i, (s, band) in enumerate(zip(report.sentences, result["bands"], strict=True), 1)],
                     hide_index=True, width="stretch",
                     column_config={"AI likelihood": st.column_config.ProgressColumn(
-                        format="percent", min_value=0, max_value=1, width="small")},
+                        format="percent", min_value=0, max_value=1, width="small"),
+                        "Band": st.column_config.TextColumn(width="small")},
                 )
             elif name == "Sections":
-                _sections_table(result["sections"], result["min_words"])
+                _sections_table(result["sections"], result["min_words"], report.thresholds)
             else:
                 _details(result)
 

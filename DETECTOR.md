@@ -64,9 +64,12 @@ held-out test. Inputs and results stay put when you switch pages.
 
 **Detect** accepts pasted text, `.md` Markdown files, `.docx` Word files and `.pptx` PowerPoint
 files. The result shows the verdict and AI likelihood against the two cut-offs, each engine's
-reading, sentence highlights, a sentence table and the calibration details. An uploaded document
-gets a full-document score, and each extracted paragraph, table cell or text box with at least 150
-words of prose is also scored on its own; shorter sections are listed without a verdict. For a
+reading, and sentence highlights in three colours (likely human, needs review, likely AI, shaded by
+how deep into its band each score sits) under a clickable map of the whole text. A chart and a table
+show every sentence's score in reading order, and the details include how far each engine pushed the
+score and the calibration. An uploaded document gets a full-document score, and each extracted
+paragraph, table cell or text box with at least 150 words of prose is also scored on its own and
+charted against the cut-offs; shorter sections are listed without a verdict. For a
 worksheet, a toggle scores just the filled-in answer cells of its question/answer tables, like the
 command line's `--answers-only`. Reference documents can be uploaded alongside to read; their text
 is never scored. The detector does not fill templates or rewrite content to target a score.

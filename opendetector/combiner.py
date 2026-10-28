@@ -41,6 +41,14 @@ class Combiner:
         X = np.array([[row.get(f, np.nan) for f in self.features] for row in rows], dtype=float)
         return self.predict_matrix(X.reshape(len(rows), len(self.features)))
 
+    def contributions(self, row: Mapping[str, float]) -> dict[str, float]:
+        """Each feature's term in the log-odds for one row: the probability is the sigmoid of the
+        intercept plus their sum. Missing features count at their training median, as in prediction."""
+        x = np.array([row.get(f, np.nan) for f in self.features], dtype=float)
+        x = np.where(np.isnan(x), np.asarray(self.medians), x)
+        terms = (x - np.asarray(self.mean)) / np.asarray(self.scale) * np.asarray(self.coef)
+        return dict(zip(self.features, terms.tolist(), strict=True))
+
     def save(self, path: Path | str) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_text(json.dumps(asdict(self), indent=2))
