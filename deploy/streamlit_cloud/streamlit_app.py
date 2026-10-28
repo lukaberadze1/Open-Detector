@@ -18,5 +18,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 os.environ["OPENDETECTOR_PROFILE"] = "slim"
+# Set, not left to the default: an app process that ran the earlier entrypoint, which set it to
+# "off", keeps that value when Community Cloud pulls new code without restarting.
+os.environ["OPENDETECTOR_REDTEAM"] = "on"
 os.environ["OPENDETECTOR_PUBLIC"] = "on"
 runpy.run_path(str(ROOT / "app.py"), run_name="__main__")
