@@ -1,6 +1,6 @@
 # The app's base theme: Geist, round corners and a violet accent, with a light and a dark palette.
 # Viewers switch light/dark in the app's settings menu (the default follows their system). On top of
-# this, ui/style.py layers one of two looks, Glass or Instrument, picked under Appearance in the sidebar.
+# this, ui/style.py layers one of two looks: Glass by default, or Instrument from Settings in the sidebar.
 
 [theme]
 font = "Geist:https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap"

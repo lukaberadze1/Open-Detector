@@ -127,7 +127,7 @@ def dark_mode() -> bool:
 
 
 def look() -> str:
-    """The look picked under Appearance in the app (ui/style.py keeps it in data/ui_prefs.json), so the
+    """The look picked under Settings in the app (ui/style.py keeps it in data/ui_prefs.json), so the
     loading and error pages match the app they open into."""
     try:
         chosen = json.loads((ROOT / "data/ui_prefs.json").read_text()).get("look")

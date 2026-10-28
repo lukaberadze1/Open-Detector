@@ -1,4 +1,5 @@
-"""The app's two looks, picked under Appearance in the sidebar, each with a light and a dark mode:
+"""The app's two looks, each with a light and a dark mode. Glass is the default; Settings at the foot of
+the sidebar switches to Instrument:
 
 - **Glass**: frosted, translucent panels floating over a soft aurora, with a ring dial for the score.
 - **Instrument**: a forensic scanner read-out. A fine grid, hairline panels with corner brackets,
@@ -122,13 +123,14 @@ def tokens() -> dict[str, str]:
 
 
 def look_picker() -> None:
-    """The sidebar's Appearance control. Light or dark stays with Streamlit's own Settings."""
+    """The sidebar's Settings, folded away at the bottom: Glass unless the viewer switches to Instrument.
+    Light or dark stays with Streamlit's own Settings."""
     current_look()
-    st.subheader("Appearance")
-    st.segmented_control("Look", LOOKS, format_func=LOOK_LABELS.get, key=KEY, required=True,
-                         label_visibility="collapsed", on_change=_save_look)
-    st.caption("Light or dark: app menu > Settings." if current_look() == "glass" else
-               "Built dark first. Light or dark: app menu > Settings.")
+    with st.expander("Settings", icon=":material/settings:"):
+        st.segmented_control("Look", LOOKS, format_func=LOOK_LABELS.get, key=KEY, required=True,
+                             label_visibility="collapsed", on_change=_save_look)
+        st.caption("The app's look. Light or dark: app menu > Settings." if current_look() == "glass" else
+                   "The app's look, built dark first. Light or dark: app menu > Settings.")
 
 
 def logo_paths() -> tuple[str, str]:
@@ -167,13 +169,14 @@ BASE_CSS = """
 [data-testid="stSidebar"] h3 { font-size: 0.72rem !important; font-weight: 600 !important; letter-spacing: 0.12em;
   text-transform: uppercase; color: var(--od-muted) !important; padding-top: 1.1rem !important; }
 [data-testid="stSidebarHeader"] { padding-top: 1.4rem; }
-[data-testid="stTopNav"] { flex: 0 0 auto !important; width: fit-content !important; max-width: fit-content;
-  background: var(--od-panel); border: 1px solid var(--od-edge); border-radius: 999px;
-  padding: 3px; gap: 2px; box-shadow: var(--od-shadow);
+/* Each page link is its own pill. The nav keeps Streamlit's width: it measures that width to decide which
+   links fit, so shrinking it to its contents folds every link into the "more" menu. */
+[data-testid="stTopNavLink"] { border-radius: 999px !important; padding: 0.3rem 0.95rem !important;
+  background: var(--od-panel) !important; border: 1px solid var(--od-edge); box-shadow: var(--od-shadow);
   -webkit-backdrop-filter: blur(24px) saturate(170%); backdrop-filter: blur(24px) saturate(170%); }
-[data-testid="stTopNavLink"] { border-radius: 999px !important; padding: 0.3rem 0.95rem !important; }
+[data-testid="stTopNavLink"]:hover { background: var(--od-panel-strong) !important; }
 [data-testid="stTopNavLink"][aria-current="page"], [data-testid="stTopNavLink"].active {
-  background: var(--od-accent) !important; }
+  background: var(--od-accent) !important; border-color: transparent; }
 [data-testid="stTopNavLink"][aria-current="page"] *, [data-testid="stTopNavLink"].active * { color: #fff !important; }
 
 /* Panels: bordered containers and the app's own cards */
@@ -270,7 +273,6 @@ INSTRUMENT_CSS = """
 .od-stats span { font-size: 0.66rem; letter-spacing: 0.04em; text-transform: uppercase; }
 .od-stats b { font-size: 1.15rem; }
 :root { --od-radius: 4px; }
-[data-testid="stTopNav"] { border-radius: 6px; }
 [data-testid="stTopNavLink"] { border-radius: 4px !important; }
 [data-testid="stTopNavLink"][aria-current="page"] *,
   [data-testid="stTopNavLink"].active * { color: var(--od-bg) !important; }
