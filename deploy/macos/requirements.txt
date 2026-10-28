@@ -1,0 +1,12 @@
+# What the downloadable Mac app installs into its own Python (build_app.py --standalone): the detector,
+# the app and its window. build_app.py pins each to the version in the project's .venv, the one the tests
+# ran against.
+torch>=2.4
+transformers>=4.46,<5
+sentencepiece
+protobuf
+numpy>=2
+streamlit>=1.66
+python-docx>=1.1
+python-pptx>=1.0
+pywebview>=6

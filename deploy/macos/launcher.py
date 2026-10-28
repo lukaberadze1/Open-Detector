@@ -25,6 +25,8 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+# The app's data folder, as opendetector/config.py finds it (this script runs before any of the app loads).
+DATA_ROOT = Path(os.environ["OPENDETECTOR_HOME"]).expanduser() if os.environ.get("OPENDETECTOR_HOME") else ROOT
 APP_NAME = "Open Detector"
 LOG_PATH = Path.home() / "Library/Logs" / APP_NAME / "server.log"
 WINDOW_STATE = Path.home() / "Library/Application Support" / APP_NAME / "window.json"
@@ -127,10 +129,10 @@ def dark_mode() -> bool:
 
 
 def look() -> str:
-    """The look picked under Settings in the app (ui/style.py keeps it in data/ui_prefs.json), so the
+    """The look picked under Settings in the app (ui/prefs.py keeps it in data/ui_prefs.json), so the
     loading and error pages match the app they open into."""
     try:
-        chosen = json.loads((ROOT / "data/ui_prefs.json").read_text()).get("look")
+        chosen = json.loads((DATA_ROOT / "data/ui_prefs.json").read_text()).get("look")
     except (OSError, ValueError, AttributeError):
         chosen = None
     return chosen if chosen in ("glass", "instrument") else "glass"

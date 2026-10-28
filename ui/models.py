@@ -18,6 +18,7 @@ ENGINES = {
     "desklib": ("Desklib", "DeBERTa-v3-large classifier"),
     "bino": ("Binoculars", "zero-shot, two small language models"),
 }
+DOWNLOAD_GB = {"glyph": 0.7, "desklib": 1.7, "bino": 2.0}  # each engine's model files, fetched on first use
 RAM_GB = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
 # A host can pin the profile: the free Streamlit deploy runs slim. Otherwise machines with 8 GB or
 # less start on slim, because the full build (about 3.5 GB) next to a local text model means heavy
@@ -31,6 +32,11 @@ def engines_of(profile: str) -> list[str]:
     config = DetectorConfig.for_profile(profile)
     return [name for name, model in (("glyph", config.glyph_model), ("desklib", config.desklib_model),
                                      ("bino", config.binoculars_observer)) if model]
+
+
+def download_gb(profile: str, names: Iterable[str] | None = None) -> float:
+    """How much the first run of `profile` downloads, for the engines in `names` (by default all of them)."""
+    return sum(DOWNLOAD_GB[name] for name in engines_of(profile) if names is None or name in names)
 
 
 def active_profile() -> str:

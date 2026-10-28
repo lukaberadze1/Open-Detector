@@ -119,7 +119,7 @@ def stub_model(monkeypatch, tmp_path):
     and nothing keeps the machine awake."""
     from ui import redteam
 
-    for name, path in (("ROOT", tmp_path), ("OUTPUT_PATH", tmp_path / "local_redteam.jsonl"),
+    for name, path in (("ROOT", tmp_path), ("DATA_ROOT", tmp_path), ("OUTPUT_PATH", tmp_path / "local_redteam.jsonl"),
                        ("EXPORT_DIR", tmp_path / "exports"), ("BATCH_DIR", tmp_path / "batches"),
                        ("STYLE_DIR", tmp_path / "styles"), ("VISITOR_DIR", tmp_path / "visitors")):
         monkeypatch.setattr(redteam, name, path)
@@ -513,3 +513,84 @@ def test_a_batch_waits_out_busy_models_and_drops_only_spent_ones(stub_model, mon
     first, second, third, _ = stub_model.orders
     assert "gemini-3.8-flash" in first and "gemini-3.8-flash" not in second
     assert third == second, "a model that was only busy stays in the list"
+
+
+def test_the_downloadable_app_offers_no_robustness_mode_and_no_local_model(stub_model, monkeypatch):
+    monkeypatch.setenv("OPENDETECTOR_PACKAGED", "on")
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.run()
+    assert not at.exception, at.exception
+    assert not any(t.key == "keep:redteam:evasion" for t in at.toggle), "no detector-guided drafting for strangers"
+    assert at.text_input(key="keep:redteam:local_model").value == ""
+
+
+def test_the_guide_opens_first_once_then_detect_does(monkeypatch, tmp_path):
+    from ui import prefs
+
+    monkeypatch.setattr(prefs, "PATH", tmp_path / "ui_prefs.json")  # a computer the app hasn't run on
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    assert not at.exception, at.exception
+    assert "1 · Check a text" in [s.value for s in at.subheader]
+    assert prefs.load()["welcomed"]
+
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    assert not at.exception, at.exception
+    assert "1 · Check a text" not in [s.value for s in at.subheader]
+    assert any(t.key == "keep:detect:text" for t in at.text_area)
+
+
+def test_public_mode_has_no_guide(monkeypatch, tmp_path):
+    from ui import nav, prefs
+
+    monkeypatch.setattr(prefs, "PATH", tmp_path / "ui_prefs.json")
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
+    monkeypatch.setattr(nav, "guide_page", lambda: pytest.fail("a public deploy built the Guide page"))
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    assert not at.exception, at.exception
+    assert not prefs.PATH.exists(), "a public deploy remembers nothing"
+
+
+def guide_page():
+    from ui import guide
+
+    guide.render()
+
+
+@pytest.fixture
+def key_file(monkeypatch, tmp_path):
+    """The Guide page saving keys to tmp_path/.env, with Google accepting only "good-key"."""
+    from functools import partial
+
+    from opendetector import env
+    from ui import guide
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(guide, "load_env", lambda: None)  # never read the real .env
+    monkeypatch.setattr(guide, "save_env", partial(env.save_env, path=tmp_path / ".env"))
+    monkeypatch.setattr(guide, "check_key", lambda key: (True, None) if key == "good-key" else
+                        (False, "Google didn't accept this key."))
+    return tmp_path / ".env"
+
+
+def save_key(at, key):
+    at.text_input[0].input(key)
+    button(at, "Save key" if "Save key" in [b.label for b in at.button] else "Replace key").click()
+    return at.run()
+
+
+def test_the_guide_saves_a_key_google_accepts_and_no_other(key_file):
+    at = AppTest.from_function(guide_page, default_timeout=60).run()
+    assert not at.exception, at.exception
+    save_key(at, "wrong-key")
+    assert [e.value for e in at.error] == ["Google didn't accept this key."]
+    assert not key_file.exists()
+
+    save_key(at, " good-key ")
+    assert not at.exception, at.exception
+    assert key_file.read_text() == "GEMINI_API_KEY=good-key\n"
+    assert any("ending in …-key" in s.value for s in at.success)
+
+    button(at, "Remove the key").click()
+    at.run()
+    assert key_file.read_text() == ""

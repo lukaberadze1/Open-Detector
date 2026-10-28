@@ -121,7 +121,8 @@ def _analyze(text: str, source: str, sections: list | None, profile: str, enable
              sentences: bool) -> None:
     if not models.is_loaded(profile, enabled):
         names = ", ".join(models.ENGINES[name][0] for name in enabled)
-        with st.spinner(f"Loading {names}. The first run downloads the models…"):
+        with st.spinner(f"Loading {names}. The first time, this downloads about "
+                        f"{models.download_gb(profile, enabled):.1f} GB and can take a few minutes…"):
             detector = models.get_detector(profile, enabled)
     else:
         detector = models.get_detector(profile, enabled)

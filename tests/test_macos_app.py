@@ -1,8 +1,10 @@
 """The Mac app (deploy/macos): the launcher's server handling and the bundle build_app.py writes. No
 window opens; the build needs macOS with the Xcode command line tools and the project's .venv."""
 
+import json
 import os
 import plistlib
+import re
 import shutil
 import socket
 import subprocess
@@ -96,3 +98,38 @@ def test_build_leaves_an_app_it_did_not_make(tmp_path):
     with pytest.raises(SystemExit, match="wasn't built by this script"):
         build_app.build(tmp_path, icon=False, register=False)
     assert (contents / "Info.plist").exists()
+
+
+def test_the_loading_page_follows_the_look_in_the_data_folder(tmp_path, monkeypatch):
+    monkeypatch.setattr(launcher, "DATA_ROOT", tmp_path)
+    assert launcher.look() == "glass"
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data/ui_prefs.json").write_text(json.dumps({"look": "instrument", "welcomed": True}))
+    assert launcher.look() == "instrument"
+
+
+def test_the_standalone_app_carries_the_code_it_runs_and_nothing_under_data(tmp_path):
+    build_app.copy_app(build_app.ROOT, tmp_path)
+    for name in (*build_app.APP_FILES, "opendetector/detector.py", "ui/guide.py", "ui/assets/mark.svg"):
+        assert (tmp_path / name).is_file(), name
+    assert not (tmp_path / "data").exists() and not (tmp_path / ".env").exists()
+    assert not list(tmp_path.rglob("__pycache__"))
+
+
+def test_the_standalone_app_carries_every_eval_module_the_app_imports():
+    root = build_app.ROOT
+    imported = set()
+    shipped_eval = [root / name for name in build_app.APP_FILES if name.startswith("eval/")]
+    for path in [root / "app.py", *(root / "ui").glob("*.py"), *(root / "opendetector").rglob("*.py"), *shipped_eval]:
+        imported |= set(re.findall(r"^\s*(?:from|import) eval\.(\w+)", path.read_text(), re.MULTILINE))
+    assert imported and {f"eval/{name}.py" for name in imported} <= set(build_app.APP_FILES)
+
+
+@can_build
+def test_the_standalone_executable_compiles(tmp_path):
+    prefix, version = build_app.venv_python(build_app.ROOT)
+    out = tmp_path / build_app.APP_NAME
+    build_app._compile(build_app.STANDALONE_SOURCE.substitute(name=build_app.APP_NAME),
+                       prefix / "lib" / f"libpython{version}.dylib", prefix / "include" / f"python{version}", out)
+    assert os.access(out, os.X_OK)
+    assert b"Library/Application Support/Open Detector" in out.read_bytes()

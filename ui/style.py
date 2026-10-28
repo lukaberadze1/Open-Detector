@@ -12,15 +12,15 @@ layers styles on top, so every widget keeps working in either. The verdict tones
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
 import streamlit as st
 
+from . import prefs
+
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "ui" / "assets"
-PREFS = ROOT / "data" / "ui_prefs.json"  # data/ is gitignored; local runs only
 
 LOOKS = ("glass", "instrument")
 LOOK_LABELS = {"glass": "Glass", "instrument": "Instrument"}
@@ -79,7 +79,8 @@ FONTS = ("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&"
          "family=Geist+Mono:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap")
 
 
-def _public() -> bool:
+def public() -> bool:
+    """Whether this is a public deploy, which remembers nothing between visits (ui/redteam.py says more)."""
     value = os.environ.get("OPENDETECTOR_PUBLIC", "").strip().lower()
     if value:
         return value in ("1", "on", "true", "yes")
@@ -87,23 +88,13 @@ def _public() -> bool:
 
 
 def _saved_look() -> str:
-    if _public():
-        return DEFAULT_LOOK
-    try:
-        look = json.loads(PREFS.read_text()).get("look")
-    except (OSError, ValueError, AttributeError):
-        return DEFAULT_LOOK
+    look = DEFAULT_LOOK if public() else prefs.load().get("look")
     return look if look in LOOKS else DEFAULT_LOOK
 
 
 def _save_look() -> None:
-    if _public():
-        return
-    try:
-        PREFS.parent.mkdir(parents=True, exist_ok=True)
-        PREFS.write_text(json.dumps({"look": st.session_state[KEY]}))
-    except OSError:
-        pass  # a remembered look is a convenience, never worth an error
+    if not public():
+        prefs.update(look=st.session_state[KEY])
 
 
 def current_look() -> str:

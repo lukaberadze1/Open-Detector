@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# Where the app keeps what it writes, its data/ folder and .env: the project folder, or OPENDETECTOR_HOME
+# when that is set. The downloadable Mac app sets it to ~/Library/Application Support/Open Detector,
+# because an app must not change its own signed bundle.
+DATA_ROOT = Path(os.environ["OPENDETECTOR_HOME"]).expanduser() if os.environ.get("OPENDETECTOR_HOME") else ROOT
 
 
 @dataclass

@@ -45,6 +45,7 @@ from eval.generate_essays import (
 from eval.redteam_batch import BatchWorker, Checkpoint, StopRequested, batch_key
 from eval.evasion_mode import PROFILE_ID, PROFILE_INSTRUCTIONS, generate_until_target
 from opendetector import DetectorConfig
+from opendetector.config import DATA_ROOT
 from opendetector.documents import (
     AnswerSlot,
     DocumentSection,
@@ -60,12 +61,12 @@ from . import detect, models, nav, style
 from .components import VERDICTS, Upload, keep, persistent_upload, verdict_badge
 
 ROOT = Path(__file__).resolve().parents[1]
-STYLE_DIR = ROOT / "data/styles"
+STYLE_DIR = DATA_ROOT / "data/styles"
 DEFAULT_STYLE = "alexandria_profile"  # picked first when it's there
-OUTPUT_PATH = ROOT / "data/essays/local_redteam.jsonl"
-EXPORT_DIR = ROOT / "data/essays/exports"
-BATCH_DIR = ROOT / "data/essays/batches"
-VISITOR_DIR = ROOT / "data/visitors"  # a public deploy's per-visitor folders
+OUTPUT_PATH = DATA_ROOT / "data/essays/local_redteam.jsonl"
+EXPORT_DIR = DATA_ROOT / "data/essays/exports"
+BATCH_DIR = DATA_ROOT / "data/essays/batches"
+VISITOR_DIR = DATA_ROOT / "data/visitors"  # a public deploy's per-visitor folders
 MAX_STYLE_BYTES = 500_000
 EVASION_TARGET = 0.05  # the AI likelihood robustness mode aims below
 DEFAULT_FALLBACK_MODELS = (
@@ -136,6 +137,21 @@ def public() -> bool:
     if value:
         return value in ("1", "on", "true", "yes")
     return ROOT.parts[:3] == ("/", "mount", "src")
+
+
+def packaged() -> bool:
+    """Whether this is the downloadable Mac app (deploy/macos/build_app.py --standalone). It keeps its
+    user's key and samples like a local run, but like a public deploy it serves people this project
+    doesn't know, so it offers no detector-guided drafting and no local text model by default."""
+    return os.environ.get("OPENDETECTOR_PACKAGED", "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def _shown(path: Path) -> str:
+    """A saved file's path as the page shows it: inside the project folder on a local run, or in full,
+    starting from ~, when the app keeps its data elsewhere."""
+    if path.is_relative_to(DATA_ROOT) and DATA_ROOT == ROOT:
+        return str(path.relative_to(DATA_ROOT))
+    return f"~/{path.relative_to(Path.home())}" if path.is_relative_to(Path.home()) else str(path)
 
 
 @dataclass(frozen=True)
@@ -292,7 +308,8 @@ def _connection() -> Connection:
                      "to your account are skipped. Edit or clear this list for another OpenAI-compatible provider.",
             )
             local_model = st.text_input(
-                "Local fallback model (Ollama)", key=keep("keep:redteam:local_model", LOCAL_MODEL),
+                "Local fallback model (Ollama)",
+                key=keep("keep:redteam:local_model", "" if packaged() else LOCAL_MODEL),
                 help="Used after every model above fails. Runs on this computer with no key or quota; needs "
                      "`ollama serve` running and the model fetched with `ollama pull`. Clear to turn it off.",
             ).strip()
@@ -305,10 +322,10 @@ def _connection() -> Connection:
             st.caption(f":material/smart_toy: **{model}**, then {len(fallback_models)} fallback models"
                        + (f" and {local_model} locally." if local_model else "."))
             if api_key:
-                st.caption(f":material/key: Using the key in {api_key_env} or the project .env file.")
+                st.caption(f":material/key: Using your key in {api_key_env}.")
             else:
-                st.caption(f":material/key_off: No {api_key_env} found. Add it to a .env file in the project "
-                           "folder (copy .env.example). Local endpoints work without a key.")
+                st.caption(f":material/key_off: No {api_key_env} yet. Local endpoints work without a key.")
+                st.page_link(nav.guide_page(), label="Add your Gemini API key", icon=":material/key:")
             if local_model:
                 if problem := local_fallback_problem(local_url, local_model):
                     st.caption(f":orange[:material/cloud_off: The local fallback can't run: {problem}]")
@@ -462,7 +479,7 @@ def _setup(profile: str) -> Plan:
     plan.score = st.toggle("Score with the detector", key=keep("keep:redteam:score", True),
                            help=f"Uses the {models.PROFILE_LABELS[profile]} build chosen in the sidebar. The "
                                 "first score loads its models.")
-    if not public():  # a public deploy serves strangers, so it offers no detector-guided drafting
+    if not public() and not packaged():  # both serve strangers, so they offer no detector-guided drafting
         evasion = st.toggle(
             "Detector robustness mode · aim below 5%", key=keep("keep:redteam:evasion", False),
             disabled=not plan.score or plan.batch,
@@ -532,7 +549,7 @@ def _problem(plan: Plan, conn: Connection) -> str | None:
     if not conn.api_key and public():
         return "Paste your Gemini API key in the sidebar first."
     if not conn.api_key and not conn.base_url.strip().startswith(("http://localhost", "http://127.0.0.1")):
-        return f"Set {conn.api_key_env} in the project .env file or use a local model endpoint."
+        return "Add your Gemini API key on the Guide page, or use a local model endpoint."
     return None
 
 
@@ -600,7 +617,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
             document_bytes = replace_document_section(upload.name, document_bytes, item["target"], item["text"])
         document_name = f"AI_REDTEAM_{tag}_{timestamp}_{source_hash}{upload.suffix}"
         (store.exports / document_name).write_bytes(document_bytes)
-        document_path = str((store.exports / document_name).relative_to(ROOT))
+        document_path = _shown(store.exports / document_name)
     except (ImportError, ValueError, IndexError, KeyError) as exc:
         document_bytes = document_name = None
         st.warning(f"The answers are saved, but the document copy could not be exported: {exc}")
@@ -694,7 +711,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
         "score_label": "Whole regenerated document",
         "attachment": text_attachment,
         "filename": text_name,
-        "path": str((store.exports / text_name).relative_to(ROOT)),
+        "path": _shown(store.exports / text_name),
         "document_attachment": document_bytes,
         "document_filename": document_name,
         "document_path": document_path,
@@ -1123,7 +1140,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
             document_filename = f"AI_REDTEAM_{mode_tag}_{timestamp}_{prompt_hash}{upload.suffix}"
             document_export_path = store.exports / document_filename
             document_export_path.write_bytes(document_attachment)
-            document_path = str(document_export_path.relative_to(ROOT))
+            document_path = _shown(document_export_path)
         except (ImportError, ValueError, IndexError, KeyError) as exc:
             st.warning(f"The answer was saved, but the document copy could not be exported: {exc}")
     st.session_state[RESULT] = {
@@ -1145,7 +1162,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         ),
         "attachment": attachment,
         "filename": export_name,
-        "path": str(export_path.relative_to(ROOT)),
+        "path": _shown(export_path),
         "document_attachment": document_attachment,
         "document_filename": document_filename,
         "document_path": document_path,
@@ -1196,7 +1213,7 @@ def _restore_last_result() -> None:
             ),
             "attachment": saved_path.read_text(encoding="utf-8"),
             "filename": saved_name,
-            "path": str(saved_path.relative_to(ROOT)),
+            "path": _shown(saved_path),
         }
     except (OSError, ValueError, KeyError):
         pass
@@ -1270,7 +1287,7 @@ def _show_result(result: dict, profile: str) -> None:
         else:
             saved = [Path(result["path"]).name] + ([result["document_filename"]] if result.get("document_path") else [])
             st.caption(f"Saved as {' and '.join(saved)} in {Path(result['path']).parent}, and recorded as AI text in "
-                       f"{OUTPUT_PATH.relative_to(ROOT)}.")
+                       f"{_shown(OUTPUT_PATH)}.")
 
 
 @st.cache_data(show_spinner=False)
@@ -1347,7 +1364,7 @@ def _history() -> None:
         },
     )
     st.caption("The samples from this browser session, labelled as AI text." if public()
-               else f"All samples are in `{OUTPUT_PATH.relative_to(ROOT)}`, labelled as AI text.")
+               else f"All samples are in `{_shown(OUTPUT_PATH)}`, labelled as AI text.")
 
 
 def render() -> None:
@@ -1359,7 +1376,7 @@ def render() -> None:
     style.hero("Adversarial lab · " + ("public mode" if public() else "local"), "Red team",
                "Generate labelled AI samples and see how the detector scores them. Everything generated here is "
                "saved as AI-labelled evaluation data.",
-               ["Your own Gemini key" if public() else "Gemini, then a local fallback", "Style profiles",
+               ["Your own Gemini key" if public() or packaged() else "Gemini, then a local fallback", "Style profiles",
                 "Batch rewrites", "Scored per block"])
     _finish_ended_batches()
     running = [worker for worker in _own_batches().values() if worker.is_alive()]

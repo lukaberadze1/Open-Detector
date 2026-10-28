@@ -22,7 +22,8 @@ An AI-generated-text detector, built as a calibrated ensemble:
   public mode, deployed from branch `feat/phase1-ensemble` of
   https://github.com/lukaberadze1/Open-Detector (public).
 - **Mac app:** `deploy/macos/build_app.py` installs `Open Detector.app`, the same Streamlit app in a
-  native window that runs on this checkout.
+  native window that runs on this checkout. With `--standalone --dmg` it builds the self-contained
+  download, `dist/Open-Detector.dmg`, offered on the repo's GitHub releases for anyone to install.
 
 `README.md` is the GitHub front page: what the app does and how to run it. The repo started as a
 clone of followsci's "Open Detector" BERT detector. `README_EN.md`,
@@ -34,7 +35,7 @@ model this code no longer uses.
 | Path | Role |
 |---|---|
 | `opendetector/` | The detector package. Pure Python except `engines/`, which imports torch. |
-| `opendetector/config.py` | `DetectorConfig`: model ids, device/dtype, window sizes, `min_words`, combiner path, and `for_profile("full" \| "slim")`. |
+| `opendetector/config.py` | `DetectorConfig`: model ids, device/dtype, window sizes, `min_words`, combiner path, and `for_profile("full" \| "slim")`. Also `DATA_ROOT`, the folder that holds what the app writes (`data/` and `.env`): the project folder, or `OPENDETECTOR_HOME` when set. |
 | `opendetector/normalize.py` | `normalize(text) -> (clean_text, NormalizationReport)`: strips invisible characters, maps Cyrillic/Greek look-alikes inside Latin text, applies NFKC, collapses whitespace. |
 | `opendetector/segment.py` | `split_sentences` (character spans and paragraph index), `sentence_windows` (sentence-aligned sliding windows, optionally kept inside paragraphs), `paragraph_blocks`, `looks_like_prose`, `count_words`. |
 | `opendetector/documents.py` | Markdown, Word and PowerPoint text: `extract_document` (sections with their locations), `extract_answer_slots` (question/answer pairs), `rewritable_blocks` (the prose a whole-document rewrite changes: no headings, titles, questions, tables or answer-box pairs) and `replace_document_section`. |
@@ -44,10 +45,12 @@ model this code no longer uses.
 | `opendetector/detector.py` | `Detector`: `features(text)` gives document features, `score(text)` a probability, and `analyze(text)` a full `Report` with verdict, probability, engine readings, sentence scores and normalization counts. |
 | `opendetector/combiner.py` | `Combiner` (JSON-serialized logistic regression with medians, scaling and thresholds), `contributions` (each feature's term in the log-odds, for the Details chart), `fit_logistic`, `set_thresholds`, `fit_combiner`. Prediction is numpy only. |
 | `opendetector/metrics.py` | `auroc`, `tpr_at_fpr`, `conformal_threshold`, `wilson_interval`. |
-| `opendetector/env.py` | `load_env()`: loads the gitignored `.env` into the environment. Variables already set take priority. |
+| `opendetector/env.py` | `load_env()`: loads the gitignored `.env` in `DATA_ROOT` into the environment; variables already set take priority. `save_env()` sets or removes one key there (file mode 600), as the Guide page does. |
 | `opendetector/__main__.py` | Command line: `python -m opendetector essay.txt` prints a JSON report. Reads `.md`, `.docx` and `.pptx` like the app (whole document plus every 150-word section); `--answers-only` scores just a worksheet's answer cells; `--profile slim`. |
 | `.claude/skills/ai-detect/` | The `/ai-detect` Claude Code skill: scores a file or pasted text through the command line and summarizes the JSON with `summarize.py`. |
 | `app.py` | Streamlit entrypoint: page config, logo, theme, the sidebar's detector build, and top navigation between the Detect and Red team pages. `OPENDETECTOR_PROFILE` pins a profile; `OPENDETECTOR_REDTEAM=off` leaves out the Red team page; `OPENDETECTOR_PUBLIC=on` runs it in public mode. |
+| `ui/guide.py` | The Guide page, written for people with no technical background: how to check a text and read the result, and a box that checks a Gemini key with Google and saves it with `save_env`. `app.py` opens it first the first time the app runs on a computer (`welcomed` in `ui/prefs.py`); public mode leaves it out. |
+| `ui/prefs.py` | What the app remembers on a computer, in `DATA_ROOT/data/ui_prefs.json`: the look and whether the Guide has been shown. `tests/conftest.py` points it at a temporary file for every test. |
 | `ui/models.py` | The loaded engines, shared by both pages, every session and batch worker threads. Holds one profile at a time (`get_detector`, `release`); defaults to slim on machines with 8 GB or less. |
 | `ui/detect.py` | The Detect page: pasted text or an uploaded `.md`/`.docx`/`.pptx` (with an answers-only toggle for worksheets), verdict card, engine meters, sentence highlights (every sentence or flagged only) with a map of the text, a chart of sentence scores in reading order, a section bar chart, and calibration details with each engine's push on the score. Shows only the engines the profile provides. |
 | `ui/redteam.py` | The Red team page: labelled AI samples from a prompt or an uploaded `.md`/`.docx`/`.pptx`, in a style profile picked from `data/styles/*.json` (default `alexandria_profile`), including batch regeneration of every answer box or text block (Markdown, Word or PowerPoint), with detector scores per block and for the whole document, an *Analyze in Detect* hand-off, and a Saved samples tab summarizing `data/essays/local_redteam.jsonl` by attack. |
@@ -68,7 +71,7 @@ model this code no longer uses.
 | `.claude/skills/style-profile/` | The `/style-profile` skill: runs the script, then revises the profile's prose in place so it stacks (keep, add with a week tag, revise only on 3+ weeks of evidence, never delete). The scheduled task `weekly-style-profile` runs it Sundays at 20:00. |
 | `deploy/streamlit_cloud/` | `streamlit_app.py` pins the slim profile, turns on public mode and runs `app.py`; `requirements.txt` installs CPU-only PyTorch. |
 | `deploy/huggingface/` | Docker Space for the full profile with `deploy.py`. Blocked: Hugging Face now needs PRO for Docker Spaces. |
-| `deploy/macos/` | The Mac app. `launcher.py` runs the app's server on 127.0.0.1 (port 8517 when free) and shows it in a pywebview (WebKit) window, with a loading page and an error page (both in the look last picked in the app) that can restart the server, a remembered window size, and a question before quitting during a Red team batch; the server stops itself if the launcher dies. `build_app.py` writes `~/Applications/Open Detector.app`: Info.plist, an icon drawn from `ui/assets/mark.svg`, and a small C executable, compiled with clang, that runs `launcher.py` on the `.venv`'s Python inside the app's own process. |
+| `deploy/macos/` | The Mac app. `launcher.py` runs the app's server on 127.0.0.1 (port 8517 when free) and shows it in a pywebview (WebKit) window, with a loading page and an error page (both in the look last picked in the app) that can restart the server, a remembered window size, and a question before quitting during a Red team batch; the server stops itself if the launcher dies. `build_app.py` writes `~/Applications/Open Detector.app`: Info.plist, an icon drawn from `ui/assets/mark.svg`, and a small C executable, compiled with clang, that runs `launcher.py` on the `.venv`'s Python inside the app's own process. `--standalone` instead copies uv's standalone CPython into the bundle, installs `deploy/macos/requirements.txt` at the `.venv`'s versions, copies the code in `APP_FILES`/`APP_PACKAGES`, byte-compiles it, and signs every binary ad hoc; its executable sets `OPENDETECTOR_HOME` to `~/Library/Application Support/Open Detector` and `OPENDETECTOR_PACKAGED=on`, and runs the server too. `--dmg` packs it into `dist/Open-Detector.dmg`. |
 | `tests/` | pytest suite with stand-in engines: no model downloads, about 10–25 s. |
 | `DETECTOR.md` | User guide: setup, evaluation workflow, deployment, red-teaming, known limits. |
 | `ruff.toml`, `pytest.ini`, `requirements.txt` | Lint config, test config, and development dependencies (Python 3.12 venv in `.venv`). |
@@ -189,6 +192,13 @@ To regenerate both shipped combiners after the caches change:
     and keeps each browser session's samples, profiles and batches in `data/visitors/<id>/`
     through `_store()` and `_own_batches()`. New code that writes or lists saved work must go
     through those, never the module-level paths.
+  - **The downloadable app** (`OPENDETECTOR_PACKAGED=on`) keeps its user's key and samples like a
+    local run, but also serves strangers: like public mode it offers no detector-guided drafting
+    (robustness mode) and no local text model by default. Keep new drafting aids out of both.
+- **What the app writes goes under `DATA_ROOT`,** never `ROOT`: the downloadable app's own bundle is
+  signed and must not change, so `PYTHONDONTWRITEBYTECODE` is on there and its code is byte-compiled
+  at build time. A module the app newly imports from `eval/` must be added to `APP_FILES`
+  (`tests/test_macos_app.py` checks).
 - **Git setup:**
   - `origin` is `lukaberadze1/Open-Detector` (public). Pushes use a per-repo credential helper
     that runs `gh auth token --user lukaberadze1`. The global `gh` account is a different one,
@@ -214,9 +224,9 @@ To regenerate both shipped combiners after the caches change:
   draw. Widgets keyed `keep:…` survive a page switch because `app.py` writes those keys back on
   every run; give them their starting value with `ui.components.keep()`, never a `value=` argument.
   File uploaders can't be kept that way, so pages use `persistent_upload()`.
-- **The Mac app runs the checkout, not a copy.** `Open Detector.app` holds absolute paths to this
-  folder's `.venv` and `deploy/macos/launcher.py`, so code changes show up the next time it opens,
-  and moving the project means running `build_app.py` again. Its executable must stay a compiled
+- **The Mac app runs the checkout, not a copy** (the `--standalone` download aside). `Open
+  Detector.app` holds absolute paths to this folder's `.venv` and `deploy/macos/launcher.py`, so code
+  changes show up the next time it opens, and moving the project means running `build_app.py` again. Its executable must stay a compiled
   program that embeds Python: a shell script that `exec`s python loses the app's process (macOS
   reports pid -1), which breaks accessibility and bringing the open window forward. The launcher
   tells a Red team batch is running from the `caffeinate` child `ui/redteam.py` starts, so keep that
@@ -252,6 +262,11 @@ Each of these is one command.
 - Build or rebuild the Mac app in `~/Applications` (needs the Xcode command line tools):
   ```bash
   .venv/bin/python deploy/macos/build_app.py
+  ```
+- Build the download, `dist/Open-Detector.dmg` (also needs uv; takes a few minutes), then attach it
+  to a GitHub release under that exact name, which README.md's download link points to:
+  ```bash
+  .venv/bin/python deploy/macos/build_app.py --standalone --dmg
   ```
 - Score one file from the command line (`.txt`, `.md`, `.docx` or `.pptx`; add `--answers-only`
   for a worksheet, or use `/ai-detect <file>` in Claude Code):

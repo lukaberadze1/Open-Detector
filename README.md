@@ -14,6 +14,35 @@ An AI-text detector with a Streamlit app of two pages:
 Try both pages at https://open-detector.streamlit.app. On the Red team page, paste your own Gemini
 key in the sidebar and add your own style profile; both are kept only for your browser session.
 
+## Download the Mac app
+
+Open Detector also comes as a Mac app that runs entirely on your computer. You don't need to install
+anything else or use the Terminal. It needs a Mac with Apple silicon (M1 or newer), macOS 14 Sonoma or
+later, and about 4 GB of free space.
+
+1. Download **[Open-Detector.dmg](https://github.com/lukaberadze1/Open-Detector/releases/latest/download/Open-Detector.dmg)**.
+2. Double-click the downloaded file. In the window that opens, drag **Open Detector** onto the
+   **Applications** folder. If your Mac asks for an administrator password you don't have, drag it
+   onto your Desktop instead.
+3. Open **Open Detector** from your Applications folder or Launchpad. The first time, your Mac says
+   it can't check the app for malicious software, because this free app isn't registered with Apple.
+   Press **Done**, then let it open:
+   - **macOS 15 or later:** open **System Settings**, go to **Privacy & Security**, scroll down to
+     *"Open Detector" was blocked*, press **Open Anyway** and confirm with your password or Touch ID.
+   - **macOS 14:** Control-click (or right-click) the app, choose **Open**, then press **Open** again.
+
+   You only do this once.
+4. The app opens on its **Guide**, which explains the rest. Your first check downloads the detector,
+   about 1.7 GB, once; after that it works without the internet.
+5. Only for the Red team page: get a free Gemini API key at
+   [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and paste it on the Guide page.
+   Checking texts needs no key.
+
+The texts you check never leave your Mac. Your key and Red team samples are kept in
+`~/Library/Application Support/Open Detector`, and the downloaded models in `~/.cache/huggingface`.
+To update, download the newest file and replace the app; your key and samples stay. To remove it,
+drag the app to the Bin and delete those two folders.
+
 ## How it scores
 
 Three engines score overlapping windows of the whole text: GLYPH (DeBERTa-v3-base), Desklib
@@ -38,7 +67,8 @@ cp .env.example .env
 ```
 
 Put your Gemini key after `GEMINI_API_KEY=` in `.env` (free at
-[aistudio.google.com/apikey](https://aistudio.google.com/apikey)). Only the Red team page needs it.
+[aistudio.google.com/apikey](https://aistudio.google.com/apikey)), or paste it on the app's Guide
+page, which saves it there. Only the Red team page needs it.
 To write in a style, save a JSON style profile in `data/styles/`; the page lists every one there.
 Git ignores `.env` and `data/`, so your key and profile stay on your machine.
 
@@ -55,6 +85,12 @@ Dock like any other (needs the Xcode command line tools, `xcode-select --install
 
 ```bash
 .venv/bin/python deploy/macos/build_app.py
+```
+
+That app runs your checkout. To build the self-contained download instead, `dist/Open-Detector.dmg`:
+
+```bash
+.venv/bin/python deploy/macos/build_app.py --standalone --dmg
 ```
 
 To score a file from the command line:

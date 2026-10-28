@@ -38,7 +38,7 @@ TONES = {
 }
 
 CSS = """
-.od-verdict { position: relative; overflow: hidden; border-radius: var(--od-radius, 22px);
+.od-verdict { position: relative; overflow: clip; border-radius: var(--od-radius, 22px);
   padding: 1.5rem 1.6rem 1.25rem;
   background: var(--od-panel); border: 1px solid var(--od-edge); box-shadow: var(--od-shadow);
   -webkit-backdrop-filter: blur(26px) saturate(170%); backdrop-filter: blur(26px) saturate(170%); }
