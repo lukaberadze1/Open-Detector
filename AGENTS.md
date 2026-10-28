@@ -178,7 +178,8 @@ To regenerate both shipped combiners after the caches change:
   - Never commit keys or print them.
   - Tests must not read the real `.env`; `tests/test_generate_essays.py` patches `load_env`.
   - The repo is public.
-  - **Public mode** (`OPENDETECTOR_PUBLIC=on`, the live app) serves strangers. The Red team page
+  - **Public mode** (`OPENDETECTOR_PUBLIC=on`, the live app, and the default whenever the code runs
+    from Streamlit Community Cloud's `/mount/src`) serves strangers. The Red team page
     takes the visitor's own key from the sidebar and never reads environment keys, fixes the API
     address to Gemini (a visitor-chosen URL would let them make the server fetch any address),
     and keeps each browser session's samples, profiles and batches in `data/visitors/<id>/`

@@ -299,6 +299,19 @@ def public_page(visitor):
     return at
 
 
+def test_public_mode_is_on_by_default_on_streamlit_community_cloud(monkeypatch):
+    from ui import redteam
+
+    monkeypatch.delenv("OPENDETECTOR_PUBLIC", raising=False)
+    monkeypatch.setattr(redteam, "ROOT", Path("/mount/src/open-detector"))
+    assert redteam.public()
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "off")
+    assert not redteam.public()
+    monkeypatch.delenv("OPENDETECTOR_PUBLIC")
+    monkeypatch.setattr(redteam, "ROOT", Path("/Users/someone/Open-Detector"))
+    assert not redteam.public()
+
+
 def test_public_mode_writes_only_with_the_visitors_own_key(stub_model, monkeypatch):
     from eval.generate_essays import GEMINI_API_URL
 

@@ -127,8 +127,13 @@ def running_batches() -> dict:
 
 
 def public() -> bool:
-    """Whether this is a public deploy, where visitors bring their own key and see only their own work."""
-    return os.environ.get("OPENDETECTOR_PUBLIC", "off").strip().lower() in ("1", "on", "true", "yes")
+    """Whether this is a public deploy, where visitors bring their own key and see only their own work:
+    OPENDETECTOR_PUBLIC when it is set, otherwise whether this runs on Streamlit Community Cloud, which
+    keeps apps under /mount/src. That way an app started from app.py there never serves the host's keys."""
+    value = os.environ.get("OPENDETECTOR_PUBLIC", "").strip().lower()
+    if value:
+        return value in ("1", "on", "true", "yes")
+    return ROOT.parts[:3] == ("/", "mount", "src")
 
 
 @dataclass(frozen=True)
