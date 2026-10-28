@@ -1,151 +1,67 @@
-> **This fork** replaces the BERT model described below with a calibrated three-engine ensemble, a
-> Streamlit app and a red-team generator. Setup (including your own Gemini key and style profile),
-> usage and results are in [DETECTOR.md](DETECTOR.md). The rest of this page is the original
-> project's README.
+# Open Detector
 
-# 🧠 Open Detector —— Academic Paper AI Detector
+An AI-text detector with a Streamlit app of two pages:
 
-<div align="center">
+- **Detect** scores pasted text or a Word, PowerPoint or Markdown file. It gives a verdict (*Likely
+  AI*, *Needs review* or *Likely human*), a calibrated AI likelihood, each engine's reading,
+  sentence highlights and a score for every long section. For a worksheet it can score just the
+  filled-in answer cells.
+- **Red team** writes labelled AI samples to test the detector with: a new sample from a prompt,
+  a rewrite of one section of an uploaded document, a new answer in every answer box, or a rewrite
+  of every text block. It writes with Gemini, can follow a writer's style profile, scores each
+  sample with the detector and saves it as labelled AI data.
 
-![License](https://img.shields.io/badge/License-MIT-blue.svg)
-![Python](https://img.shields.io/badge/Python-3.8+-green.svg)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange.svg)
-![Hugging Face](https://img.shields.io/badge/HuggingFace-Model-yellow.svg)
+The live demo runs the detector only: https://open-detector.streamlit.app
 
-**Language / 语言**: [English](README_EN.md) | [中文](README_ZH.md)
+## How it scores
 
-</div>
+Three engines score overlapping windows of the whole text: GLYPH (DeBERTa-v3-base), Desklib
+(DeBERTa-v3-large) and Binoculars (a Qwen2.5-0.5B pair). A logistic-regression combiner turns
+their readings into one AI likelihood, with cut-offs set on held-out human writing for a 1%
+(*Likely AI*) and 5% (*Needs review*) false-positive rate. It gives no verdict on texts under 150
+words or on non-prose such as poems and lists, and it strips hidden characters and look-alike
+letters before scoring. The *Slim* build runs Desklib alone on the CPU in about 1.5 GB.
 
-**Open Detector** is a BERT binary classification model for identifying whether academic papers are closer to **human writing** or **AI writing style**. It serves as an **open alternative** to expensive commercial detectors like Turnitin, suitable for students, individual researchers, and local deployment users.
-
-![Demo](images/demo.png)
-
-> 🌐 **Try Online**: [https://www.xyzscience.com/](https://www.xyzscience.com/)
-
----
-
-## 🧩 Background & Philosophy
-
-### 💡 Why This Project?
-
-Commercial academic detection services like Turnitin are expensive and not friendly to students, researchers, and self-funded researchers. **Paper detection should be transparent, fair, and explainable, not a commercial black box**. Therefore, we open-source the model to provide the community with a transparent, low-cost solution.
-
-### ⚠️ Philosophy on AI Text Detection
-
-AI's mission is to improve efficiency, not to return people to the era of handwriting.
-
-AI writing far exceeds most human writers in vocabulary selection, syntactic structure, and logical coherence.
-
-❌ **"Writing like AI" ≠ Academic Misconduct.**
-
-Academic integrity should not be judged by language style, but should return to content authenticity.
-
-Judging paper quality solely by style is absurd.
-
-What we should really focus on is not "whether you used AI," but whether the content is authentic, reliable, and free of false generation.
-
-In other words: **We should detect AI hallucinations, not AI writing.**
-
-⚠️ **Note**: This project is currently only **stylometric detection**. The future goal is to build an academic content authenticity detection and AI hallucination identification system.
-
----
-
-## 🤖 Model Introduction
-
-### ✨ Features
-
-Trained on approximately 1.4 million data samples
-
-- **High Accuracy**: Achieves 99.57% accuracy and 99.58% F1-score on academic text detection
-- **Low False Positive Rate**: Only 0.82% false positive rate, minimizing incorrect accusations
-- **Exceptional Recall**: 99.94% recall ensures AI-generated content is rarely missed
-- **Specialized for Academic Text**: Optimized specifically for academic writing patterns
-- **BERT-based Architecture**: Built on BERT-base-uncased for robust semantic understanding
-
----
-
-## 🎯 Performance
-
-<img src="images/fig1_performance_comparison.png" width="600" alt="Performance Comparison">
-
-<img src="images/fig2_confusion_matrix.png" width="500" alt="Confusion Matrix">
-
----
-
-## 🚀 Quick Start
-
-Model files are available at [https://huggingface.co/followsci/bert-ai-text-detector](https://huggingface.co/followsci/bert-ai-text-detector)
-
-### Install
+## Run it yourself
 
 ```bash
-pip install transformers torch
+git clone -b feat/phase1-ensemble https://github.com/lukaberadze1/Open-Detector.git && cd Open-Detector
 ```
 
-### Run
-
-```python
-from transformers import BertTokenizer, BertForSequenceClassification
-import torch
-
-model_name = "followsci/bert-ai-text-detector"
-tokenizer = BertTokenizer.from_pretrained(model_name)
-model = BertForSequenceClassification.from_pretrained(model_name)
-model.eval()
-
-text = "Your academic paragraph here..."
-inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
-
-with torch.no_grad():
-    outputs = model(**inputs)
-    probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
-    ai_prob = probs[0][1].item() * 100
-    human_prob = probs[0][0].item() * 100
-    
-    print(f"AI-generated: {ai_prob:.1f}% | Human: {human_prob:.1f}%")
+```bash
+uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
 ```
 
-### Parameters
+```bash
+cp .env.example .env
+```
 
-- **Labels**: `0 = Human`, `1 = AI`
-- **Max Length**: 512 tokens
+Put your Gemini key after `GEMINI_API_KEY=` in `.env` (free at
+[aistudio.google.com/apikey](https://aistudio.google.com/apikey)). Only the Red team page needs it.
+To write in a style, save a JSON style profile in `data/styles/`; the page lists every one there.
+Git ignores `.env` and `data/`, so your key and profile stay on your machine.
 
----
+```bash
+.venv/bin/streamlit run app.py
+```
 
-## 🚧 What We're Working On
+The app opens in your browser with **Detect** and **Red team** in the top bar. The first run
+downloads the models: 1.7 GB for Slim, about 4.4 GB for every engine. Machines with 8 GB of RAM or
+less start on Slim.
 
-### Research Directions
+To score a file from the command line:
 
-| Future Direction | Description |
-|-----------------|-------------|
-| Fact Consistency Verification | Citation chain checking, literature search comparison |
-| AI Hallucination Detection | Focus on distinguishing real vs. fabricated content |
-| Citation Authenticity | Prevent "fake citations" and "model-generated references" |
-| Academic Logic Consistency | Structure and reasoning verification |
-| Multi-language Extension | Support Chinese, Japanese, and other languages |
+```bash
+.venv/bin/python -m opendetector essay.docx
+```
 
-### Ultimate Goal
+## More
 
-Build a framework for "AI-assisted authentic academia," not an "anti-AI writing" tool.
+- [DETECTOR.md](DETECTOR.md): setup, the evaluation and calibration workflow, deployment and
+  red-teaming.
+- [eval/reports/latest.md](eval/reports/latest.md): the current evaluation results.
+- Known limits: English only; AI paraphrasing of human writing is the hardest case; a score is
+  statistical evidence, not proof of who wrote a text.
 
----
-
-## ✨ About Humanization Rewriting Model
-
-We have also trained an academic paper humanization rewriting model:
-
-- Maintains academic expression style
-- Eliminates AI writing traces
-- Avoids misjudgment by style detection
-
-📌 This model can be used for free at [https://www.xyzscience.com/](https://www.xyzscience.com/).
-
----
-
-## 📌 Final Thoughts
-
-> **AI should not be judged, but should become a tool to support knowledge creation.**  
-> **Our goal is not to punish AI, but to protect academic authenticity.**
-
-Thank you for reading. Welcome to Star ⭐ to support the open academic tools ecosystem.
-
+This project started as a fork of followsci's Open Detector, a single BERT classifier. Its original
+README is kept in [README_EN.md](README_EN.md) and [README_ZH.md](README_ZH.md).

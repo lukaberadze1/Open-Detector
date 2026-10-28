@@ -21,7 +21,8 @@ An AI-generated-text detector, built as a calibrated ensemble:
 - **Live app:** https://open-detector.streamlit.app runs the slim profile, deployed from branch
   `feat/phase1-ensemble` of https://github.com/lukaberadze1/Open-Detector (public).
 
-The repo started as a clone of followsci's "Open Detector" BERT detector. `README_EN.md`,
+`README.md` is the GitHub front page: what the app does and how to run it. The repo started as a
+clone of followsci's "Open Detector" BERT detector. `README_EN.md`,
 `README_ZH.md`, `example_usage.py` and `images/` are that original project's and describe a
 model this code no longer uses.
 
@@ -181,6 +182,8 @@ To regenerate both shipped combiners after the caches change:
     that runs `gh auth token --user lukaberadze1`. The global `gh` account is a different one,
     so don't change it.
   - `luka751` is an old private copy. `upstream` is the original project, with no push access.
+  - GitHub's front page shows `main`, kept equal to `feat/phase1-ensemble` so visitors see this
+    app. After pushing the feature branch, update it with `git push origin feat/phase1-ensemble:main`.
 - **Pushing deploys.** Pushing to `feat/phase1-ensemble` redeploys the live Streamlit app. Its
   entrypoint is `deploy/streamlit_cloud/streamlit_app.py`, on Python 3.12.
 - **Gemini quota.** The free tier allows very few requests on `gemini-3.8-flash`, so
