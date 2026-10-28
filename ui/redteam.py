@@ -43,6 +43,7 @@ from eval.generate_essays import (
     unload_local_model,
 )
 from eval.redteam_batch import BatchWorker, Checkpoint, StopRequested, batch_key
+from eval.evasion_mode import PROFILE_ID, PROFILE_INSTRUCTIONS, generate_until_target
 from opendetector import DetectorConfig
 from opendetector.documents import (
     AnswerSlot,
@@ -66,6 +67,7 @@ EXPORT_DIR = ROOT / "data/essays/exports"
 BATCH_DIR = ROOT / "data/essays/batches"
 VISITOR_DIR = ROOT / "data/visitors"  # a public deploy's per-visitor folders
 MAX_STYLE_BYTES = 500_000
+EVASION_TARGET = 0.05  # the AI likelihood robustness mode aims below
 DEFAULT_FALLBACK_MODELS = (
     "gemini-3.5-flash-lite",
     "gemini-3.6-flash",
@@ -193,6 +195,7 @@ class Plan:
     temperature: float = 0.8
     style_path: Path | None = None
     score: bool = True
+    evasion: bool = False
 
     @property
     def batch(self) -> bool:
@@ -458,6 +461,16 @@ def _setup(profile: str) -> Plan:
     plan.score = st.toggle("Score with the detector", key=keep("keep:redteam:score", True),
                            help=f"Uses the {models.PROFILE_LABELS[profile]} build chosen in the sidebar. The "
                                 "first score loads its models.")
+    if not public():  # a public deploy serves strangers, so it offers no detector-guided drafting
+        evasion = st.toggle(
+            "Detector robustness mode · aim below 5%", key=keep("keep:redteam:evasion", False),
+            disabled=not plan.score or plan.batch,
+            help="For labelled red-team samples, try up to three AI drafts and keep the lowest detector score. "
+                 "Available for single samples with scoring on; it does not guarantee a score under 5%.",
+        )
+        plan.evasion = evasion and plan.score and not plan.batch  # a disabled toggle keeps its value
+    if plan.evasion:
+        st.caption("Every draft is saved as AI-labelled evaluation data; the kept one records the mode and score.")
     return plan
 
 
@@ -985,19 +998,56 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
             "Return the sample only. This sample will be labelled as AI-generated evaluation data.\n\n"
             f"Test material:\n{test_material}"
         )
+    model, model_errors = conn.model, []
+    drafts: dict[str, str] = {}  # every draft written, with the model that wrote it
+    reports: dict = {}  # the detector's report on each draft robustness mode scored
+
+    def generate(prompt: str) -> str:
+        nonlocal model, model_errors
+        reply, model, model_errors = generate_with_fallback(
+            conn.base_url, conn.api_key, [conn.model, *conn.fallback_models], prompt,
+            0.95 if plan.evasion else plan.temperature,
+            system, conn.local_url, conn.local_model, answer_token_limit(plan.words),
+        )
+        text = clean_essay(reply)
+        drafts[text] = model
+        return text
+
+    def candidate_score(text: str) -> float | None:
+        local = bool(conn.local_model) and model == conn.local_model
+        if local:
+            unload_local_model(conn.local_url, conn.local_model)  # the detector needs the memory it holds
+        reports[text] = report = models.get_detector(plan.profile).analyze(text, sentences=False)
+        if local:
+            models.release()  # and the local model needs it back for the next draft
+        return report.ai_probability
+
+    def likelihood(text: str) -> float:
+        report = reports.get(text)
+        return report.ai_probability if report and report.ai_probability is not None else float("inf")
+
     try:
-        with st.spinner(f"Generating with {conn.model}…"):
-            essay, model, model_errors = generate_with_fallback(
-                conn.base_url, conn.api_key, [conn.model, *conn.fallback_models], user_prompt, plan.temperature,
-                system, conn.local_url, conn.local_model, answer_token_limit(plan.words),
-            )
+        if plan.evasion:
+            with st.spinner("Generating and scoring up to 3 red-team drafts…"):
+                try:
+                    essay = generate_until_target(
+                        generate, candidate_score, f"{user_prompt}\n\n{PROFILE_INSTRUCTIONS}").text
+                except Exception as exc:  # a spent quota or a failed score; keep the drafts already written
+                    if not drafts:
+                        raise
+                    essay = min(drafts, key=likelihood)
+                    st.warning(f"Robustness mode stopped after {len(drafts)} draft(s), so the lowest-scoring one "
+                               f"is kept: {exc}")
+            model = drafts.get(essay, model)
+        else:
+            with st.spinner(f"Generating with {conn.model}…"):
+                essay = generate(user_prompt)
     except APIError as exc:
         st.error(str(exc), icon=":material/error:")
         return
-    essay = clean_essay(essay)
 
-    score = None
-    if plan.score:
+    score = reports.get(essay)
+    if plan.score and score is None:
         try:
             if conn.local_model and model == conn.local_model:
                 unload_local_model(conn.local_url, conn.local_model)  # the detector needs the memory it holds
@@ -1008,7 +1058,8 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
 
     prompt_hash = hashlib.sha256(test_material.encode()).hexdigest()[:16]
     mode_tag = "regenerate_section" if target_section else "prompt"
-    attack = f"{mode_tag}+{plan.style_name}"
+    attack = (f"{mode_tag}+{plan.style_name}+{PROFILE_ID}" if plan.evasion
+              else f"{mode_tag}+{plan.style_name}")
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     row = {
         "id": f"local-{timestamp}-{prompt_hash}-{model}-{attack}",
@@ -1030,10 +1081,28 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         "calibrated": score.calibrated if score else None,
         "detector_profile": plan.profile if score else None,
     }
+    reached = likelihood(essay) < EVASION_TARGET
+    if plan.evasion:
+        row |= {"evasion_mode": True, "evasion_profile": PROFILE_ID, "evasion_target": EVASION_TARGET,
+                "evasion_attempts": len(drafts), "evasion_reached_target": reached, "evasion_kept": True}
     store = _store()
     store.output.parent.mkdir(parents=True, exist_ok=True)
     with store.output.open("a", encoding="utf-8") as output:
         output.write(json.dumps(row, ensure_ascii=False) + "\n")
+        # The drafts robustness mode passed over are labelled AI data too; they share the prompt's group_key,
+        # so a split never puts one in training and another in test.
+        for attempt, (draft, draft_model) in enumerate(drafts.items() if plan.evasion else (), 1):
+            if draft != essay:
+                report = reports.get(draft)
+                output.write(json.dumps(row | {
+                    "id": f"local-{timestamp}-{prompt_hash}-{draft_model}-{attack}-draft{attempt}",
+                    "text": draft, "model": draft_model,
+                    "ai_probability": report.ai_probability if report else None,
+                    "verdict": report.verdict if report else None,
+                    "calibrated": report.calibrated if report else None,
+                    "detector_profile": plan.profile if report else None,
+                    "evasion_reached_target": likelihood(draft) < EVASION_TARGET, "evasion_kept": False,
+                }, ensure_ascii=False) + "\n")
 
     export_name = f"AI_REDTEAM_{mode_tag}_{timestamp}_{prompt_hash}.txt"
     export_path = store.exports / export_name
@@ -1061,6 +1130,8 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         "detect_text": essay,
         "row": row,
         "note": f"Written by {model} after {len(model_errors)} model(s) failed." if model_errors else None,
+        "evasion_note": (f"Robustness mode wrote {len(drafts)} draft(s) and kept the lowest-scoring one, which "
+                         + ("is under 5%." if reached else "is not under 5%.")) if plan.evasion else None,
         "score": (
             {
                 "probability": score.ai_probability,
@@ -1151,6 +1222,8 @@ def _show_result(result: dict, profile: str) -> None:
                 st.badge(row["attack"], icon=":material/label:", color="violet")
         if result.get("note"):
             st.caption(result["note"])
+        if result.get("evasion_note"):
+            st.caption(result["evasion_note"])
 
         score = result["score"]
         if score and score["verdict"] not in ("insufficient_text", "not_prose"):

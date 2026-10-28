@@ -187,6 +187,78 @@ def test_red_team_sample_is_recorded_as_ai_with_its_score(stub_model, tmp_path):
     assert at.session_state["last_generated_result"]["detect_text"] == rows[0]["text"]
 
 
+def robustness_page(monkeypatch, replies, until_target):
+    """The Red team page in robustness mode, its text model answering `replies` in turn (text, model) and
+    its draft loop replaced by `until_target`, which these tests own."""
+    from ui import redteam
+
+    answers = iter(replies)
+    monkeypatch.setattr(redteam, "generate_with_fallback", lambda *args: (*next(answers), []))
+    monkeypatch.setattr(redteam, "generate_until_target", until_target)
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.session_state["keep:redteam:evasion"] = True
+    at.run()
+    at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
+    button(at, "Generate sample").click()
+    at.run()
+    assert not at.exception, at.exception
+    return at
+
+
+def test_robustness_mode_keeps_the_lowest_draft_and_saves_every_one(stub_model, tmp_path, monkeypatch):
+    prompts = []
+
+    def lowest_of_three(generate, score, prompt):
+        prompts.append(prompt)
+        drafts = [generate(prompt) for _ in range(3)]
+        return SimpleNamespace(text=min(drafts, key=score))
+
+    replies = [(AI * 15, "model-a"), (HUMAN * 15, "model-b"), (AI * 20, "model-c")]
+    at = robustness_page(monkeypatch, replies, lowest_of_three)
+    assert prompts[0].startswith("Write an AI-generated red-team sample")
+
+    rows = [json.loads(line) for line in (tmp_path / "local_redteam.jsonl").read_text().splitlines()]
+    assert [(r["model"], r["evasion_kept"], r["label"]) for r in rows] == [
+        ("model-b", True, 1), ("model-a", False, 1), ("model-c", False, 1),
+    ], "the kept draft first, credited to the model that wrote it, then the others"
+    assert rows[0]["text"] == (HUMAN * 15).strip()
+    assert rows[0]["evasion_attempts"] == 3 and rows[0]["evasion_reached_target"]
+    assert rows[0]["verdict"] == "likely_human" and rows[1]["verdict"] == rows[2]["verdict"] == "likely_ai"
+    assert len({r["group_key"] for r in rows}) == 1 and len({r["id"] for r in rows}) == 3
+    assert at.session_state["last_generated_result"]["detect_text"] == rows[0]["text"]
+
+
+def test_robustness_mode_keeps_its_drafts_when_the_models_run_out(stub_model, tmp_path, monkeypatch):
+    from ui import redteam
+
+    def quota_runs_out(generate, score, prompt):
+        score(generate(prompt))
+        raise redteam.APIError("Every configured text model failed: quota")
+
+    at = robustness_page(monkeypatch, [(AI * 15, "model-a")], quota_runs_out)
+    assert any("stopped after 1 draft" in w.value for w in at.warning)
+    rows = [json.loads(line) for line in (tmp_path / "local_redteam.jsonl").read_text().splitlines()]
+    assert [(r["model"], r["evasion_kept"], r["evasion_reached_target"]) for r in rows] == [("model-a", True, False)]
+
+
+def test_robustness_mode_follows_the_scoring_switch(stub_model, tmp_path, monkeypatch):
+    from ui import redteam
+
+    monkeypatch.setattr(redteam, "generate_until_target", lambda *args: pytest.fail("robustness mode ran"))
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.session_state["keep:redteam:evasion"] = True
+    at.session_state["keep:redteam:score"] = False  # the robustness toggle is greyed out but still on
+    at.run()
+    at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
+    button(at, "Generate sample").click()
+    at.run()
+    assert not at.exception, at.exception
+    row = json.loads((tmp_path / "local_redteam.jsonl").read_text())
+    assert "evasion_mode" not in row and row["verdict"] is None
+
+
 def test_red_team_writes_in_the_style_profile_picked(stub_model, tmp_path):
     styles = tmp_path / "styles"
     styles.mkdir()
@@ -319,6 +391,7 @@ def test_public_mode_writes_only_with_the_visitors_own_key(stub_model, monkeypat
     monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")  # the host's GEMINI_API_KEY is set, and must go unused
     at = public_page("a")
     assert not any(t.key == "keep:redteam:base_url" for t in at.text_input), "no visitor-chosen API address"
+    assert not any(t.key == "keep:redteam:evasion" for t in at.toggle), "no detector-guided drafting for strangers"
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
     button(at, "Generate sample").click()
     at.run()
