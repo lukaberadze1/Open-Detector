@@ -192,8 +192,12 @@ To regenerate both shipped combiners after the caches change:
   - `luka751` is an old private copy. `upstream` is the original project, with no push access.
   - GitHub's front page shows `main`, kept equal to `feat/phase1-ensemble` so visitors see this
     app. After pushing the feature branch, update it with `git push origin feat/phase1-ensemble:main`.
-- **Pushing deploys.** Pushing to `feat/phase1-ensemble` redeploys the live Streamlit app. Its
-  entrypoint is `deploy/streamlit_cloud/streamlit_app.py`, on Python 3.12.
+- **Pushing deploys.** Pushing to `feat/phase1-ensemble` should redeploy the live Streamlit app. Its
+  entrypoint is `deploy/streamlit_cloud/streamlit_app.py`; the logs show it runs Python 3.14.
+  Pushes don't always reach it: on 2026-10-28 Streamlit got every push hook but kept running a
+  build cloned an hour earlier. If a change isn't live within a few minutes, sign in, open
+  **Manage app** on the live page, check the last "Starting up" time in the logs, and use
+  ⋮ → **Reboot app**, which clones the branch afresh.
 - **Gemini quota.** The free tier allows very few requests on `gemini-3.8-flash`, so
   `eval/generate_essays.py` switches to `gemini-3.5-flash-lite` on a spent quota, and both
   generators fall back to `gemma3:4b` on Ollama after that. Ollama must be running (`ollama serve`)
