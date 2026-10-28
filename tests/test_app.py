@@ -114,7 +114,8 @@ def red_team_page():
 @pytest.fixture
 def stub_model(monkeypatch, tmp_path):
     """The Red team page writing to tmp_path, with a stand-in text model that records its prompts and
-    waits for `gate` before answering."""
+    the local model it was offered, and waits for `gate` before answering. Notifications are recorded,
+    and nothing keeps the machine awake."""
     from ui import redteam
 
     for name, path in (("ROOT", tmp_path), ("OUTPUT_PATH", tmp_path / "local_redteam.jsonl"),
@@ -124,15 +125,25 @@ def stub_model(monkeypatch, tmp_path):
     monkeypatch.setattr(redteam, "load_env", lambda: None)  # never read the real .env
     monkeypatch.setattr(redteam, "local_fallback_problem", lambda url, model: None)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    stub = SimpleNamespace(prompts=[], gate=threading.Event())
+    stub = SimpleNamespace(prompts=[], orders=[], local_models=[], notifications=[], failures=[],
+                           gate=threading.Event())
     stub.gate.set()
 
-    def write(base_url, api_key, models, prompt, *args):
+    def write(base_url, api_key, models, prompt, temperature, system, local_url="", local_model="", *args):
         stub.prompts.append(prompt)
+        stub.orders.append(list(models))
+        stub.local_models.append(local_model)
         assert stub.gate.wait(30)
+        if stub.failures:  # "busy", or "spent:<model>" for a model whose quota runs out
+            failure = stub.failures.pop(0)
+            if failure.startswith("spent:"):
+                args[-1].add(failure.removeprefix("spent:"))
+            raise redteam.APIError(f"Every configured text model failed: {failure}")
         return AI * 15, "stub-model", []
 
     monkeypatch.setattr(redteam, "generate_with_fallback", write)
+    monkeypatch.setattr(redteam, "_notify", stub.notifications.append)
+    monkeypatch.setattr(redteam, "_keep_awake", lambda: None)
     yield stub
     stub.gate.set()  # never leave a worker waiting
 
@@ -204,8 +215,9 @@ def test_red_team_rewrites_every_block_of_a_word_document(stub_model, tmp_path):
     at.run()
     assert run_until_batch_ends(at) == ("success", "All 2 blocks of bees.docx are done and exported.")
     assert [toast.value for toast in at.toast] == ["All 2 blocks of bees.docx are done and exported."]
+    assert stub_model.notifications == ["All 2 blocks of bees.docx are written and exported."]
 
-    assert [prompt.split(". ")[0] for prompt in stub_model.prompts] == [
+    assert [prompt.split("---\n\n")[1].split(". ")[0] for prompt in stub_model.prompts] == [
         "Rewrite only the existing text block labelled Paragraph 2",
         "Rewrite only the existing text block labelled Paragraph 4",
     ]
@@ -223,7 +235,7 @@ def test_red_team_rewrites_every_block_of_a_word_document(stub_model, tmp_path):
     assert not list((tmp_path / "batches").glob("*.json")), "a finished batch's checkpoint is discarded"
 
 
-def test_a_running_batch_stays_in_view_and_blocks_a_second_one(stub_model, tmp_path):
+def test_a_running_batch_takes_over_the_page_with_a_countdown(stub_model, tmp_path):
     stub_model.gate.clear()  # hold the first block until the end of the test
     at = word_document_page()
     button(at, "Rewrite 2 blocks").click()
@@ -231,23 +243,68 @@ def test_a_running_batch_stays_in_view_and_blocks_a_second_one(stub_model, tmp_p
     assert not at.exception, at.exception
 
     def progress_shown():
-        return any("Generating 2 blocks** of bees.docx · Rewrite every block" in m.value for m in at.markdown)
+        return any("Writing bees.docx** · Rewrite every block" in m.value for m in at.markdown)
 
     assert progress_shown()
-    assert not [b.label for b in at.button if b.label.startswith(("Rewrite", "Resume", "Fill"))]
+    assert {m.label: m.value for m in at.metric} == {
+        "Time left": "Timing the first block…", "Done around": "Soon", "Blocks written": "0 of 2",
+    }
+    assert [b.label for b in at.button] == ["Stop"], "while a batch runs, nothing else can start"
 
-    # Other settings mean another batch: it can't start while this one runs, and this one stays in view.
+    # Whatever the page is set to, it shows only the running batch.
     at.session_state["keep:redteam:match"] = False
-    at.run()
-    assert progress_shown()
-    assert not [b.label for b in at.button if b.label.startswith(("Rewrite", "Resume", "Fill"))]
     at.session_state["keep:redteam:task"] = "sample"
     at.run()
     assert progress_shown()
-    assert "Generate sample" in [b.label for b in at.button]
+    assert [b.label for b in at.button] == ["Stop"]
 
     # It ends while the page is set to something else, and is exported with its own settings.
     stub_model.gate.set()
     assert run_until_batch_ends(at)[0] == "success"
     assert len(list((tmp_path / "exports").glob("AI_REDTEAM_full_document_*.docx"))) == 1
     assert "Aim for about 11 words" in stub_model.prompts[0], "the batch kept its match-the-length setting"
+
+
+def test_block_prompts_start_with_the_same_document():
+    """A local model keeps a prompt's start cached, so every block's prompt opens with the document."""
+    from opendetector.documents import extract_answer_slots, extract_document, rewritable_blocks
+    from ui import redteam
+    from ui.components import Upload
+
+    data = essay_docx()
+    plan = redteam.Plan("Keep it short.", Upload("bees.docx", data), extract_document("bees.docx", data),
+                        extract_answer_slots("bees.docx", data), rewritable_blocks("bees.docx", data), "blocks",
+                        "slim", rewrite_all_blocks=True)
+    prompts = [redteam._block_prompt(plan, job) for job in redteam._batch_jobs(plan)]
+    shared = f"Full document context:\n{plan.context_text}\n\n---\n\nRewrite only the existing text block labelled "
+    assert [prompt.startswith(shared) for prompt in prompts] == [True, True]
+    assert [prompt.endswith(previous) for prompt, previous in zip(prompts, (
+        "Bees need a dry hive and a nearby source of water.", "They live on nectar and pollen from flowers."),
+        strict=True)] == [True, True]
+
+
+def test_a_local_model_too_big_for_the_machine_is_left_out(stub_model, monkeypatch):
+    from ui import models, redteam
+
+    monkeypatch.setattr(models, "RAM_GB", 8.0)
+    monkeypatch.setattr(redteam, "SMALL_MACHINE_LOCAL_CONTEXT", 4096)  # smaller than any prompt's window
+    at = word_document_page()
+    button(at, "Rewrite 2 blocks").click()
+    at.run()
+    run_until_batch_ends(at)
+    assert stub_model.local_models == ["", ""], "gemma3:4b, the page's default, is never offered"
+
+
+def test_a_batch_waits_out_busy_models_and_drops_only_spent_ones(stub_model, monkeypatch):
+    from ui import redteam
+
+    monkeypatch.setattr(redteam, "BUSY_WAIT", 0)
+    stub_model.failures = ["spent:gemini-3.8-flash", "busy"]
+    at = word_document_page()
+    button(at, "Rewrite 2 blocks").click()
+    at.run()
+    assert run_until_batch_ends(at)[0] == "success"
+    assert len(stub_model.prompts) == 4, "the first block is asked three times, the second once"
+    first, second, third, _ = stub_model.orders
+    assert "gemini-3.8-flash" in first and "gemini-3.8-flash" not in second
+    assert third == second, "a model that was only busy stays in the list"

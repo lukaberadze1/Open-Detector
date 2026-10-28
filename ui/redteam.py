@@ -13,8 +13,11 @@ import html
 import json
 import os
 import re
+import subprocess
+import sys
+import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import streamlit as st
@@ -25,14 +28,16 @@ from eval.generate_essays import (
     LOCAL_MODEL,
     LOCAL_URL,
     APIError,
+    answer_token_limit,
     clean_essay,
     generate_with_fallback,
     load_style_profile,
+    local_context_size,
     local_model_problem,
     style_instructions,
     unload_local_model,
 )
-from eval.redteam_batch import BatchWorker, Checkpoint, batch_key
+from eval.redteam_batch import BatchWorker, Checkpoint, StopRequested, batch_key
 from opendetector import DetectorConfig
 from opendetector.documents import (
     AnswerSlot,
@@ -77,6 +82,13 @@ TASKS = {
 }
 RESULT = "last_generated_result"
 NOTICE = "redteam:notice"  # how the last batch ended, shown until the next run starts
+# The largest context window a local model gets on a machine with 8 GB or less. gemma3:4b ran with
+# 4,096 tokens and crashed Ollama with 32,768 on an 8 GB Mac; a batch whose prompts need more than this
+# leaves the local model out and stops when the hosted models are spent.
+SMALL_MACHINE_LOCAL_CONTEXT = 8192
+# When every model a batch has left is busy or rate-limited, it waits and asks again: 30 s, then 60 s
+# and so on, five times (7.5 minutes in all) before it stops.
+BUSY_RETRIES, BUSY_WAIT = 5, 30
 
 
 def person_instruction(*samples: str) -> str:
@@ -168,7 +180,28 @@ class Plan:
 
 
 def duration(seconds: float) -> str:
+    if seconds >= 3600:
+        return f"{seconds // 3600:.0f} h {seconds % 3600 / 60:.0f} min"
     return f"{seconds / 60:.0f} min" if seconds >= 90 else f"{seconds:.0f} s"
+
+
+def _keep_awake() -> subprocess.Popen | None:
+    """Keep the Mac from going to sleep while a batch runs: until the returned process is ended, or
+    this server stops. Nothing happens on other systems."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        return subprocess.Popen(["caffeinate", "-i", "-s", "-w", str(os.getpid())])
+    except OSError:
+        return None
+
+
+def _notify(message: str) -> None:
+    """A macOS notification, so a long batch can be left to run. Nothing happens on other systems."""
+    if sys.platform == "darwin":
+        subprocess.run(["osascript", "-e", "on run argv", "-e",
+                        'display notification (item 1 of argv) with title "Open Detector" sound name "Glass"',
+                        "-e", "end run", message], capture_output=True, timeout=10, check=False)
 
 
 def score_text(text: str, profile: str) -> dict:
@@ -547,22 +580,30 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
 
 @st.fragment(run_every=2)
 def _batch_progress(worker: BatchWorker) -> None:
-    """Live progress of a running batch, refreshed every two seconds without rerunning the page."""
+    """Live progress of a running batch with the time left, refreshed every two seconds without
+    rerunning the page."""
     if not worker.is_alive():
         st.rerun()  # the whole page: export the result and show it
     # Read the checkpoint from disk: the worker's own copy may change while it is being read.
     saved = Checkpoint.load(worker.checkpoint.path) or worker.checkpoint
     scoring = worker.phase == "scoring"
-    verb = "scored" if scoring else "generated"
+    verb = "scored" if scoring else "written"
     keys, total = worker.keys, len(worker.keys)
     done = len(saved.scored(keys) if scoring else saved.generated(keys))
-    times, left = worker.seconds[verb], total - done
-    eta = f" · about {duration(sum(times) / len(times) * left)} left" if times and left else ""
+    # The last few blocks predict the rest best: a switch to another model changes the pace.
+    recent = worker.seconds["scored" if scoring else "generated"][-8:]
+    seconds_left = sum(recent) / len(recent) * (total - done) if recent else None
     with st.container(border=True):
         model_note = f" · {worker.status['model']}" if not scoring and worker.status.get("model") else ""
-        st.markdown(f":material/autorenew: **{'Scoring' if scoring else 'Generating'} {total} blocks** of "
-                    f"{worker.plan.upload.name} · {TASKS[worker.plan.task][0]}{model_note}")
-        st.progress(done / total, text=f"{done} of {total} blocks {verb}{eta}")
+        st.markdown(f":material/autorenew: **{'Scoring' if scoring else 'Writing'} {worker.plan.upload.name}** · "
+                    f"{TASKS[worker.plan.task][0]}{model_note}")
+        with st.container(horizontal=True):
+            st.metric("Time left" + (" to score" if scoring else ""),
+                      duration(seconds_left) if seconds_left is not None else "Timing the first block…", border=True)
+            st.metric("Done around", (datetime.now() + timedelta(seconds=seconds_left)).strftime("%H:%M")
+                      if seconds_left is not None else "Soon", border=True)
+            st.metric(f"Blocks {verb}", f"{done} of {total}", border=True)
+        st.progress(done / total)
         if note := worker.status.get("note"):
             st.caption(note)
         for line in worker.status.get("log", [])[-4:]:
@@ -575,8 +616,6 @@ def _batch_progress(worker: BatchWorker) -> None:
                             "exported; press Resume to continue."):
             worker.stop()
             st.rerun(scope="fragment")
-        st.caption("One batch runs at a time. It carries on if you change the settings, switch pages or close "
-                   "the tab.")
 
 
 def _finish_ended_batches() -> None:
@@ -626,6 +665,54 @@ def _saved_progress(plan: Plan, jobs: list[dict], checkpoint: Checkpoint) -> Non
             st.rerun()
 
 
+def _target_words(plan: Plan, job: dict) -> int:
+    """About how long a block's new text should be."""
+    if plan.match_existing_lengths and job["previous"].strip():
+        return count_words(job["previous"])
+    return plan.answer_words
+
+
+def _block_prompt(plan: Plan, job: dict) -> str:
+    """The prompt that writes one block of a batch. The document comes first and is the same for every
+    block, so a local model can keep it cached and read only the block's own part each time."""
+    voice_samples = [job["previous"]]
+    if job["kind"] == "answer_box":
+        voice_samples.extend(slot.previous_answer for slot in plan.answer_slots if slot.previous_answer)
+    else:
+        voice_samples.extend(section.text for section in plan.blocks if section.text != job["previous"])
+    voice_rule = person_instruction(*voice_samples)
+    target_words = _target_words(plan, job)
+    if job["kind"] == "answer_box":
+        generation_prompt = (
+            f"Other document context:\n{plan.context_text}\n\n---\n\n"
+            f"Generate a new AI red-team answer for the question in {job['label']}. "
+            f"Aim for about {target_words} words. "
+            f"{voice_rule} "
+            "Use the document's other questions and previous answers as context. "
+            "Replace the existing answer if one "
+            "is present. Do not change, repeat, or answer any other question. Return only the new answer text. "
+            "This answer is AI-generated red-team evaluation data.\n\n"
+            f"Additional instructions:\n{plan.prompt.strip() or '(none)'}\n\n"
+            f"Question to answer:\n{job['question']}\n\n"
+            f"Previous answer in this right-hand box (may be blank):\n{job['previous'] or '(blank)'}"
+        )
+    else:
+        generation_prompt = (
+            f"Full document context:\n{plan.context_text}\n\n---\n\n"
+            f"Rewrite only the existing {'Markdown text' if job['kind'] == 'markdown_block' else 'text'} block "
+            f"labelled {job['label']}. "
+            f"Aim for about {target_words} words. "
+            f"{voice_rule} "
+            "Keep its meaning and role in the document, using the surrounding document as context. "
+            "Return only the "
+            "replacement for this block. Do not output headings, questions, table rows, or any other block. "
+            "This replacement is AI-generated red-team evaluation data.\n\n"
+            f"Additional instructions:\n{plan.prompt.strip() or '(none)'}\n\n"
+            f"Existing text to regenerate:\n{job['previous']}"
+        )
+    return generation_prompt
+
+
 def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, checkpoint: Checkpoint | None,
                  system: str | None) -> None:
     keys = [job["key"] for job in jobs]
@@ -636,66 +723,64 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
     by_key = {job["key"]: job for job in jobs}
     status = {"model": None, "note": None, "log": [], "released": False,
               "order": list(dict.fromkeys([conn.model, *conn.fallback_models]))}
+    # One context window for the whole batch, big enough for its longest prompt, so the local model
+    # loads once and keeps the shared document cached from block to block.
+    local_context = max(
+        local_context_size(system, _block_prompt(plan, job), answer_token_limit(_target_words(plan, job)))
+        for job in jobs
+    )
+    local_model = conn.local_model
+    if local_model and models.RAM_GB <= 8.5 and local_context > SMALL_MACHINE_LOCAL_CONTEXT:
+        status["log"].append(
+            f"Leaving out {local_model}: this document's prompts need a {local_context:,}-token window, more than "
+            f"it can hold in {models.RAM_GB:.0f} GB. If the hosted models run out, the batch stops; press Resume "
+            "once their quota is back."
+        )
+        local_model = ""
 
     # These run on the worker's thread, so they must not call Streamlit; they report through `status`.
+    def write(prompt: str, max_tokens: int) -> tuple[str, str, list[str]]:
+        """Ask the models in turn. A model whose quota is spent for hours is dropped for the rest of the
+        batch; when the ones left are only busy or rate-limited, wait and ask again."""
+        for retry in range(BUSY_RETRIES + 1):
+            spent: set[str] = set()
+            try:
+                return generate_with_fallback(conn.base_url, conn.api_key, status["order"], prompt, plan.temperature,
+                                              system, conn.local_url, local_model, max_tokens, local_context, spent)
+            except APIError:
+                left = [model for model in status["order"] if model not in spent]
+                if retry == BUSY_RETRIES or not (left or local_model):
+                    raise
+            finally:
+                if spent:
+                    status["log"].append(f"Dropping {', '.join(sorted(spent))} for this batch: quota spent.")
+                    status["order"] = [model for model in status["order"] if model not in spent]
+            for second in range(BUSY_WAIT * (retry + 1), 0, -1):
+                if worker.stopping:
+                    raise StopRequested
+                status["note"] = (f"Every model is busy or rate-limited. Trying again in {duration(second)} "
+                                  f"(try {retry + 2} of {BUSY_RETRIES + 1}).")
+                time.sleep(1)
+            status["note"] = None
+        raise AssertionError("unreachable")
+
     def generate_block(key: str) -> tuple[str, str]:
         job = by_key[key]
-        voice_samples = [job["previous"]]
-        if job["kind"] == "answer_box":
-            voice_samples.extend(slot.previous_answer for slot in plan.answer_slots if slot.previous_answer)
-        else:
-            voice_samples.extend(section.text for section in plan.blocks if section.text != job["previous"])
-        voice_rule = person_instruction(*voice_samples)
-        target_words = (
-            count_words(job["previous"])
-            if plan.match_existing_lengths and job["previous"].strip()
-            else plan.answer_words
-        )
-        if job["kind"] == "answer_box":
-            generation_prompt = (
-                f"Generate a new AI red-team answer for the question in {job['label']}. "
-                f"Aim for about {target_words} words. "
-                f"{voice_rule} "
-                "Use the document's other questions and previous answers as context. "
-                "Replace the existing answer if one "
-                "is present. Do not change, repeat, or answer any other question. Return only the new answer text. "
-                "This answer is AI-generated red-team evaluation data.\n\n"
-                f"Additional instructions:\n{plan.prompt.strip() or '(none)'}\n\n"
-                f"Question to answer:\n{job['question']}\n\n"
-                f"Previous answer in this right-hand box (may be blank):\n{job['previous'] or '(blank)'}\n\n"
-                f"Other document context:\n{plan.context_text}"
-            )
-        else:
-            generation_prompt = (
-                f"Rewrite only the existing {'Markdown text' if job['kind'] == 'markdown_block' else 'text'} block "
-                f"labelled {job['label']}. "
-                f"Aim for about {target_words} words. "
-                f"{voice_rule} "
-                "Keep its meaning and role in the document, using the surrounding document as context. "
-                "Return only the "
-                "replacement for this block. Do not output headings, questions, table rows, or any other block. "
-                "This replacement is AI-generated red-team evaluation data.\n\n"
-                f"Additional instructions:\n{plan.prompt.strip() or '(none)'}\n\n"
-                f"Existing text to regenerate:\n{job['previous']}\n\n"
-                f"Full document context:\n{plan.context_text}"
-            )
-        answer, used_model, model_errors = generate_with_fallback(
-            conn.base_url, conn.api_key, status["order"], generation_prompt, plan.temperature, system,
-            conn.local_url, conn.local_model,
-        )
+        answer, used_model, model_errors = write(_block_prompt(plan, job), answer_token_limit(_target_words(plan, job)))
         if used_model != status["model"]:
             status["log"].append(f"Writing with {used_model}" + (
                 f" after {len(model_errors)} model(s) failed. Last error: {model_errors[-1][:300]}"
                 if model_errors else "."
             ))
             status["model"] = used_model
-        if used_model == conn.local_model and not status["released"]:
+        if used_model == local_model and not status["released"]:
             models.release()  # the local model needs the memory a loaded detector holds
             status["released"] = True
-        # Later blocks start from the model that worked; once that is the local model, the
-        # hosted ones are spent and every later block goes straight to it.
+        # Later blocks start from the model that worked. The ones before it were only busy (spent ones are
+        # dropped), so they move to the end rather than out.
         order = status["order"]
-        status["order"] = order[order.index(used_model) :] if used_model in order else []
+        if used_model in order:
+            status["order"] = order[order.index(used_model) :] + order[: order.index(used_model)]
         return clean_essay(answer), used_model
 
     def before_scoring() -> None:
@@ -715,14 +800,29 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         checkpoint.save()
         status["note"] = None
 
+    awake = _keep_awake()
+
+    def on_end() -> None:
+        if awake:
+            awake.terminate()
+        saved, name = len(checkpoint.generated(keys)), plan.upload.name
+        if worker.phase == "done":
+            _notify(f"All {len(keys)} blocks of {name} are written and exported.")
+        elif worker.phase == "stopped":
+            _notify(f"Stopped after {saved} of {len(keys)} blocks of {name}.")
+        else:
+            _notify(f"Batch stopped at block {saved + 1} of {len(keys)} of {name}: {str(worker.error)[:120]}")
+
     worker = BatchWorker(
         checkpoint, keys, generate_block,
         score=(lambda text: score_text(text, plan.profile)) if plan.score else None,
         before_scoring=before_scoring, finish=score_document if plan.score else None, status=status,
+        on_end=on_end,
     )
     # Kept on the worker so that whichever page run sees it end can export it, even after the page's
     # settings have changed.
     worker.plan, worker.jobs = plan, jobs
+    models.release()  # the detector isn't needed until the blocks are written; it reloads to score them
     running_batches()[str(path)] = worker
     worker.start()
 
@@ -766,7 +866,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         with st.spinner(f"Generating with {conn.model}…"):
             essay, model, model_errors = generate_with_fallback(
                 conn.base_url, conn.api_key, [conn.model, *conn.fallback_models], user_prompt, plan.temperature,
-                system, conn.local_url, conn.local_model,
+                system, conn.local_url, conn.local_model, answer_token_limit(plan.words),
             )
     except APIError as exc:
         st.error(str(exc), icon=":material/error:")
@@ -1048,38 +1148,40 @@ def render() -> None:
     _restore_last_result()
 
     st.title("Red team", anchor=False)
+    _finish_ended_batches()
+    running = [worker for worker in running_batches().values() if worker.is_alive()]
+    if running:
+        # Generator mode: while a batch runs, the page shows only its progress. One batch runs at a time.
+        st.markdown("A batch is running. The detector is unloaded until the blocks are written, and the Mac stays "
+                    "awake until it ends. You can close this tab: a notification says when it's done.")
+        for worker in running:
+            _batch_progress(worker)
+        return
     st.markdown("Generate labelled AI samples and see how the detector scores them. Everything generated here is "
                 "saved as AI-labelled evaluation data.")
     st.caption(":material/shield: For detector evaluation only: don't submit generated work as your own.")
 
     generate_tab, saved_tab = st.tabs(["Generate", "Saved samples"])
     with generate_tab:
-        _finish_ended_batches()
-        running = [worker for worker in running_batches().values() if worker.is_alive()]
         setup, output = st.columns([1.1, 1], gap="large")
         with setup:
             plan = _setup(profile)
             jobs = _batch_jobs(plan) if plan.batch else []
             path = _checkpoint_path(plan) if plan.batch else None
             checkpoint = Checkpoint.load(path) if plan.batch else None
-            for worker in running:
-                _batch_progress(worker)
             if notice := st.session_state.get(NOTICE):
                 getattr(st, notice[0])(notice[1])
-            if running and plan.batch:
-                clicked = False  # one batch at a time
+            if checkpoint:
+                _saved_progress(plan, jobs, checkpoint)
+                saved = len(checkpoint.generated([job["key"] for job in jobs]))
+                label, icon = f"Resume · {saved} of {len(jobs)} blocks saved", ":material/play_arrow:"
+            elif plan.rewrite_all_blocks:
+                label, icon = f"Rewrite {len(jobs)} blocks", ":material/auto_awesome:"
+            elif plan.fill_answer_boxes:
+                label, icon = f"Fill {len(jobs)} answer boxes", ":material/auto_awesome:"
             else:
-                if checkpoint:
-                    _saved_progress(plan, jobs, checkpoint)
-                    saved = len(checkpoint.generated([job["key"] for job in jobs]))
-                    label, icon = f"Resume · {saved} of {len(jobs)} blocks saved", ":material/play_arrow:"
-                elif plan.rewrite_all_blocks:
-                    label, icon = f"Rewrite {len(jobs)} blocks", ":material/auto_awesome:"
-                elif plan.fill_answer_boxes:
-                    label, icon = f"Fill {len(jobs)} answer boxes", ":material/auto_awesome:"
-                else:
-                    label, icon = "Generate sample", ":material/auto_awesome:"
-                clicked = st.button(label, type="primary", icon=icon, width="stretch")
+                label, icon = "Generate sample", ":material/auto_awesome:"
+            clicked = st.button(label, type="primary", icon=icon, width="stretch")
             problem = _problem(plan, conn) if clicked else None
             if problem:
                 st.error(problem)
@@ -1100,7 +1202,7 @@ def render() -> None:
                 _generate_sample(plan, conn, system)
             if result := st.session_state.get(RESULT):
                 _show_result(result, profile)
-            elif not running:
+            else:
                 st.info("Set up a sample on the left and generate it. It appears here with its detector score.",
                         icon=":material/auto_awesome:")
 

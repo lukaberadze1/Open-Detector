@@ -131,3 +131,13 @@ def test_batch_key_is_stable_and_changes_with_the_settings():
     key = batch_key("hash", True, False, "Write formally.", 100)
     assert key == batch_key("hash", True, False, "Write formally.", 100) and len(key) == 16
     assert key != batch_key("hash", True, False, "Write casually.", 100)
+
+
+def test_worker_runs_its_end_hook_however_the_batch_ends(tmp_path):
+    ended, workers = [], []
+    for name, generate in (("done", lambda key: ("text", "m")), ("failed", lambda key: 1 / 0)):
+        checkpoint = Checkpoint.start(tmp_path / f"{name}.json", {})
+        workers.append(BatchWorker(checkpoint, ["a"], generate, on_end=lambda: ended.append(workers[-1].phase)))
+        workers[-1].start()
+        workers[-1].join(5)
+    assert ended == ["done", "failed"]

@@ -289,12 +289,63 @@ def _gemini_interaction(model: str, api_key: str, prompt: str, temperature: floa
     raise AssertionError("unreachable")
 
 
+def answer_token_limit(words: int) -> int:
+    """The most tokens a local model may write for an answer of about `words` words: about twice what
+    it needs, so a model that has lost track can't run on for hundreds of words."""
+    return 2 * words + 200
+
+
+def local_context_size(system: str | None, prompt: str, max_tokens: int) -> int:
+    """A context window that holds the whole prompt and the answer. Ollama starts a model with a small
+    one (4,096 tokens) and silently drops the start of a longer prompt, which is where the style
+    profile and the instructions are. Counted at 3 characters a token (English runs nearer 4) and
+    rounded up to a multiple of 8,192, so that the prompts of one batch share one size: a new size
+    makes Ollama reload the model and lose what it has cached."""
+    tokens = (len(system or "") + len(prompt)) // 3 + max_tokens + 256
+    return -(-tokens // 8192) * 8192
+
+
+def chat_local(local_url: str, model: str, prompt: str, temperature: float, system: str | None = None,
+               max_tokens: int | None = None, context: int | None = None, timeout: int = LOCAL_TIMEOUT) -> str:
+    """Ask a local server. Ollama gets its own chat endpoint, which, unlike its OpenAI-compatible one,
+    takes a context window and an answer length. Every block of a batch starts with the same document,
+    so Ollama reads it once and keeps it cached. A server without that endpoint (LM Studio) gets the
+    OpenAI-compatible request."""
+    parsed = urllib.parse.urlparse(local_url)
+    max_tokens = max_tokens or answer_token_limit(500)
+    options = {"temperature": temperature, "num_predict": max_tokens,
+               "num_ctx": context or local_context_size(system, prompt, max_tokens)}
+    messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
+    req = urllib.request.Request(
+        f"{parsed.scheme}://{parsed.netloc}/api/chat",
+        data=json.dumps({"model": model, "messages": messages, "stream": False, "options": options}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            data = json.load(response)
+    except urllib.error.HTTPError as exc:
+        message, _ = _error_details(exc)
+        if exc.code == 404 and "not found" not in message.lower():  # not Ollama: no /api/chat
+            return chat(local_url, "", model, prompt, temperature, retries=1, system=system, timeout=timeout)
+        raise APIError(f"HTTP {exc.code} from {local_url}: {message}") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise APIError(f"could not reach {local_url}: {getattr(exc, 'reason', exc)}") from exc
+    content = ((data.get("message") or {}).get("content") or "").strip()
+    if not content:
+        raise APIError(f"empty response from {model}: {json.dumps(data)[:300]}")
+    return content
+
+
 def generate_with_fallback(base_url: str, api_key: str, models: list[str], prompt: str, temperature: float,
                            system: str | None, local_url: str = "", local_model: str = "",
-                           ) -> tuple[str, str, list[str]]:
+                           max_tokens: int | None = None, local_context: int | None = None,
+                           spent: set[str] | None = None) -> tuple[str, str, list[str]]:
     """Try the hosted models in order, advancing past quota and transient failures, then the local
-    model, which needs no key and has no quota. Returns the text, the model that wrote it and the
-    errors of the models that failed before it."""
+    model, which needs no key and has no quota. `max_tokens` caps the local model's answer, and
+    `local_context` fixes its context window (a batch passes one size for all its blocks). Models whose
+    quota is spent for hours, not just busy for a moment, are added to `spent`. Returns the text, the
+    model that wrote it and the errors of the models that failed before it."""
     attempted = []
     errors = []
     for model_name in dict.fromkeys(name.strip() for name in models if name.strip()):
@@ -304,6 +355,8 @@ def generate_with_fallback(base_url: str, api_key: str, models: list[str], promp
             return result, model_name, errors
         except APIError as exc:
             errors.append(f"{model_name}: {exc}")
+            if isinstance(exc, QuotaExhausted) and spent is not None:
+                spent.add(model_name)
             message = str(exc)
             lower_message = message.lower()
             endpoint_unreachable = "could not reach" in lower_message and not any(
@@ -314,8 +367,7 @@ def generate_with_fallback(base_url: str, api_key: str, models: list[str], promp
     if local_model:
         attempted.append(local_model)
         try:
-            result = chat(local_url, "", local_model, prompt, temperature, retries=1,
-                          system=system, timeout=LOCAL_TIMEOUT)
+            result = chat_local(local_url, local_model, prompt, temperature, system, max_tokens, local_context)
             return result, local_model, errors
         except APIError as exc:
             errors.append(f"{local_model}: {exc}. Is Ollama running? Start it with `ollama serve` and "

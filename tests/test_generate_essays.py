@@ -50,6 +50,10 @@ def completion(text):
     return 200, {"choices": [{"message": {"content": text}}]}
 
 
+def ollama_reply(text):
+    return 200, {"message": {"role": "assistant", "content": text}, "done_reason": "stop"}
+
+
 @pytest.fixture
 def csv(tmp_path):
     path = tmp_path / "persuade.csv"
@@ -267,16 +271,64 @@ def test_unreachable_local_fallback_says_how_to_start_it(monkeypatch, tmp_path, 
 
 def test_app_fallback_tries_the_local_model_after_every_hosted_one():
     hosted = FakeServer([(401, {"error": "API key not valid"})])
-    local = FakeServer([completion("From Gemma.")])
+    local = FakeServer([ollama_reply("From Gemma.")])
     try:
         text, model, errors = generate_essays.generate_with_fallback(
-            hosted.url, "key", ["a", "b"], "Write.", 0.8, None, local.url, "gemma3:4b")
+            hosted.url, "key", ["a", "b"], "Write.", 0.8, None, local.url, "gemma3:4b", 300, 16384)
     finally:
         hosted.close()
         local.close()
     assert (text, model) == ("From Gemma.", "gemma3:4b")
     assert len(hosted.requests) == 1, "a rejected key skips the other hosted models"
     assert len(errors) == 1 and "HTTP 401" in errors[0] and local.requests[0]["auth"] is None
+    assert local.requests[0]["path"] == "/api/chat"
+    assert local.requests[0]["body"]["options"] == {"temperature": 0.8, "num_predict": 300, "num_ctx": 16384}
+
+
+def test_local_model_gets_a_window_for_the_whole_prompt_and_a_capped_answer():
+    """Ollama's default window is 4,096 tokens, and it silently drops the start of a longer prompt."""
+    local = FakeServer([ollama_reply("Short answer.")])
+    system, prompt = "Style rule. " * 3000, "Shared document. " * 2000 + "The question?"
+    try:
+        assert generate_essays.chat_local(local.url, "gemma3:4b", prompt, 0.8, system,
+                                          generate_essays.answer_token_limit(40)) == "Short answer."
+    finally:
+        local.close()
+    options = local.requests[0]["body"]["options"]
+    assert options["num_predict"] == 280
+    assert options["num_ctx"] % 8192 == 0 and options["num_ctx"] >= (len(system) + len(prompt)) // 3 + 280
+    assert [m["role"] for m in local.requests[0]["body"]["messages"]] == ["system", "user"]
+
+
+def test_only_models_out_of_quota_for_hours_count_as_spent():
+    hosted = FakeServer([gemini_quota_error("23h1m"), (503, {"error": "high demand"})])
+    spent = set()
+    try:
+        with pytest.raises(generate_essays.APIError):
+            generate_essays.generate_with_fallback(hosted.url, "key", ["a", "b"], "Write.", 0.8, None, spent=spent)
+    finally:
+        hosted.close()
+    assert spent == {"a"}, "b was only busy"
+
+
+def test_a_local_server_without_ollamas_chat_endpoint_gets_the_openai_request():
+    local = FakeServer([(404, {"error": "Unexpected endpoint or method. (POST /api/chat)"}),
+                        completion("From LM Studio.")])
+    try:
+        assert generate_essays.chat_local(local.url, "qwen", "Write.", 0.8) == "From LM Studio."
+    finally:
+        local.close()
+    assert [r["path"] for r in local.requests] == ["/api/chat", "/v1/chat/completions"]
+
+
+def test_a_local_model_ollama_lacks_is_an_error_not_a_second_request():
+    local = FakeServer([(404, {"error": "model 'qwen3:4b' not found, try pulling it first"})])
+    try:
+        with pytest.raises(generate_essays.APIError, match="not found"):
+            generate_essays.chat_local(local.url, "qwen3:4b", "Write.", 0.8)
+    finally:
+        local.close()
+    assert len(local.requests) == 1
 
 
 def test_app_fallback_without_a_working_local_model_reports_every_failure():

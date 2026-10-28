@@ -51,9 +51,9 @@ files. The result shows the verdict and AI likelihood against the two cut-offs, 
 reading, sentence highlights, a sentence table and the calibration details. An uploaded document
 gets a full-document score, and each extracted paragraph, table cell or text box with at least 150
 words of prose is also scored on its own; shorter sections are listed without a verdict. For a
-worksheet, a toggle scores just the filled-in answer cells of its question/answer tables.
-Reference documents can be uploaded alongside to read; their text is never scored. The detector
-does not fill templates or rewrite content to target a score.
+worksheet, a toggle scores just the filled-in answer cells of its question/answer tables, like the
+command line's `--answers-only`. Reference documents can be uploaded alongside to read; their text
+is never scored. The detector does not fill templates or rewrite content to target a score.
 
 **Red team** generates labelled AI samples to test the detector with. Enter a test prompt or upload
 a Markdown, Word or PowerPoint source, then pick a task: a new sample, a rewrite of one section, a
@@ -82,6 +82,12 @@ run. The public deploys leave the page out with `OPENDETECTOR_REDTEAM=off`.
 ```bash
 .venv/bin/python -m opendetector essay.txt
 ```
+
+The command line also reads `.md`, `.docx` and `.pptx` files. For a document it scores the whole
+text and, separately, every section of at least 150 words. Worksheets are mostly tables of short
+cells and often abstain as not prose, so `--answers-only` scores just the answer cells of their
+question/answer tables. `--profile slim` runs Desklib alone. In Claude Code, `/ai-detect <file>`
+runs the same commands and summarizes the result.
 
 The first run downloads the models: GLYPH 0.7 GB, Desklib 1.7 GB, and the Qwen2.5-0.5B pair
 about 2 GB. On a GPU (including Apple MPS) they load in bfloat16, so the app needs about
@@ -123,8 +129,8 @@ RAID flatters it. Watch the attacked slices and MAGE.
 **2. Student essays,** which is where false positives hurt. Download PERSUADE 2.0 (human essays
 from grades 6-12, with English-learner status) from
 [github.com/scrosseye/persuade_corpus_2.0](https://github.com/scrosseye/persuade_corpus_2.0).
-Then write AI essays on the same assignments. The generator defaults to Gemini through its
-OpenAI-compatible endpoint, using `GEMINI_API_KEY` from the project's `.env` file (see below):
+Then write AI essays on the same assignments. The generator defaults to Gemini's Interactions
+API, using `GEMINI_API_KEY` from the project's `.env` file (see below):
 
 ```bash
 .venv/bin/python -m eval.featurize persuade --path persuade_2.0.csv --n 2000 --out eval/cache/persuade.jsonl
