@@ -29,6 +29,9 @@ later, and about 4 GB of free space.
    Press **Done**, then let it open:
    - **macOS 15 or later:** open **System Settings**, go to **Privacy & Security**, scroll down to
      *"Open Detector" was blocked*, press **Open Anyway** and confirm with your password or Touch ID.
+     The button shows for about an hour after you first try to open the app. macOS then asks once
+     more, in a small window that can open behind others: press **Open Anyway** there too, and wait
+     a minute while it checks the app.
    - **macOS 14:** Control-click (or right-click) the app, choose **Open**, then press **Open** again.
 
    You only do this once.
