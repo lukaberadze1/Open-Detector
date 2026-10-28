@@ -3,8 +3,10 @@ widgets that keep their state when the user switches pages."""
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import html
+import math
 from dataclasses import dataclass
 
 import altair as alt
@@ -36,43 +38,56 @@ TONES = {
 }
 
 CSS = """
-.od-verdict { border: 1px solid color-mix(in srgb, var(--tone) 35%, transparent);
-  background: color-mix(in srgb, var(--tone) 7%, transparent); border-radius: 0.9rem; padding: 1.2rem 1.4rem 1rem; }
-.od-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
-.od-eyebrow { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.65; }
-.od-label { font-size: 1.9rem; font-weight: 700; line-height: 1.2; color: var(--tone); margin: 0.1rem 0 0.25rem; }
-.od-meaning { font-size: 0.92rem; opacity: 0.85; max-width: 34rem; }
-.od-score { text-align: right; white-space: nowrap; }
-.od-number { font-size: 2.6rem; font-weight: 700; line-height: 1.1; }
-.od-number small { font-size: 1.3rem; font-weight: 600; opacity: 0.7; margin-left: 1px; }
-.od-gauge { position: relative; display: flex; gap: 2px; height: 10px; margin: 1.2rem 0 0.45rem; }
-.od-zone { height: 100%; }
-.od-zone.human { background: color-mix(in srgb, var(--od-human) 40%, transparent); border-radius: 999px 0 0 999px; }
-.od-zone.review { background: color-mix(in srgb, var(--od-review) 45%, transparent); }
-.od-zone.ai { background: color-mix(in srgb, var(--od-ai) 45%, transparent); border-radius: 0 999px 999px 0; }
-.od-marker { position: absolute; top: 50%; width: 18px; height: 18px; border-radius: 50%; background: var(--mark);
-  transform: translate(-50%, -50%); box-shadow: 0 0 0 3px var(--od-surface), 0 1px 6px rgba(0, 0, 0, 0.25); }
-.od-zones { display: flex; gap: 2px; font-size: 0.74rem; opacity: 0.7; }
-.od-zones span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 0.4rem; }
-.od-foot { font-size: 0.8rem; opacity: 0.65; margin-top: 0.8rem; }
+.od-verdict { position: relative; overflow: hidden; border-radius: var(--od-radius, 22px);
+  padding: 1.5rem 1.6rem 1.25rem;
+  background: var(--od-panel); border: 1px solid var(--od-edge); box-shadow: var(--od-shadow);
+  -webkit-backdrop-filter: blur(26px) saturate(170%); backdrop-filter: blur(26px) saturate(170%); }
+.od-verdict::before { content: ""; position: absolute; inset: -40% -10% auto auto; width: 70%; height: 140%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--tone) 22%, transparent), transparent);
+  pointer-events: none; }
+.od-top { position: relative; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 1.2rem; }
+.od-top > div { flex: 1 1 15rem; min-width: 0; }
+.od-top > .od-dial { flex: 0 0 auto; margin: 0 auto; }
+.od-eyebrow { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--od-muted); }
+.od-label { font-size: clamp(1.9rem, 3vw, 2.6rem); font-weight: 700; letter-spacing: -0.03em; line-height: 1.05;
+  color: var(--tone); margin: 0.35rem 0 0.5rem; }
+.od-meaning { font-size: 0.95rem; color: var(--od-ink); opacity: 0.86; max-width: 30rem; line-height: 1.5; }
+.od-dial { width: 230px; height: 196px; display: block; max-width: 100%; }
+.od-zones { position: relative; display: flex; flex-wrap: wrap; gap: 0.45rem; margin-top: 1.1rem; font-size: 0.78rem; }
+.od-zones span { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.22rem 0.65rem 0.22rem 0.5rem;
+  border-radius: 999px; border: 1px solid var(--od-hair); color: var(--od-muted); }
+.od-zones span.on { color: var(--od-ink); border-color: color-mix(in srgb, var(--tone) 55%, transparent);
+  background: color-mix(in srgb, var(--tone) 12%, transparent); font-weight: 600; }
+.od-zones i { width: 8px; height: 8px; border-radius: 50%; }
+.od-foot { position: relative; font-size: 0.78rem; color: var(--od-muted); margin-top: 0.9rem; padding-top: 0.8rem;
+  border-top: 1px solid var(--od-hair); font-variant-numeric: tabular-nums; }
 
-.od-panel { border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 0.9rem;
-  padding: 1rem 1.2rem; }
-.od-engine { margin-top: 0.8rem; }
+.od-panel { height: 100%; box-sizing: border-box; border-radius: var(--od-radius, 22px); padding: 1.3rem 1.4rem;
+  background: var(--od-panel); border: 1px solid var(--od-edge); box-shadow: var(--od-shadow);
+  -webkit-backdrop-filter: blur(26px) saturate(170%); backdrop-filter: blur(26px) saturate(170%); }
+.od-engine { margin-top: 1rem; }
 .od-engine-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; }
-.od-engine-name { font-weight: 600; font-size: 0.95rem; }
-.od-engine-value { font-weight: 600; font-variant-numeric: tabular-nums; }
-.od-meter { height: 6px; border-radius: 999px; background: var(--od-track); margin: 0.35rem 0 0.3rem;
-  overflow: hidden; }
-.od-meter i { display: block; height: 100%; border-radius: 999px; background: var(--od-accent); }
-.od-note { font-size: 0.78rem; opacity: 0.65; line-height: 1.35; }
-.od-stats { display: flex; gap: 1.6rem; margin-top: 0.9rem; padding-top: 0.75rem;
-  border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); }
-.od-stats b { display: block; font-size: 1.15rem; font-weight: 600; line-height: 1.3; }
-.od-stats span { font-size: 0.75rem; opacity: 0.65; }
+.od-engine-name { font-weight: 600; font-size: 0.95rem; color: var(--od-ink); }
+.od-engine-value { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--od-ink); }
+.od-meter { position: relative; height: 6px; border-radius: 999px; background: var(--od-track);
+  margin: 0.45rem 0 0.35rem; }
+.od-meter i { display: block; height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, var(--od-accent-2), var(--od-accent)); box-shadow: 0 0 12px var(--od-glow); }
+.od-note { font-size: 0.78rem; color: var(--od-muted); line-height: 1.4; }
+.od-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(5rem, 1fr)); gap: 0.6rem;
+  margin-top: 1.1rem; }
+.od-stats div { padding: 0.65rem 0.75rem; border-radius: calc(var(--od-radius, 22px) * 0.6);
+  background: var(--od-track); }
+.od-stats b { display: block; font-size: 1.3rem; font-weight: 650; line-height: 1.2; color: var(--od-ink);
+  font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.od-stats span { font-size: 0.72rem; color: var(--od-muted); }
 
-.od-text { line-height: 1.85; font-size: 1rem; max-height: 34rem; overflow-y: auto; padding: 1rem 1.25rem;
-  border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 0.75rem; }
+.od-text { line-height: 1.9; font-size: 1.02rem; max-height: 36rem; overflow-y: auto; padding: 1.3rem 1.5rem;
+  background: var(--od-panel); border: 1px solid var(--od-edge); border-radius: var(--od-radius, 22px);
+  box-shadow: var(--od-shadow); color: var(--od-ink);
+  -webkit-backdrop-filter: blur(26px) saturate(170%); backdrop-filter: blur(26px) saturate(170%); }
 .od-sample { white-space: pre-wrap; max-height: 22rem; font-size: 0.95rem; line-height: 1.7; }
 .od-hl { border-radius: 4px; padding: 1px 1px; -webkit-box-decoration-break: clone; box-decoration-break: clone;
   text-decoration-thickness: 2px; text-underline-offset: 4px; transition: box-shadow 0.15s; }
@@ -95,16 +110,16 @@ CSS = """
 .od-key i.ai { background: color-mix(in srgb, var(--od-ai) 40%, transparent); border-bottom: 2px solid var(--od-ai); }
 .od-key b { font-weight: 600; font-variant-numeric: tabular-nums; }
 .od-hint { font-size: 0.8rem; opacity: 0.6; }
-.od-map { display: flex; gap: 2px; height: 12px; }
-.od-run { min-width: 3px; border-radius: 3px; cursor: pointer; transition: transform 0.12s; }
+.od-map { display: flex; gap: 3px; height: 14px; padding: 3px; border-radius: 999px; background: var(--od-track); }
+.od-run { min-width: 3px; border-radius: 999px; cursor: pointer; transition: transform 0.12s; }
 .od-run.human { background: var(--od-human); }
 .od-run.review { background: var(--od-review); }
 .od-run.ai { background: var(--od-ai); }
 .od-run.plain { background: var(--od-track); }
 .od-run:hover { transform: scaleY(1.6); }
 .od-ends { display: flex; justify-content: space-between; font-size: 0.72rem; opacity: 0.6; margin: 0.3rem 0 0.9rem; }
-.od-tip { position: fixed; z-index: 1000; pointer-events: none; max-width: 20rem; padding: 0.4rem 0.6rem;
-  border-radius: 0.5rem; background: var(--od-ink); color: var(--od-surface); font-size: 0.8rem; line-height: 1.4;
+.od-tip { position: fixed; z-index: 1000; pointer-events: none; max-width: 20rem; padding: 0.45rem 0.7rem;
+  border-radius: 0.7rem; background: var(--od-ink); color: var(--od-bg); font-size: 0.8rem; line-height: 1.4;
   white-space: pre-line; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2); }
 .od-tip[hidden] { display: none; }
 """
@@ -147,11 +162,105 @@ def theme_type() -> str:
     return "dark" if getattr(theme, "type", None) == "dark" else "light"
 
 
+def look_tones() -> dict[str, str]:
+    """The verdict tones for the active mode, with the active look's surfaces (ui/style.py) on top."""
+    from . import style
+
+    merged = dict(TONES[theme_type()])
+    look = style.tokens()
+    merged.update({"surface": look["panel-solid"], "ink": look["ink"], "muted": look["muted"], "track": look["track"],
+                   "accent": look["accent"]})
+    return merged
+
+
 def apply_theme() -> None:
-    """Styles for the app's own HTML (verdict card, highlights), in the active palette's tones."""
-    tones = TONES[theme_type()]
-    variables = "".join(f"--od-{name}: {value};" for name, value in tones.items())
-    st.html(f"<style>:root {{{variables}}}{CSS}</style>")
+    """Styles for the whole app: the active look (ui/style.py), then the app's own HTML (verdict card,
+    highlights) in the verdict tones."""
+    from . import style
+
+    variables = "".join(f"--od-{name}: {value};" for name, value in TONES[theme_type()].items()
+                        if name not in ("ink", "muted", "track", "accent", "surface"))
+    st.html(f"<style>{style.css()}:root {{{variables}--od-surface: var(--od-panel-solid);}}{CSS}</style>")
+
+
+def _polar(cx: float, cy: float, r: float, p: float) -> tuple[float, float]:
+    """The point at share `p` (0 to 1) along the dial's 240-degree arc, which opens at the bottom."""
+    angle = math.radians(150 + 240 * min(max(p, 0.0), 1.0))
+    return cx + r * math.cos(angle), cy + r * math.sin(angle)
+
+
+def _arc(cx: float, cy: float, r: float, p0: float, p1: float) -> str:
+    (x0, y0), (x1, y1) = _polar(cx, cy, r, p0), _polar(cx, cy, r, p1)
+    large = 1 if (p1 - p0) * 240 > 180 else 0
+    return f"M{x0:.2f} {y0:.2f} A{r} {r} 0 {large} 1 {x1:.2f} {y1:.2f}"
+
+
+def dial(probability: float, review: float, ai: float, verdict: str, instrument: bool) -> str:
+    """The AI likelihood as a dial, as an <img>: the three bands around the rim and the score on it.
+    Glass draws a thick lit ring; Instrument a tick-marked scale with a needle. st.html strips inline
+    SVG, so the dial goes in as an image with the active look's colours written in."""
+    from . import style
+
+    c = {**look_tones(), **{k: v for k, v in style.tokens().items() if k in ("accent-2", "panel-solid", "bg")}}
+    mark = c[BANDS[verdict]]
+    cx, cy, r = 115.0, 104.0, 78.0
+    p = min(max(probability, 0.0), 1.0)
+    gap = 0.012
+    zones = (("human", 0, review), ("review", review, ai), ("ai", ai, 1))
+    sans = "Geist, -apple-system, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif"
+    mono = "'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace"
+    parts = []
+    if instrument:
+        for name, start, end in zones:
+            parts.append(f'<path d="{_arc(cx, cy, r, start + gap / 2, end - gap / 2)}" stroke="{c[name]}" '
+                         'stroke-width="3" fill="none"/>')
+        for i in range(41):
+            share, major = i / 40, i % 10 == 0
+            (x0, y0), (x1, y1) = _polar(cx, cy, r - 7, share), _polar(cx, cy, r - (17 if major else 11), share)
+            parts.append(f'<line x1="{x0:.2f}" y1="{y0:.2f}" x2="{x1:.2f}" y2="{y1:.2f}" stroke="{c["muted"]}" '
+                         f'stroke-width="{1.4 if major else 0.8}" opacity="{0.9 if major else 0.55}"/>')
+        for cut in (review, ai):
+            (x0, y0), (x1, y1) = _polar(cx, cy, r + 4, cut), _polar(cx, cy, r - 20, cut)
+            parts.append(f'<line x1="{x0:.2f}" y1="{y0:.2f}" x2="{x1:.2f}" y2="{y1:.2f}" stroke="{c["ink"]}" '
+                         'stroke-width="1.2" stroke-dasharray="2 2"/>')
+        tip, tail = _polar(cx, cy, r - 2, p), _polar(cx, cy, 14, (p + 0.5) % 1)
+        parts.append(f'<line x1="{tail[0]:.2f}" y1="{tail[1]:.2f}" x2="{tip[0]:.2f}" y2="{tip[1]:.2f}" stroke="{mark}" '
+                     f'stroke-width="2.2" stroke-linecap="round" filter="url(#glow)"/>'
+                     f'<circle cx="{cx}" cy="{cy}" r="5" fill="{c["bg"]}" stroke="{mark}" stroke-width="2"/>')
+        number, number_y, font = f"{probability * 100:.1f}", cy + 68, mono
+    else:
+        parts.append(f'<path d="{_arc(cx, cy, r, 0, 1)}" stroke="{c["track"]}" stroke-width="14" fill="none" '
+                     'stroke-linecap="round"/>')
+        for name, start, end in zones:
+            parts.append(f'<path d="{_arc(cx, cy, r + 13, start + gap / 2, end - gap / 2)}" stroke="{c[name]}" '
+                         'stroke-width="3" fill="none" stroke-linecap="round" opacity="0.8"/>')
+        if p > 0.004:
+            parts.append(f'<path d="{_arc(cx, cy, r, 0, p)}" stroke="url(#fill)" stroke-width="14" fill="none" '
+                         'stroke-linecap="round" filter="url(#glow)"/>')
+        kx, ky = _polar(cx, cy, r, p)
+        parts.append(f'<circle cx="{kx:.2f}" cy="{ky:.2f}" r="9" fill="{c["panel-solid"]}" stroke="{mark}" '
+                     'stroke-width="3.5"/>')
+        number, number_y, font = f"{probability * 100:.0f}", cy + 14, sans
+    for cut in (review, ai):
+        lx, ly = _polar(cx, cy, r + 27, cut)
+        parts.append(f'<text x="{lx:.1f}" y="{ly + 3:.1f}" text-anchor="middle" font-family="{mono}" font-size="9.5" '
+                     f'font-weight="600" fill="{c["muted"]}">{cut:.0%}</text>')
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 230 196" width="230" height="196">'
+           '<defs><linearGradient id="fill" x1="0" y1="1" x2="1" y2="0">'
+           f'<stop offset="0" stop-color="{c["accent-2"]}"/><stop offset="1" stop-color="{mark}"/></linearGradient>'
+           '<filter id="glow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2.5" '
+           'result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>'
+           f'{"".join(parts)}'
+           f'<text x="{cx}" y="{number_y}" text-anchor="middle" font-family="{html.escape(font)}" fill="{c["ink"]}">'
+           f'<tspan font-size="{30 if instrument else 46}" font-weight="700" letter-spacing="-1.5">{number}</tspan>'
+           f'<tspan font-size="{14 if instrument else 18}" font-weight="600" fill="{c["muted"]}" dx="2">%</tspan>'
+           '</text>'
+           f'<text x="{cx}" y="{number_y + (16 if instrument else 20)}" text-anchor="middle" font-family="{mono}" '
+           'font-size="9" '
+           f'font-weight="600" letter-spacing="1.6" fill="{c["muted"]}">AI LIKELIHOOD</text></svg>')
+    data = base64.b64encode(svg.encode()).decode()
+    label = f"AI likelihood {probability:.0%}; needs review above {review:.0%}, likely AI above {ai:.0%}"
+    return f'<img class="od-dial" src="data:image/svg+xml;base64,{data}" alt="{label}">'
 
 
 def verdict_badge(verdict: str | None) -> None:
@@ -172,9 +281,14 @@ def verdict_card(verdict: str, probability: float, thresholds: dict[str, float],
             "needs_review": "Between the two cut-offs: worth a closer read, not a conclusion.",
             "likely_human": "Below the cut-off that flags about 5 in 100 human texts.",
         }[verdict]
-    zones = (("human", "Likely human", review), ("review", "Needs review", ai - review), ("ai", "Likely AI", 1 - ai))
-    bars = "".join(f'<div class="od-zone {name}" style="flex:{width:.4f}"></div>' for name, _, width in zones)
-    names = "".join(f'<span style="flex:{width:.4f}">{text}</span>' for _, text, width in zones)
+    from . import style
+
+    zones = (("likely_human", "human", f"Likely human < {review:.0%}"),
+             ("needs_review", "review", f"Needs review {review:.0%}\u2013{ai:.0%}"),
+             ("likely_ai", "ai", f"Likely AI > {ai:.0%}"))
+    chips = "".join(f'<span class="{"on" if band == verdict else ""}"><i style="background: var(--od-{tone})"></i>'
+                    f'{text}</span>' for band, tone, text in zones)
+    gauge = dial(probability, review, ai, verdict, instrument=style.current_look() == "instrument")
     st.html(f"""
 <div class="od-verdict" style="--tone: var(--od-{color}); --mark: var(--od-{BANDS[verdict]})">
   <div class="od-top">
@@ -182,16 +296,10 @@ def verdict_card(verdict: str, probability: float, thresholds: dict[str, float],
       <div class="od-eyebrow">Verdict</div>
       <div class="od-label">{label}</div>
       <div class="od-meaning">{meaning}</div>
+      <div class="od-zones">{chips}</div>
     </div>
-    <div class="od-score">
-      <div class="od-number">{probability * 100:.0f}<small>%</small></div>
-      <div class="od-eyebrow">AI likelihood</div>
-    </div>
+    {gauge}
   </div>
-  <div class="od-gauge" role="img" aria-label="AI likelihood {probability:.0%}; needs review above {review:.0%},
-    likely AI above {ai:.0%}">{bars}<div class="od-marker" style="left:{min(max(probability, 0), 1) * 100:.1f}%"></div>
-  </div>
-  <div class="od-zones">{names}</div>
   <div class="od-foot">{html.escape(foot)}</div>
 </div>""")
 
@@ -300,15 +408,26 @@ def _clip(text: str, limit: int = 160) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+def _dress(chart: alt.LayerChart) -> alt.LayerChart:
+    """Lets the panel behind a chart show through, in the active look's type."""
+    from . import style
+
+    font = ("'JetBrains Mono', 'SF Mono', Menlo, monospace" if style.current_look() == "instrument"
+            else "Geist, Inter, -apple-system, system-ui, sans-serif")
+    tones = look_tones()
+    return chart.configure(background="transparent", font=font).configure_view(stroke=None).configure_axis(
+        labelColor=tones["muted"], titleColor=tones["muted"], domainColor=tones["track"], tickColor=tones["track"])
+
+
 def _band_color() -> alt.Scale:
-    tones = TONES[theme_type()]
+    tones = look_tones()
     return alt.Scale(domain=[VERDICTS[band][0] for band in BANDS], range=[tones[tone] for tone in BANDS.values()])
 
 
 def sentence_chart(sentences: list, bands: list[str], thresholds: dict[str, float]) -> alt.LayerChart:
     """Every sentence as a bar as wide as its word count and as tall as its AI likelihood, in reading
     order, against the two cut-offs."""
-    tones = TONES[theme_type()]
+    tones = look_tones()
     rows, position = [], 0
     for number, (sentence, band) in enumerate(zip(sentences, bands, strict=True), 1):
         words = max(count_words(sentence.text), 1)
@@ -332,7 +451,7 @@ def sentence_chart(sentences: list, bands: list[str], thresholds: dict[str, floa
     tops = base.mark_rule(strokeWidth=2.5).encode(x=x, x2="end:Q", y=y, color=color, tooltip=tooltip)
     cutoffs = pd.DataFrame([{"y": thresholds["review"]}, {"y": thresholds["ai"]}])
     rules = alt.Chart(cutoffs).mark_rule(strokeDash=[4, 4], color=tones["muted"]).encode(y="y:Q")
-    return alt.layer(wash, rules, tops).properties(height=320)
+    return _dress(alt.layer(wash, rules, tops).properties(height=320))
 
 
 def score_bars(rows: list[dict], thresholds: dict[str, float]) -> alt.LayerChart | None:
@@ -341,7 +460,7 @@ def score_bars(rows: list[dict], thresholds: dict[str, float]) -> alt.LayerChart
     abstained) and `verdict`. None when nothing was scored."""
     if not any(row["probability"] is not None for row in rows):
         return None
-    tones = TONES[theme_type()]
+    tones = look_tones()
     seen: dict[str, int] = {}
     data = []
     for row in rows:
@@ -366,12 +485,12 @@ def score_bars(rows: list[dict], thresholds: dict[str, float]) -> alt.LayerChart
         x=alt.X("tip:Q", scale=alt.Scale(domain=[0, 1])), y=y, text="value:N", tooltip=tooltip)
     rules = alt.Chart(pd.DataFrame([{"x": thresholds["review"]}, {"x": thresholds["ai"]}])).mark_rule(
         strokeDash=[4, 4], color=tones["muted"]).encode(x="x:Q")
-    return alt.layer(bars, rules, values).properties(height=30 * len(frame) + 90)
+    return _dress(alt.layer(bars, rules, values).properties(height=30 * len(frame) + 90))
 
 
 def contribution_chart(parts: dict[str, float]) -> alt.LayerChart:
     """How far each engine pushed the combined score toward AI (right) or human (left), in log-odds."""
-    tones = TONES[theme_type()]
+    tones = look_tones()
     frame = pd.DataFrame([{"engine": name, "value": value, "label": f"{value:+.2f}",
                            "direction": "Toward AI" if value > 0 else "Toward human"} for name, value in parts.items()])
     reach = max(abs(frame["value"]).max() * 1.3, 0.5)
@@ -388,7 +507,7 @@ def contribution_chart(parts: dict[str, float]) -> alt.LayerChart:
         align="left", dx=5, color=tones["ink"]).encode(x=x, y=y, text="label:N")
     left = alt.Chart(frame).transform_filter("datum.value < 0").mark_text(
         align="right", dx=-5, color=tones["ink"]).encode(x=x, y=y, text="label:N")
-    return alt.layer(bars, zero, right, left).properties(height=44 * len(frame) + 100)
+    return _dress(alt.layer(bars, zero, right, left).properties(height=44 * len(frame) + 100))
 
 
 def keep(key: str, default) -> str:

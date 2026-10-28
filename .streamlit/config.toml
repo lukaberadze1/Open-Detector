@@ -1,34 +1,35 @@
-# The app's look: Inter, soft corners and an indigo accent, with a light and a dark palette. Viewers
-# switch between them in the app's settings menu; the default follows their system.
+# The app's base theme: Geist, round corners and a violet accent, with a light and a dark palette.
+# Viewers switch light/dark in the app's settings menu (the default follows their system). On top of
+# this, ui/style.py layers one of two looks, Glass or Instrument, picked under Appearance in the sidebar.
 
 [theme]
-font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
-headingFont = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+font = "Geist:https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap"
+headingFont = "Geist:https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap"
 codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
 headingFontWeights = [700, 650, 600, 600, 600, 600]
-baseRadius = "0.7rem"
-buttonRadius = "0.6rem"
+baseRadius = "0.85rem"
+buttonRadius = "full"
 showWidgetBorder = true
-showSidebarBorder = true
+showSidebarBorder = false
 
 [theme.light]
-primaryColor = "#4F46E5"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F4F5F9"
-textColor = "#171A26"
-borderColor = "#E1E3EB"
-linkColor = "#4F46E5"
+primaryColor = "#5B57F5"
+backgroundColor = "#EEF0F8"
+secondaryBackgroundColor = "#F7F8FC"
+textColor = "#0E1222"
+borderColor = "#DADDEA"
+linkColor = "#5B57F5"
 
 [theme.light.sidebar]
-backgroundColor = "#F7F8FB"
+backgroundColor = "#F3F4FA"
 
 [theme.dark]
-primaryColor = "#8B93FF"
-backgroundColor = "#0D0F16"
-secondaryBackgroundColor = "#181B25"
-textColor = "#E7E9F0"
-borderColor = "#272B38"
-linkColor = "#A5ACFF"
+primaryColor = "#8F8CFF"
+backgroundColor = "#06070D"
+secondaryBackgroundColor = "#141724"
+textColor = "#ECEEF7"
+borderColor = "#262A3B"
+linkColor = "#A9A6FF"
 
 [theme.dark.sidebar]
-backgroundColor = "#11131B"
+backgroundColor = "#0B0D16"

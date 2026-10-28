@@ -126,42 +126,104 @@ def dark_mode() -> bool:
     return found.stdout.strip() == "Dark"
 
 
+def look() -> str:
+    """The look picked under Appearance in the app (ui/style.py keeps it in data/ui_prefs.json), so the
+    loading and error pages match the app they open into."""
+    try:
+        chosen = json.loads((ROOT / "data/ui_prefs.json").read_text()).get("look")
+    except (OSError, ValueError, AttributeError):
+        chosen = None
+    return chosen if chosen in ("glass", "instrument") else "glass"
+
+
+# Window background behind the first paint, per look and mode.
+BACKGROUNDS = {("glass", False): "#EEF0F8", ("glass", True): "#06070D",
+               ("instrument", False): "#EEF1F0", ("instrument", True): "#05070A"}
+
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><style>
-:root {{ --bg: #FFFFFF; --text: #171A26; --muted: #5E6475; --panel: #F4F5F9; --border: #E1E3EB; --accent: #4F46E5; }}
+:root {{ --bg: #EEF0F8; --text: #0E1222; --muted: #545A72; --panel: rgba(255,255,255,.6); --edge: rgba(255,255,255,.85);
+  --hair: rgba(20,24,48,.1); --accent: #5B57F5; --accent2: #0E9FB8;
+  --sky: radial-gradient(50rem 34rem at 10% -10%, rgba(140,132,255,.38), transparent 60%),
+         radial-gradient(44rem 30rem at 100% 0%, rgba(80,210,235,.3), transparent 60%),
+         radial-gradient(48rem 34rem at 70% 115%, rgba(255,160,200,.28), transparent 60%); }}
 @media (prefers-color-scheme: dark) {{
-  :root {{ --bg: #0D0F16; --text: #E7E9F0; --muted: #9AA0B2; --panel: #181B25; --border: #272B38; --accent: #8B93FF; }}
+  :root {{ --bg: #06070D; --text: #ECEEF7; --muted: #A0A6BE; --panel: rgba(24,27,44,.55); --edge: rgba(255,255,255,.1);
+    --hair: rgba(255,255,255,.08); --accent: #8F8CFF; --accent2: #3FD3EA;
+    --sky: radial-gradient(50rem 34rem at 5% -10%, rgba(92,72,255,.3), transparent 60%),
+           radial-gradient(44rem 30rem at 100% 5%, rgba(20,170,200,.2), transparent 60%),
+           radial-gradient(48rem 34rem at 65% 115%, rgba(170,60,220,.2), transparent 60%); }}
+}}
+body.instrument {{ --bg: #EEF1F0; --text: #0A1E25; --muted: #4A6470; --panel: #fff; --edge: rgba(0,70,90,.24);
+  --hair: rgba(0,70,90,.12); --accent: #00788C; --accent2: #4C7A00;
+  --sky: linear-gradient(rgba(0,90,110,.06) 1px, transparent 1px) 0 0 / 32px 32px,
+         linear-gradient(90deg, rgba(0,90,110,.06) 1px, transparent 1px) 0 0 / 32px 32px; }}
+@media (prefers-color-scheme: dark) {{
+  body.instrument {{ --bg: #05070A; --text: #D9F4FA; --muted: #7896A1; --panel: rgba(9,15,20,.9);
+    --edge: rgba(90,230,255,.2); --hair: rgba(90,230,255,.1); --accent: #45E0FF; --accent2: #B6FF5C;
+    --sky: linear-gradient(rgba(90,230,255,.045) 1px, transparent 1px) 0 0 / 32px 32px,
+           linear-gradient(90deg, rgba(90,230,255,.045) 1px, transparent 1px) 0 0 / 32px 32px,
+           radial-gradient(60rem 40rem at 50% -20%, rgba(69,224,255,.1), transparent 70%); }}
 }}
 body {{ margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
-  background: var(--bg); color: var(--text); font: 15px/1.5 -apple-system, BlinkMacSystemFont, sans-serif;
-  -webkit-user-select: none; }}
-main {{ max-width: 680px; padding: 0 32px; text-align: center; }}
-.mark svg {{ width: 72px; height: 72px; }}
-h1 {{ font-size: 22px; font-weight: 650; margin: 14px 0 6px; }}
+  background: var(--sky), var(--bg); color: var(--text);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; -webkit-user-select: none; }}
+main {{ position: relative; max-width: 620px; padding: 40px 44px 36px; text-align: center; border-radius: 28px;
+  background: var(--panel); border: 1px solid var(--edge);
+  box-shadow: 0 1px 0 rgba(255,255,255,.12) inset, 0 30px 80px -30px rgba(0,0,0,.45);
+  -webkit-backdrop-filter: blur(30px) saturate(170%); backdrop-filter: blur(30px) saturate(170%); }}
+.mark {{ position: relative; width: 84px; height: 84px; margin: 0 auto; }}
+.mark svg {{ position: absolute; inset: 12px; width: 60px; height: 60px; }}
+.halo {{ position: absolute; inset: 0; border-radius: 50%;
+  background: conic-gradient(from 0deg, transparent 0 55%, var(--accent2), var(--accent), transparent 95%);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  animation: spin 1.4s linear infinite; }}
+.stopped .halo {{ animation: none; background: var(--hair); }}
+h1 {{ font-size: 24px; font-weight: 700; letter-spacing: -.02em; margin: 18px 0 4px; }}
 p {{ color: var(--muted); margin: 6px 0; }}
-.spinner {{ width: 22px; height: 22px; margin: 22px auto 0; border-radius: 50%; border: 2.5px solid var(--border);
-  border-top-color: var(--accent); animation: spin .9s linear infinite; }}
-.later {{ opacity: 0; animation: show .4s 15s forwards; }}
-pre {{ text-align: left; background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+.bar {{ position: relative; height: 3px; width: 220px; margin: 22px auto 0; border-radius: 3px; background: var(--hair);
+  overflow: hidden; }}
+.bar i {{ position: absolute; inset: 0 auto 0 0; width: 40%; border-radius: 3px;
+  background: linear-gradient(90deg, transparent, var(--accent), var(--accent2));
+  animation: sweep 1.6s ease-in-out infinite; }}
+.later {{ opacity: 0; animation: show .4s 15s forwards; font-size: 13px; }}
+pre {{ text-align: left; background: rgba(127,127,127,.08); border: 1px solid var(--hair); border-radius: 12px;
   padding: 12px 14px; font: 12px/1.45 ui-monospace, Menlo, monospace; max-height: 42vh; overflow: auto;
-  white-space: pre-wrap; -webkit-user-select: text; }}
-button {{ font: inherit; font-weight: 550; padding: 7px 16px; margin: 6px 4px 0; border-radius: 9px; cursor: pointer;
-  border: 1px solid var(--border); background: var(--panel); color: var(--text); }}
+  white-space: pre-wrap; -webkit-user-select: text; color: var(--text); }}
+button {{ font: inherit; font-weight: 600; padding: 8px 18px; margin: 10px 4px 0; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--hair); background: transparent; color: var(--text); }}
 button.primary {{ background: var(--accent); border-color: var(--accent); color: #fff; }}
+body.instrument main {{ border-radius: 4px; box-shadow: 0 24px 60px -30px rgba(0,0,0,.8); backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background-image: linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent));
+  background-size: 16px 1.5px, 1.5px 16px, 16px 1.5px, 1.5px 16px;
+  background-position: top left, top left, bottom right, bottom right; background-repeat: no-repeat; }}
+body.instrument h1, body.instrument p, body.instrument button {{ font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  text-transform: uppercase; letter-spacing: .1em; }}
+body.instrument h1 {{ font-size: 17px; letter-spacing: .2em; }}
+body.instrument p {{ font-size: 12px; }}
+body.instrument button {{ border-radius: 3px; font-size: 12px; }}
+body.instrument button.primary {{ color: var(--bg); }}
 @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+@keyframes sweep {{ 0% {{ transform: translateX(-100%); }} 100% {{ transform: translateX(260%); }} }}
 @keyframes show {{ to {{ opacity: 1; }} }}
-</style></head><body><main><div class="mark">{mark}</div>{body}</main></body></html>"""
+@media (prefers-reduced-motion: reduce) {{ .halo, .bar i {{ animation: none; }} }}
+</style></head><body class="{look}"><main class="{state}"><div class="mark"><div class="halo"></div>{mark}</div>
+{body}</main></body></html>"""
 
 
 def loading_page() -> str:
-    return PAGE.format(mark=_mark(), body=(
-        f"<h1>{APP_NAME}</h1><p>Starting the detector…</p><div class='spinner'></div>"
+    starting = "Booting the detector" if look() == "instrument" else "Starting the detector…"
+    return PAGE.format(look=look(), state="loading", mark=_mark(), body=(
+        f"<h1>{APP_NAME}</h1><p>{starting}</p><div class='bar'><i></i></div>"
         "<p class='later'>The first start after an update or restart can take a minute.</p>"))
 
 
 def error_page(message: str) -> str:
     tail = log_tail()
-    return PAGE.format(mark=_mark(), body=(
+    return PAGE.format(look=look(), state="stopped", mark=_mark(), body=(
         f"<h1>{APP_NAME} stopped</h1><p>{html.escape(message)}</p>"
         + (f"<pre>{html.escape(tail)}</pre>" if tail else "")
         + "<button class='primary' onclick='pywebview.api.restart()'>Start again</button>"
@@ -169,8 +231,9 @@ def error_page(message: str) -> str:
 
 
 def _mark() -> str:
+    name = "mark-instrument.svg" if look() == "instrument" else "mark.svg"
     try:
-        return (ROOT / "ui/assets/mark.svg").read_text()
+        return (ROOT / "ui/assets" / name).read_text()
     except OSError:
         return ""
 
@@ -211,7 +274,7 @@ class DesktopApp:
         self.window = webview.create_window(
             APP_NAME, html=loading_page(), js_api=PageApi(self), width=self.size[0], height=self.size[1],
             min_size=MIN_SIZE, text_select=True, zoomable=True,
-            background_color="#0D0F16" if dark_mode() else "#FFFFFF")
+            background_color=BACKGROUNDS[(look(), dark_mode())])
         self.window.events.closing += self.closing
         self.window.events.resized += self.resized
         try:

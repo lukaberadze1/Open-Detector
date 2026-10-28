@@ -56,7 +56,7 @@ from opendetector.documents import (
 from opendetector.env import load_env
 from opendetector.segment import count_words
 
-from . import detect, models, nav
+from . import detect, models, nav, style
 from .components import VERDICTS, Upload, keep, persistent_upload, verdict_badge
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1249,8 +1249,8 @@ def _show_result(result: dict, profile: str) -> None:
                   "Verdict": VERDICTS[item["verdict"]][0] if item["verdict"] in VERDICTS else "Not scored"}
                  for item in result["batch_answers"]],
                 hide_index=True, width="stretch",
-                column_config={"AI likelihood": st.column_config.ProgressColumn(format="percent", min_value=0,
-                                                                                max_value=1)},
+                column_config={"AI likelihood": st.column_config.ProgressColumn(
+                    format="percent", min_value=0, max_value=1, color=style.tokens()["accent"])},
             )
 
         st.html(f'<div class="od-text od-sample">{html.escape(result["essay"])}</div>')
@@ -1317,8 +1317,10 @@ def _history() -> None:
             ),
             hide_index=True, width="stretch",
             column_config={
-                "Passed as human": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1),
-                "Mean AI likelihood": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1),
+                "Passed as human": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1,
+                                                                   color=style.tokens()["accent"]),
+                "Mean AI likelihood": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1,
+                                                                      color=style.tokens()["accent"]),
             },
         )
     st.markdown("**Latest samples**")
@@ -1339,7 +1341,8 @@ def _history() -> None:
         latest, hide_index=True, width="stretch",
         column_config={
             "Saved": st.column_config.DatetimeColumn(format="D MMM YYYY, HH:mm"),
-            "AI likelihood": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1),
+            "AI likelihood": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1,
+                                                             color=style.tokens()["accent"]),
             "Text": st.column_config.TextColumn(width="large"),
         },
     )
@@ -1353,7 +1356,11 @@ def render() -> None:
     conn = _connection()
     _restore_last_result()
 
-    st.title("Red team", anchor=False)
+    style.hero("Adversarial lab · " + ("public mode" if public() else "local"), "Red team",
+               "Generate labelled AI samples and see how the detector scores them. Everything generated here is "
+               "saved as AI-labelled evaluation data.",
+               ["Your own Gemini key" if public() else "Gemini, then a local fallback", "Style profiles",
+                "Batch rewrites", "Scored per block"])
     _finish_ended_batches()
     running = [worker for worker in _own_batches().values() if worker.is_alive()]
     if running:
@@ -1365,8 +1372,6 @@ def render() -> None:
         for worker in running:
             _batch_progress(worker)
         return
-    st.markdown("Generate labelled AI samples and see how the detector scores them. Everything generated here is "
-                "saved as AI-labelled evaluation data.")
     st.caption(":material/shield: For detector evaluation only: don't submit generated work as your own.")
 
     generate_tab, saved_tab = st.tabs(["Generate", "Saved samples"])

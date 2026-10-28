@@ -4,13 +4,14 @@ readings and the sentences that drive the score."""
 from __future__ import annotations
 
 import hashlib
+import html
 
 import streamlit as st
 
 from opendetector.documents import extract_answer_slots, extract_document
 from opendetector.segment import count_words
 
-from . import models
+from . import models, style
 from .components import (
     VERDICTS,
     Reading,
@@ -187,7 +188,8 @@ def _sections_table(rows: list[dict], min_words: int, thresholds: dict[str, floa
           "Verdict": VERDICTS[row["verdict"]][0] if row["verdict"] else "Too short",
           "AI likelihood": row["probability"]} for row in rows],
         hide_index=True, width="stretch",
-        column_config={"AI likelihood": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1)},
+        column_config={"AI likelihood": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1,
+                                                                        color=style.tokens()["accent"])},
     )
     labels = [row["label"] for row in rows]
     chosen = st.selectbox("Read a section", labels, index=None, placeholder="Choose a section to read")
@@ -252,9 +254,8 @@ def _details(result: dict) -> None:
 def _results(result: dict, digest: str) -> None:
     report = result["report"]
     with st.container(horizontal=True, vertical_alignment="center"):
-        st.subheader("Result", anchor=False)
-        st.badge(result["source"], icon=":material/description:", color="gray")
-        st.badge(f"{models.PROFILE_LABELS[result['profile']]} build", icon=":material/memory:", color="gray")
+        st.html(f'<div class="od-section-title"><b>Result</b><span>{html.escape(result["source"])} · '
+                f'{models.PROFILE_LABELS[result["profile"]]} build</span></div>')
     if result["digest"] != digest:
         st.caption(":material/info: The input has changed since this analysis. Analyze again to update it.")
 
@@ -277,7 +278,7 @@ def _results(result: dict, digest: str) -> None:
                 "and gives unreliable scores on these, so it doesn't score them (Turnitin skips poetry, scripts "
                 "and lists too).", icon=":material/format_list_bulleted:")
     else:
-        left, right = st.columns([3, 2], gap="medium", vertical_alignment="center")
+        left, right = st.columns([3, 2], gap="medium", vertical_alignment="top")
         with left:
             foot = (f"{report.words:,} words · " + ("calibrated" if report.calibrated else "uncalibrated")
                     + f" · cut-offs at {report.thresholds['review']:.0%} and {report.thresholds['ai']:.0%}")
@@ -313,7 +314,7 @@ def _results(result: dict, digest: str) -> None:
                      for i, (s, band) in enumerate(zip(report.sentences, result["bands"], strict=True), 1)],
                     hide_index=True, width="stretch",
                     column_config={"AI likelihood": st.column_config.ProgressColumn(
-                        format="percent", min_value=0, max_value=1, width="small"),
+                        format="percent", min_value=0, max_value=1, width="small", color=style.tokens()["accent"]),
                         "Band": st.column_config.TextColumn(width="small")},
                 )
             elif name == "Sections":
@@ -329,15 +330,18 @@ def render() -> None:
     profile = models.active_profile()
     enabled, sentences = _settings(profile)
 
-    st.title("Detect AI-generated text", anchor=False)
+    names = [models.ENGINES[name][0] for name in models.engines_of(profile)]
     if profile == "slim":
-        st.markdown("The Desklib classifier scores overlapping windows of the whole text, and a calibrated model "
-                    "turns those scores into one AI likelihood.")
+        lede = ("The Desklib classifier scores overlapping windows of the whole text, and a calibrated model turns "
+                "those scores into one AI likelihood.")
     else:
-        st.markdown("Two fine-tuned classifiers and the Binoculars zero-shot detector score overlapping windows of "
-                    "the whole text, and a calibrated model combines them into one AI likelihood.")
+        lede = ("Two fine-tuned classifiers and the Binoculars zero-shot detector score overlapping windows of the "
+                "whole text, and a calibrated model combines them into one AI likelihood.")
+    style.hero(f"{models.PROFILE_LABELS[profile]} build · {len(enabled)} of {len(names)} engines online",
+               "Detect AI-generated text", lede,
+               [" · ".join(names), "Calibrated at 1% / 5% FPR", f"{MIN_WORDS}+ words", "Strips hidden characters"])
 
-    with st.container(border=True):
+    with st.container(key="od-panel-input"):
         text, source, sections = _input()
         words = count_words(text) if text.strip() else 0
         with st.container(horizontal=True, vertical_alignment="center"):

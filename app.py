@@ -17,13 +17,14 @@ from pathlib import Path
 
 import streamlit as st
 
-from ui import models, nav
+from ui import models, nav, style
 from ui.components import apply_theme
 
 ASSETS = Path(__file__).resolve().parent / "ui" / "assets"
 
 st.set_page_config(page_title="Open Detector", page_icon=str(ASSETS / "mark.svg"), layout="wide")
-st.logo(str(ASSETS / "logo.svg"), icon_image=str(ASSETS / "mark.svg"), size="large")
+logo, mark = style.logo_paths()
+st.logo(logo, icon_image=mark, size="large")
 apply_theme()
 
 # Streamlit forgets the state of widgets the current page doesn't draw. Writing the "keep:" keys back
@@ -38,3 +39,5 @@ page = st.navigation(pages, position="top" if len(pages) > 1 else "hidden")
 with st.sidebar:
     models.profile_picker()
 page.run()
+with st.sidebar:
+    style.look_picker()
