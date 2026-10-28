@@ -120,17 +120,18 @@ def stub_model(monkeypatch, tmp_path):
 
     for name, path in (("ROOT", tmp_path), ("OUTPUT_PATH", tmp_path / "local_redteam.jsonl"),
                        ("EXPORT_DIR", tmp_path / "exports"), ("BATCH_DIR", tmp_path / "batches"),
-                       ("STYLE_PATH", tmp_path / "no_style_profile.json")):
+                       ("STYLE_DIR", tmp_path / "styles")):
         monkeypatch.setattr(redteam, name, path)
     monkeypatch.setattr(redteam, "load_env", lambda: None)  # never read the real .env
     monkeypatch.setattr(redteam, "local_fallback_problem", lambda url, model: None)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    stub = SimpleNamespace(prompts=[], orders=[], local_models=[], notifications=[], failures=[],
+    stub = SimpleNamespace(prompts=[], systems=[], orders=[], local_models=[], notifications=[], failures=[],
                            gate=threading.Event())
     stub.gate.set()
 
     def write(base_url, api_key, models, prompt, temperature, system, local_url="", local_model="", *args):
         stub.prompts.append(prompt)
+        stub.systems.append(system)
         stub.orders.append(list(models))
         stub.local_models.append(local_model)
         assert stub.gate.wait(30)
@@ -181,6 +182,27 @@ def test_red_team_sample_is_recorded_as_ai_with_its_score(stub_model, tmp_path):
     assert rows[0]["ai_probability"] > 0.9
     assert len(list((tmp_path / "exports").glob("AI_REDTEAM_prompt_*.txt"))) == 1
     assert at.session_state["last_generated_result"]["detect_text"] == rows[0]["text"]
+
+
+def test_red_team_writes_in_the_style_profile_picked(stub_model, tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    (styles / "alexandria_profile.json").write_text(json.dumps({"tone": "dry"}))
+    (styles / "friend.json").write_text(json.dumps({"style_profile": {"tone": "breezy"}}))
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.run()
+    picker = at.selectbox(key="keep:redteam:style_name")
+    assert (picker.options, picker.value) == (["alexandria_profile", "friend"], "alexandria_profile")
+    picker.select("friend")
+    at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
+    button(at, "Generate sample").click()
+    at.run()
+    assert not at.exception, at.exception
+
+    assert "tone: breezy" in stub_model.systems[-1]
+    row = json.loads((tmp_path / "local_redteam.jsonl").read_text())
+    assert row["attack"] == "prompt+friend"
 
 
 def essay_docx():

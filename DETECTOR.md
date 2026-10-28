@@ -34,12 +34,28 @@ The full numbers are in `eval/reports/latest.md`. Without a combiner file, the a
 ## Setup
 
 ```bash
+git clone -b feat/phase1-ensemble https://github.com/lukaberadze1/Open-Detector.git && cd Open-Detector
+```
+
+```bash
 uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
 ```
 
 ```bash
 .venv/bin/streamlit run app.py
 ```
+
+**Your own key and style profile.** The Detect page needs neither. The Red team page writes with
+Gemini: copy `.env.example` to `.env` and put your key after `GEMINI_API_KEY=` (free at
+[aistudio.google.com/apikey](https://aistudio.google.com/apikey)). To write in a style, save a
+JSON style profile in `data/styles/`; the page lists every JSON file there. To measure one from a
+sample of your own writing:
+
+```bash
+.venv/bin/python extract_baseline.py my_writing.md --out data/styles/my_profile.json
+```
+
+Git ignores both `.env` and `data/`, so your key and your profile stay on your machine.
 
 The app has two pages, linked from the bar at the top. The sidebar picks the detector build both
 pages use: **Full** (all three engines, about 3.5 GB) or **Slim** (Desklib alone on the CPU, about
@@ -62,7 +78,8 @@ columns included), or a rewrite of every text block, which keeps headings, title
 tables fixed. If a file doesn't support a task, the page says why. Document tasks export a
 separate Markdown/DOCX/PPTX copy that keeps the uploaded structure; the original is left unchanged.
 The two batch tasks run in the background, save each block as it is written, and resume where they
-stopped.
+stopped. A style profile picked from `data/styles/` becomes the system prompt, and its file name
+joins the attack label.
 
 Each sample can be scored once with the detector, and its probability, verdict, calibration state
 and detector build are recorded next to `label: 1` in `data/essays/local_redteam.jsonl`. These
@@ -171,8 +188,9 @@ mirrors in that style, use:
 .venv/bin/python -m eval.generate_essays --persuade persuade_2.0.csv --n 300 --style-profile data/styles/pasted_style_profile.json --out data/essays/gemini_pasted_style.jsonl
 ```
 
-**API keys** live in a `.env` file in the project root, which git ignores. The scripts load it
-automatically, and a variable already exported in your shell takes priority:
+**API keys** live in a `.env` file in the project root, which git ignores. Copy `.env.example`
+to start one. The scripts load it automatically, and a variable already exported in your shell
+takes priority:
 
 ```
 GEMINI_API_KEY=...

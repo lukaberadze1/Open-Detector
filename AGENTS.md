@@ -46,7 +46,7 @@ model this code no longer uses.
 | `app.py` | Streamlit entrypoint: page config, logo, theme, the sidebar's detector build, and top navigation between the Detect and Red team pages. `OPENDETECTOR_PROFILE` pins a profile; `OPENDETECTOR_REDTEAM=off` leaves out the Red team page. |
 | `ui/models.py` | The loaded engines, shared by both pages, every session and batch worker threads. Holds one profile at a time (`get_detector`, `release`); defaults to slim on machines with 8 GB or less. |
 | `ui/detect.py` | The Detect page: pasted text or an uploaded `.md`/`.docx`/`.pptx` (with an answers-only toggle for worksheets), verdict card, engine readings, sentence highlights, section scores and calibration details. Shows only the engines the profile provides. |
-| `ui/redteam.py` | The Red team page: labelled AI samples from a prompt or an uploaded `.md`/`.docx`/`.pptx`, including batch regeneration of every answer box or text block (Markdown, Word or PowerPoint), with detector scores per block and for the whole document, an *Analyze in Detect* hand-off, and a Saved samples tab summarizing `data/essays/local_redteam.jsonl` by attack. |
+| `ui/redteam.py` | The Red team page: labelled AI samples from a prompt or an uploaded `.md`/`.docx`/`.pptx`, in a style profile picked from `data/styles/*.json` (default `alexandria_profile`), including batch regeneration of every answer box or text block (Markdown, Word or PowerPoint), with detector scores per block and for the whole document, an *Analyze in Detect* hand-off, and a Saved samples tab summarizing `data/essays/local_redteam.jsonl` by attack. |
 | `ui/components.py` | Shared UI: the verdict card and highlight HTML with their CSS, `keep()` for widget state that survives page switches, and `persistent_upload()`. |
 | `.streamlit/config.toml`, `ui/assets/` | The theme (Inter, indigo accent, light and dark palettes) and the logo. |
 | `models/combiner.json`, `models/combiner_slim.json` | Fitted combiners for the full and slim profiles. The app loads them automatically. |
@@ -172,6 +172,7 @@ To regenerate both shipped combiners after the caches change:
 - **Keep the `prose` column out of the features.** `eval/fit_combiner.py` treats every column
   not in `META` as a feature, so new metadata columns must be added to `META`.
 - **Secrets.** API keys live in `.env`, gitignored, read through `opendetector/env.py`.
+  `.env.example` lists the variables with empty values; keep it free of real keys.
   - Never commit keys or print them.
   - Tests must not read the real `.env`; `tests/test_generate_essays.py` patches `load_env`.
   - The repo is public.

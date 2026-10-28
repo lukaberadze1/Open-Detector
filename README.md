@@ -1,3 +1,8 @@
+> **This fork** replaces the BERT model described below with a calibrated three-engine ensemble, a
+> Streamlit app and a red-team generator. Setup (including your own Gemini key and style profile),
+> usage and results are in [DETECTOR.md](DETECTOR.md). The rest of this page is the original
+> project's README.
+
 # 🧠 Open Detector —— Academic Paper AI Detector
 
 <div align="center">

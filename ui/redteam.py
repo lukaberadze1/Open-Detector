@@ -54,7 +54,8 @@ from . import detect, models, nav
 from .components import VERDICTS, Upload, keep, persistent_upload, verdict_badge
 
 ROOT = Path(__file__).resolve().parents[1]
-STYLE_PATH = ROOT / "data/styles/alexandria_profile.json"
+STYLE_DIR = ROOT / "data/styles"
+DEFAULT_STYLE = "alexandria_profile"  # picked first when it's there
 OUTPUT_PATH = ROOT / "data/essays/local_redteam.jsonl"
 EXPORT_DIR = ROOT / "data/essays/exports"
 BATCH_DIR = ROOT / "data/essays/batches"
@@ -149,7 +150,7 @@ class Plan:
     answer_words: int = 100
     match_existing_lengths: bool = True
     temperature: float = 0.8
-    use_profile: bool = True
+    style_path: Path | None = None
     score: bool = True
 
     @property
@@ -157,8 +158,12 @@ class Plan:
         return self.fill_answer_boxes or self.rewrite_all_blocks
 
     @property
+    def use_profile(self) -> bool:
+        return self.style_path is not None
+
+    @property
     def style_name(self) -> str:
-        return STYLE_PATH.stem if self.use_profile else "plain"
+        return self.style_path.stem if self.style_path else "plain"
 
     @property
     def markdown(self) -> bool:
@@ -255,7 +260,8 @@ def _connection() -> Connection:
             if api_key:
                 st.caption(f":material/key: Using the key in {api_key_env} or the project .env file.")
             else:
-                st.caption(f":material/key_off: No {api_key_env} found. Local endpoints work without a key.")
+                st.caption(f":material/key_off: No {api_key_env} found. Add it to a .env file in the project "
+                           "folder (copy .env.example). Local endpoints work without a key.")
             if local_model:
                 if problem := local_fallback_problem(local_url, local_model):
                     st.caption(f":orange[:material/cloud_off: The local fallback can't run: {problem}]")
@@ -358,15 +364,22 @@ def _setup(profile: str) -> Plan:
                                key=keep("keep:redteam:words", 350), format="%d words")
     plan.temperature = st.slider("Creativity", 0.0, 1.5, step=0.1, key=keep("keep:redteam:temperature", 0.8),
                                  help="The model's temperature.")
-    style_found = STYLE_PATH.is_file()
+    styles = {path.stem: path for path in sorted(STYLE_DIR.glob("*.json"))}
     use_style = st.toggle(
-        "Write in the Alexandria style", key=keep("keep:redteam:style", True), disabled=not style_found,
-        help=f"Sends the style profile {STYLE_PATH.name} as the system prompt. A style profile imitates writing "
-             "patterns; it can't reproduce a writer exactly.",
+        "Write in a style profile", key=keep("keep:redteam:style", True), disabled=not styles,
+        help="Sends a style profile as the system prompt. A style profile imitates writing patterns; it can't "
+             "reproduce a writer exactly.",
     )
-    plan.use_profile = style_found and use_style
-    if not style_found:
-        st.caption(f"No style profile at data/styles/{STYLE_PATH.name}, so samples use the model's own style.")
+    if styles:
+        style_key = keep("keep:redteam:style_name", DEFAULT_STYLE)
+        if st.session_state[style_key] not in styles:
+            st.session_state[style_key] = DEFAULT_STYLE if DEFAULT_STYLE in styles else next(iter(styles))
+        name = st.selectbox("Style profile", list(styles), key=style_key, disabled=not use_style,
+                            help="Every JSON file in data/styles/. Save another profile there and it shows up here.")
+        plan.style_path = styles[name] if use_style else None
+    else:
+        st.caption("No style profile in data/styles/, so samples use the model's own style. Save one there as a "
+                   "JSON file to write in it.")
     plan.score = st.toggle("Score with the detector", key=keep("keep:redteam:score", True),
                            help=f"Uses the {models.PROFILE_LABELS[profile]} build chosen in the sidebar. The "
                                 "first score loads its models.")
@@ -438,9 +451,12 @@ def _batch_jobs(plan: Plan) -> list[dict]:
 
 
 def _checkpoint_path(plan: Plan) -> Path:
+    # Batches saved before a profile could be chosen all used the default one, so only another
+    # profile adds its name to the key, and those batches still resume.
+    style = [plan.style_name] if plan.use_profile and plan.style_name != DEFAULT_STYLE else []
     return BATCH_DIR / (
         batch_key(plan.source_hash, plan.fill_answer_boxes, plan.rewrite_all_blocks, plan.prompt.strip(),
-                  plan.use_profile, plan.answer_words, plan.match_existing_lengths) + ".json"
+                  plan.use_profile, plan.answer_words, plan.match_existing_lengths, *style) + ".json"
     )
 
 
@@ -1188,7 +1204,7 @@ def render() -> None:
             system = None
             if clicked and not problem and plan.use_profile:
                 try:
-                    system = style_instructions(load_style_profile(STYLE_PATH))
+                    system = style_instructions(load_style_profile(plan.style_path))
                 except (OSError, ValueError) as exc:
                     st.error(f"Could not load the style profile: {exc}")
                     clicked = False
