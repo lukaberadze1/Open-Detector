@@ -515,13 +515,13 @@ def test_a_batch_waits_out_busy_models_and_drops_only_spent_ones(stub_model, mon
     assert third == second, "a model that was only busy stays in the list"
 
 
-def test_the_downloadable_app_offers_no_robustness_mode_and_no_local_model(stub_model, monkeypatch):
+def test_the_downloadable_app_offers_robustness_mode_but_no_local_model(stub_model, monkeypatch):
     monkeypatch.setenv("OPENDETECTOR_PACKAGED", "on")
     at = AppTest.from_function(red_team_page, default_timeout=60)
     at.session_state["profile"] = "slim"
     at.run()
     assert not at.exception, at.exception
-    assert not any(t.key == "keep:redteam:evasion" for t in at.toggle), "no detector-guided drafting for strangers"
+    assert any(t.key == "keep:redteam:evasion" for t in at.toggle)
     assert at.text_input(key="keep:redteam:local_model").value == ""
 
 

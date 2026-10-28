@@ -141,8 +141,8 @@ def public() -> bool:
 
 def packaged() -> bool:
     """Whether this is the downloadable Mac app (deploy/macos/build_app.py --standalone). It keeps its
-    user's key and samples like a local run, but like a public deploy it serves people this project
-    doesn't know, so it offers no detector-guided drafting and no local text model by default."""
+    user's key and samples like a local run, but serves people this project doesn't know, so it offers
+    no local text model by default."""
     return os.environ.get("OPENDETECTOR_PACKAGED", "").strip().lower() in ("1", "on", "true", "yes")
 
 
@@ -479,7 +479,7 @@ def _setup(profile: str) -> Plan:
     plan.score = st.toggle("Score with the detector", key=keep("keep:redteam:score", True),
                            help=f"Uses the {models.PROFILE_LABELS[profile]} build chosen in the sidebar. The "
                                 "first score loads its models.")
-    if not public() and not packaged():  # both serve strangers, so they offer no detector-guided drafting
+    if not public():  # the packaged app allows labelled robustness samples, but public deploys do not
         evasion = st.toggle(
             "Detector robustness mode · aim below 5%", key=keep("keep:redteam:evasion", False),
             disabled=not plan.score or plan.batch,
