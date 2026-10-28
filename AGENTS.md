@@ -21,6 +21,8 @@ An AI-generated-text detector, built as a calibrated ensemble:
 - **Live app:** https://open-detector.streamlit.app runs the slim profile and the Red team page in
   public mode, deployed from branch `feat/phase1-ensemble` of
   https://github.com/lukaberadze1/Open-Detector (public).
+- **Mac app:** `deploy/macos/build_app.py` installs `Open Detector.app`, the same Streamlit app in a
+  native window that runs on this checkout.
 
 `README.md` is the GitHub front page: what the app does and how to run it. The repo started as a
 clone of followsci's "Open Detector" BERT detector. `README_EN.md`,
@@ -65,6 +67,7 @@ model this code no longer uses.
 | `.claude/skills/style-profile/` | The `/style-profile` skill: runs the script, then revises the profile's prose in place so it stacks (keep, add with a week tag, revise only on 3+ weeks of evidence, never delete). The scheduled task `weekly-style-profile` runs it Sundays at 20:00. |
 | `deploy/streamlit_cloud/` | `streamlit_app.py` pins the slim profile, turns on public mode and runs `app.py`; `requirements.txt` installs CPU-only PyTorch. |
 | `deploy/huggingface/` | Docker Space for the full profile with `deploy.py`. Blocked: Hugging Face now needs PRO for Docker Spaces. |
+| `deploy/macos/` | The Mac app. `launcher.py` runs the app's server on 127.0.0.1 (port 8517 when free) and shows it in a pywebview (WebKit) window, with a loading page, an error page that can restart the server, a remembered window size, and a question before quitting during a Red team batch; the server stops itself if the launcher dies. `build_app.py` writes `~/Applications/Open Detector.app`: Info.plist, an icon drawn from `ui/assets/mark.svg`, and a small C executable, compiled with clang, that runs `launcher.py` on the `.venv`'s Python inside the app's own process. |
 | `tests/` | pytest suite with stand-in engines: no model downloads, about 10–25 s. |
 | `DETECTOR.md` | User guide: setup, evaluation workflow, deployment, red-teaming, known limits. |
 | `ruff.toml`, `pytest.ini`, `requirements.txt` | Lint config, test config, and development dependencies (Python 3.12 venv in `.venv`). |
@@ -210,6 +213,13 @@ To regenerate both shipped combiners after the caches change:
   draw. Widgets keyed `keep:…` survive a page switch because `app.py` writes those keys back on
   every run; give them their starting value with `ui.components.keep()`, never a `value=` argument.
   File uploaders can't be kept that way, so pages use `persistent_upload()`.
+- **The Mac app runs the checkout, not a copy.** `Open Detector.app` holds absolute paths to this
+  folder's `.venv` and `deploy/macos/launcher.py`, so code changes show up the next time it opens,
+  and moving the project means running `build_app.py` again. Its executable must stay a compiled
+  program that embeds Python: a shell script that `exec`s python loses the app's process (macOS
+  reports pid -1), which breaks accessibility and bringing the open window forward. The launcher
+  tells a Red team batch is running from the `caffeinate` child `ui/redteam.py` starts, so keep that
+  child if you change how batches keep the Mac awake.
 - **Unicode in source is deliberate.** Cyrillic and Greek look-alike letters and curly quotes in
   `opendetector/normalize.py`, `opendetector/segment.py` and some tests are intentional;
   `ruff.toml` exempts those files.
@@ -237,6 +247,10 @@ Each of these is one command.
 - Run it as the public deploy does, slim and in public mode:
   ```bash
   OPENDETECTOR_PROFILE=slim OPENDETECTOR_PUBLIC=on .venv/bin/streamlit run app.py
+  ```
+- Build or rebuild the Mac app in `~/Applications` (needs the Xcode command line tools):
+  ```bash
+  .venv/bin/python deploy/macos/build_app.py
   ```
 - Score one file from the command line (`.txt`, `.md`, `.docx` or `.pptx`; add `--answers-only`
   for a worksheet, or use `/ai-detect <file>` in Claude Code):

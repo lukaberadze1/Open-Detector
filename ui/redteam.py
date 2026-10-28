@@ -236,7 +236,8 @@ def duration(seconds: float) -> str:
 
 def _keep_awake() -> subprocess.Popen | None:
     """Keep the Mac from going to sleep while a batch runs: until the returned process is ended, or
-    this server stops. Nothing happens on other systems."""
+    this server stops. Nothing happens on other systems. The Mac app (deploy/macos/launcher.py)
+    looks for this caffeinate child to ask before quitting during a batch."""
     if sys.platform != "darwin":
         return None
     try:

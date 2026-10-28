@@ -232,6 +232,30 @@ This writes `models/combiner.json`, which the app picks up automatically, and
 RAID-test has about 672k texts, so run this on a GPU machine. Then open a pull request to
 [liamdugan/raid](https://github.com/liamdugan/raid). Declare it if the combiner saw RAID-train.
 
+## Install as a Mac app
+
+`deploy/macos/build_app.py` makes **Open Detector.app** in `~/Applications` (`--dest` picks another
+folder). It opens from Launchpad, Spotlight, the Finder or the Dock and shows the app in a window
+of its own, with the usual menus, and opening it again brings the open window forward. It needs
+the Xcode command line tools (`xcode-select --install`) to compile the app's small launcher.
+
+```bash
+.venv/bin/python deploy/macos/build_app.py
+```
+
+The app runs this checkout with its `.venv`, so a `git pull`, a refit or a new style profile shows
+up the next time it opens; build it again only after moving the project folder. When it opens it
+starts the server on `127.0.0.1:8517` (another free port if that one is taken), reachable from
+this Mac only, and shows a loading page until the server answers. Closing the window or quitting
+stops the server. If a Red team batch is running, it asks first; the saved blocks resume as
+usual. The server's output goes to `~/Library/Logs/Open Detector/server.log`, and if the server
+stops the window shows the log with a button to start it again. To run the window without
+building the app:
+
+```bash
+.venv/bin/python deploy/macos/launcher.py
+```
+
 ## Deploy free on Streamlit Community Cloud (slim build)
 
 Community Cloud's free tier caps an app at about 2.7 GB of RAM, too little for the full

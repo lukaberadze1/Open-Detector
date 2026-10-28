@@ -18,3 +18,6 @@ pytest
 
 # Red-team harness (align_engine.py)
 anthropic>=2
+
+# Mac app (deploy/macos): the app's native window
+pywebview>=6; sys_platform == "darwin"

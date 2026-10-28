@@ -50,6 +50,13 @@ The app opens in your browser with **Detect** and **Red team** in the top bar. T
 downloads the models: 1.7 GB for Slim, about 4.4 GB for every engine. Machines with 8 GB of RAM or
 less start on Slim.
 
+On a Mac you can instead make it an app in its own window, opened from Launchpad, Spotlight or the
+Dock like any other (needs the Xcode command line tools, `xcode-select --install`):
+
+```bash
+.venv/bin/python deploy/macos/build_app.py
+```
+
 To score a file from the command line:
 
 ```bash
