@@ -11,7 +11,8 @@ An AI-text detector with a Streamlit app of two pages:
   of every text block. It writes with Gemini, can follow a writer's style profile, scores each
   sample with the detector and saves it as labelled AI data.
 
-The live demo runs the detector only: https://open-detector.streamlit.app
+Try both pages at https://open-detector.streamlit.app. On the Red team page, paste your own Gemini
+key in the sidebar and add your own style profile; both are kept only for your browser session.
 
 ## How it scores
 

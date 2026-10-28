@@ -18,8 +18,9 @@ An AI-generated-text detector, built as a calibrated ensemble:
 - **It strips evasion tricks** before scoring: zero-width characters and look-alike letters.
 - **Two runtime profiles:** `full`, all engines on the best available hardware; and `slim`,
   Desklib alone in float32 on CPU, about 1.45 GB peak, for small hosts.
-- **Live app:** https://open-detector.streamlit.app runs the slim profile, deployed from branch
-  `feat/phase1-ensemble` of https://github.com/lukaberadze1/Open-Detector (public).
+- **Live app:** https://open-detector.streamlit.app runs the slim profile and the Red team page in
+  public mode, deployed from branch `feat/phase1-ensemble` of
+  https://github.com/lukaberadze1/Open-Detector (public).
 
 `README.md` is the GitHub front page: what the app does and how to run it. The repo started as a
 clone of followsci's "Open Detector" BERT detector. `README_EN.md`,
@@ -44,7 +45,7 @@ model this code no longer uses.
 | `opendetector/env.py` | `load_env()`: loads the gitignored `.env` into the environment. Variables already set take priority. |
 | `opendetector/__main__.py` | Command line: `python -m opendetector essay.txt` prints a JSON report. Reads `.md`, `.docx` and `.pptx` like the app (whole document plus every 150-word section); `--answers-only` scores just a worksheet's answer cells; `--profile slim`. |
 | `.claude/skills/ai-detect/` | The `/ai-detect` Claude Code skill: scores a file or pasted text through the command line and summarizes the JSON with `summarize.py`. |
-| `app.py` | Streamlit entrypoint: page config, logo, theme, the sidebar's detector build, and top navigation between the Detect and Red team pages. `OPENDETECTOR_PROFILE` pins a profile; `OPENDETECTOR_REDTEAM=off` leaves out the Red team page. |
+| `app.py` | Streamlit entrypoint: page config, logo, theme, the sidebar's detector build, and top navigation between the Detect and Red team pages. `OPENDETECTOR_PROFILE` pins a profile; `OPENDETECTOR_REDTEAM=off` leaves out the Red team page; `OPENDETECTOR_PUBLIC=on` runs it in public mode. |
 | `ui/models.py` | The loaded engines, shared by both pages, every session and batch worker threads. Holds one profile at a time (`get_detector`, `release`); defaults to slim on machines with 8 GB or less. |
 | `ui/detect.py` | The Detect page: pasted text or an uploaded `.md`/`.docx`/`.pptx` (with an answers-only toggle for worksheets), verdict card, engine readings, sentence highlights, section scores and calibration details. Shows only the engines the profile provides. |
 | `ui/redteam.py` | The Red team page: labelled AI samples from a prompt or an uploaded `.md`/`.docx`/`.pptx`, in a style profile picked from `data/styles/*.json` (default `alexandria_profile`), including batch regeneration of every answer box or text block (Markdown, Word or PowerPoint), with detector scores per block and for the whole document, an *Analyze in Detect* hand-off, and a Saved samples tab summarizing `data/essays/local_redteam.jsonl` by attack. |
@@ -62,7 +63,7 @@ model this code no longer uses.
 | `extract_baseline.py` | Stylometric profile of a writing sample (sentence-length burstiness, TTR/MATTR, punctuation, transitions) written to `style_profile.json`. |
 | `update_style_profile.py` | The living style profile `data/styles/alexandria_profile.json`, fed weekly from the writer's Obsidian vault (The Alexandria Archive, in iCloud). Keeps every paragraph ever seen in `data/styles/alexandria/corpus.jsonl` with its ISO week, skips callouts, review notes and pasted lines, and writes recency-weighted measurements (12-week half-life, floor 0.25) blended with the starting profile `data/styles/pasted_style_profile.json`. Snapshots the profile each week to `history/`; `--check` verifies it keeps the template's exact JSON format. |
 | `.claude/skills/style-profile/` | The `/style-profile` skill: runs the script, then revises the profile's prose in place so it stacks (keep, add with a week tag, revise only on 3+ weeks of evidence, never delete). The scheduled task `weekly-style-profile` runs it Sundays at 20:00. |
-| `deploy/streamlit_cloud/` | `streamlit_app.py` pins the slim profile, turns off the Red team page and runs `app.py`; `requirements.txt` installs CPU-only PyTorch. |
+| `deploy/streamlit_cloud/` | `streamlit_app.py` pins the slim profile, turns on public mode and runs `app.py`; `requirements.txt` installs CPU-only PyTorch. |
 | `deploy/huggingface/` | Docker Space for the full profile with `deploy.py`. Blocked: Hugging Face now needs PRO for Docker Spaces. |
 | `tests/` | pytest suite with stand-in engines: no model downloads, about 10–25 s. |
 | `DETECTOR.md` | User guide: setup, evaluation workflow, deployment, red-teaming, known limits. |
@@ -177,6 +178,12 @@ To regenerate both shipped combiners after the caches change:
   - Never commit keys or print them.
   - Tests must not read the real `.env`; `tests/test_generate_essays.py` patches `load_env`.
   - The repo is public.
+  - **Public mode** (`OPENDETECTOR_PUBLIC=on`, the live app) serves strangers. The Red team page
+    takes the visitor's own key from the sidebar and never reads environment keys, fixes the API
+    address to Gemini (a visitor-chosen URL would let them make the server fetch any address),
+    and keeps each browser session's samples, profiles and batches in `data/visitors/<id>/`
+    through `_store()` and `_own_batches()`. New code that writes or lists saved work must go
+    through those, never the module-level paths.
 - **Git setup:**
   - `origin` is `lukaberadze1/Open-Detector` (public). Pushes use a per-repo credential helper
     that runs `gh auth token --user lukaberadze1`. The global `gh` account is a different one,
@@ -222,9 +229,9 @@ Each of these is one command.
   ```bash
   .venv/bin/streamlit run app.py
   ```
-- Run it as the public deploy does, slim and detector-only:
+- Run it as the public deploy does, slim and in public mode:
   ```bash
-  OPENDETECTOR_PROFILE=slim OPENDETECTOR_REDTEAM=off .venv/bin/streamlit run app.py
+  OPENDETECTOR_PROFILE=slim OPENDETECTOR_PUBLIC=on .venv/bin/streamlit run app.py
   ```
 - Score one file from the command line (`.txt`, `.md`, `.docx` or `.pptx`; add `--answers-only`
   for a worksheet, or use `/ai-detect <file>` in Claude Code):

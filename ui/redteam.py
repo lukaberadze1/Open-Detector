@@ -4,6 +4,10 @@ Everything it writes is AI-labelled evaluation data. Each sample is appended to
 data/essays/local_redteam.jsonl with label 1 and exported under data/essays/exports/. Batches, which
 regenerate every answer box or text block of an uploaded document, run on a worker thread and save
 each block as they go (eval/redteam_batch.py), so reruns, page switches and closed tabs don't end them.
+
+On a public deploy (OPENDETECTOR_PUBLIC=on) each visitor brings their own Gemini key and style
+profile, nothing reads the host's keys, and each visitor's samples, profiles and batches are kept in
+a folder of their own under data/visitors/ for as long as their browser session lasts.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -59,6 +64,8 @@ DEFAULT_STYLE = "alexandria_profile"  # picked first when it's there
 OUTPUT_PATH = ROOT / "data/essays/local_redteam.jsonl"
 EXPORT_DIR = ROOT / "data/essays/exports"
 BATCH_DIR = ROOT / "data/essays/batches"
+VISITOR_DIR = ROOT / "data/visitors"  # a public deploy's per-visitor folders
+MAX_STYLE_BYTES = 500_000
 DEFAULT_FALLBACK_MODELS = (
     "gemini-3.5-flash-lite",
     "gemini-3.6-flash",
@@ -117,6 +124,35 @@ local_fallback_problem = st.cache_data(ttl=15, show_spinner=False)(local_model_p
 def running_batches() -> dict:
     """Batch workers by checkpoint file, shared by every session and kept across reruns."""
     return {}
+
+
+def public() -> bool:
+    """Whether this is a public deploy, where visitors bring their own key and see only their own work."""
+    return os.environ.get("OPENDETECTOR_PUBLIC", "off").strip().lower() in ("1", "on", "true", "yes")
+
+
+@dataclass(frozen=True)
+class Store:
+    """Where the page keeps samples, exports, batch checkpoints and style profiles."""
+
+    output: Path
+    exports: Path
+    batches: Path
+    styles: Path
+
+
+def _store() -> Store:
+    """The project's data folders, or on a public deploy a folder of this browser session's own."""
+    if not public():
+        return Store(OUTPUT_PATH, EXPORT_DIR, BATCH_DIR, STYLE_DIR)
+    root = VISITOR_DIR / st.session_state.setdefault("redteam:visitor", uuid.uuid4().hex)
+    return Store(root / "local_redteam.jsonl", root / "exports", root / "batches", root / "styles")
+
+
+def _own_batches() -> dict[str, BatchWorker]:
+    """The batches this session may see: those whose checkpoints are in its own store."""
+    batches = _store().batches
+    return {path: worker for path, worker in running_batches().items() if Path(path).parent == batches}
 
 
 @dataclass
@@ -232,6 +268,8 @@ def _connection() -> Connection:
     """The sidebar: which text models to use, and whether they can run."""
     with st.sidebar:
         st.subheader("Text model")
+        if public():
+            return _public_connection()
         status = st.container()
         with st.expander("Connection", icon=":material/settings:"):
             base_url = st.text_input("API URL", key=keep("keep:redteam:base_url", GEMINI_API_URL),
@@ -268,6 +306,31 @@ def _connection() -> Connection:
                 else:
                     st.caption(f":material/check_circle: Local fallback ready: {local_model}.")
     return Connection(base_url, model, fallback_models, local_model, local_url, api_key_env, api_key)
+
+
+def _public_connection() -> Connection:
+    """The sidebar on a public deploy: Gemini only, with the visitor's own key. The key stays in this
+    browser session's memory; it is never saved, and the host's own keys are never used."""
+    api_key = st.text_input(
+        "Your Gemini API key", type="password", key=keep("keep:redteam:api_key", ""),
+        help="Free at aistudio.google.com/apikey. It is used only for your requests, held only while this "
+             "browser session lasts and never saved.",
+    ).strip()
+    with st.expander("Models", icon=":material/settings:"):
+        model = st.text_input("Model", key=keep("keep:redteam:model", DEFAULT_MODEL))
+        fallback_text = st.text_area(
+            "Fallback models, in order", key=keep("keep:redteam:fallbacks", "\n".join(DEFAULT_FALLBACK_MODELS)),
+            height=130, help="Used in turn after quota or temporary errors. Models unavailable to your key are "
+                             "skipped.",
+        )
+    fallback_models = [line.strip() for line in fallback_text.replace(",", "\n").splitlines() if line.strip()]
+    if api_key:
+        st.caption(f":material/key: Writing with **{model}** and your key, then {len(fallback_models)} fallback "
+                   "models.")
+    else:
+        st.caption(":material/key_off: Paste your Gemini API key to generate samples. Get one free at "
+                   "[aistudio.google.com/apikey](https://aistudio.google.com/apikey).")
+    return Connection(GEMINI_API_URL, model, fallback_models, "", "", "GEMINI_API_KEY", api_key)
 
 
 def _setup(profile: str) -> Plan:
@@ -364,7 +427,7 @@ def _setup(profile: str) -> Plan:
                                key=keep("keep:redteam:words", 350), format="%d words")
     plan.temperature = st.slider("Creativity", 0.0, 1.5, step=0.1, key=keep("keep:redteam:temperature", 0.8),
                                  help="The model's temperature.")
-    styles = {path.stem: path for path in sorted(STYLE_DIR.glob("*.json"))}
+    styles = {path.stem: path for path in sorted(_store().styles.glob("*.json"))}
     use_style = st.toggle(
         "Write in a style profile", key=keep("keep:redteam:style", True), disabled=not styles,
         help="Sends a style profile as the system prompt. A style profile imitates writing patterns; it can't "
@@ -375,15 +438,50 @@ def _setup(profile: str) -> Plan:
         if st.session_state[style_key] not in styles:
             st.session_state[style_key] = DEFAULT_STYLE if DEFAULT_STYLE in styles else next(iter(styles))
         name = st.selectbox("Style profile", list(styles), key=style_key, disabled=not use_style,
-                            help="Every JSON file in data/styles/. Save another profile there and it shows up here.")
+                            help="The profiles you added in this browser session." if public() else
+                                 "Every JSON file in data/styles/. Save another profile there and it shows up here.")
         plan.style_path = styles[name] if use_style else None
     else:
-        st.caption("No style profile in data/styles/, so samples use the model's own style. Save one there as a "
-                   "JSON file to write in it.")
+        st.caption("No style profile yet, so samples use the model's own style. Add one below to write in it.")
+    st.file_uploader(
+        "Add a style profile", type="json", key="redteam:style_upload", on_change=_add_style_profile,
+        help="A JSON style profile. " + ("It is kept only for this browser session." if public() else
+                                         "It is saved in data/styles/."),
+    )
+    if style_notice := st.session_state.pop("redteam:style_notice", None):
+        getattr(st, style_notice[0])(style_notice[1])
     plan.score = st.toggle("Score with the detector", key=keep("keep:redteam:score", True),
                            help=f"Uses the {models.PROFILE_LABELS[profile]} build chosen in the sidebar. The "
                                 "first score loads its models.")
     return plan
+
+
+def _add_style_profile() -> None:
+    """Save an uploaded style profile to the store and pick it. Runs before the page redraws, so it
+    can set the picker's value."""
+    upload = st.session_state.get("redteam:style_upload")
+    if upload is None:
+        return
+    data = upload.getvalue()
+    name = re.sub(r"[^\w-]+", "_", Path(upload.name).stem).strip("_") or "style_profile"
+    try:
+        if len(data) > MAX_STYLE_BYTES:
+            raise ValueError(f"it is over {MAX_STYLE_BYTES // 1000} KB")
+        if not isinstance(json.loads(data), dict):
+            raise ValueError("it must hold a JSON object")
+    except ValueError as exc:  # also bad JSON and bad text encodings
+        st.session_state["redteam:style_notice"] = ("error", f"{upload.name} isn't a style profile: {exc}.")
+        return
+    path = _store().styles / f"{name}.json"
+    if path.is_file() and path.read_bytes() != data:
+        st.session_state["redteam:style_notice"] = (
+            "error", f"There is already a different profile named {name}. Rename the file and add it again.")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    st.session_state["keep:redteam:style_name"] = name
+    st.session_state["keep:redteam:style"] = True
+    st.session_state["redteam:style_notice"] = ("success", f"Added {name}, and picked it.")
 
 
 def _unavailable_tasks(upload: Upload | None, sections: list, slots: list, blocks: list) -> dict[str, str]:
@@ -412,6 +510,8 @@ def _problem(plan: Plan, conn: Connection) -> str | None:
         return "Write some instructions or upload a Markdown, Word or PowerPoint document first."
     if plan.task == "section" and plan.target_section is None:
         return "Choose a document section to rewrite."
+    if not conn.api_key and public():
+        return "Paste your Gemini API key in the sidebar first."
     if not conn.api_key and not conn.base_url.strip().startswith(("http://localhost", "http://127.0.0.1")):
         return f"Set {conn.api_key_env} in the project .env file or use a local model endpoint."
     return None
@@ -454,7 +554,7 @@ def _checkpoint_path(plan: Plan) -> Path:
     # Batches saved before a profile could be chosen all used the default one, so only another
     # profile adds its name to the key, and those batches still resume.
     style = [plan.style_name] if plan.use_profile and plan.style_name != DEFAULT_STYLE else []
-    return BATCH_DIR / (
+    return _store().batches / (
         batch_key(plan.source_hash, plan.fill_answer_boxes, plan.rewrite_all_blocks, plan.prompt.strip(),
                   plan.use_profile, plan.answer_words, plan.match_existing_lengths, *style) + ".json"
     )
@@ -472,15 +572,16 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
     upload, source_hash, mode_tag = plan.upload, plan.source_hash, plan.mode_tag
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     tag = f"{mode_tag}_partial" if partial else mode_tag
-    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    store = _store()
+    store.exports.mkdir(parents=True, exist_ok=True)
     document_bytes = document_name = document_path = None
     try:
         document_bytes = upload.data
         for item in sorted(items, key=lambda value: value["target"].locator[0], reverse=True):
             document_bytes = replace_document_section(upload.name, document_bytes, item["target"], item["text"])
         document_name = f"AI_REDTEAM_{tag}_{timestamp}_{source_hash}{upload.suffix}"
-        (EXPORT_DIR / document_name).write_bytes(document_bytes)
-        document_path = str((EXPORT_DIR / document_name).relative_to(ROOT))
+        (store.exports / document_name).write_bytes(document_bytes)
+        document_path = str((store.exports / document_name).relative_to(ROOT))
     except (ImportError, ValueError, IndexError, KeyError) as exc:
         document_bytes = document_name = None
         st.warning(f"The answers are saved, but the document copy could not be exported: {exc}")
@@ -539,8 +640,8 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
         })
         checkpoint.meta["document_recorded"] = True
     if rows:
-        OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with OUTPUT_PATH.open("a", encoding="utf-8") as output:
+        store.output.parent.mkdir(parents=True, exist_ok=True)
+        with store.output.open("a", encoding="utf-8") as output:
             for row in rows:
                 output.write(json.dumps(row, ensure_ascii=False) + "\n")
         checkpoint.save()
@@ -555,7 +656,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
         f"Source document: {upload.name}\n"
         f"Regenerated blocks: {len(items)} of {len(jobs)}\n\n" + "\n\n".join(answers_text) + "\n"
     )
-    (EXPORT_DIR / text_name).write_text(text_attachment, encoding="utf-8")
+    (store.exports / text_name).write_text(text_attachment, encoding="utf-8")
     noun = ("Markdown text blocks" if plan.markdown else "text blocks") if plan.rewrite_all_blocks else "answer boxes"
     st.session_state[RESULT] = {
         "essay": "\n\n".join(answers_text),
@@ -574,7 +675,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
         "score_label": "Whole regenerated document",
         "attachment": text_attachment,
         "filename": text_name,
-        "path": str((EXPORT_DIR / text_name).relative_to(ROOT)),
+        "path": str((store.exports / text_name).relative_to(ROOT)),
         "document_attachment": document_bytes,
         "document_filename": document_name,
         "document_path": document_path,
@@ -637,7 +738,7 @@ def _batch_progress(worker: BatchWorker) -> None:
 def _finish_ended_batches() -> None:
     """Export every batch that has ended since the page last looked, with the settings it ran with,
     whatever the page is set to now, and say how it ended."""
-    for path, worker in list(running_batches().items()):
+    for path, worker in _own_batches().items():
         if worker.is_alive():
             continue
         running_batches().pop(path, None)
@@ -838,7 +939,8 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
     # Kept on the worker so that whichever page run sees it end can export it, even after the page's
     # settings have changed.
     worker.plan, worker.jobs = plan, jobs
-    models.release()  # the detector isn't needed until the blocks are written; it reloads to score them
+    if not public():  # a public deploy's detector serves other visitors meanwhile
+        models.release()  # the detector isn't needed until the blocks are written; it reloads to score them
     running_batches()[str(path)] = worker
     worker.start()
 
@@ -923,12 +1025,13 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         "calibrated": score.calibrated if score else None,
         "detector_profile": plan.profile if score else None,
     }
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with OUTPUT_PATH.open("a", encoding="utf-8") as output:
+    store = _store()
+    store.output.parent.mkdir(parents=True, exist_ok=True)
+    with store.output.open("a", encoding="utf-8") as output:
         output.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     export_name = f"AI_REDTEAM_{mode_tag}_{timestamp}_{prompt_hash}.txt"
-    export_path = EXPORT_DIR / export_name
+    export_path = store.exports / export_name
     attachment = (
         "Open Detector | AI-labelled red-team sample\n"
         f"Attack: {attack}\nModel: {model}\nSource: {upload.name if upload else 'prompt'}\n"
@@ -936,14 +1039,14 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         f"Detector likelihood: {row['ai_probability'] if row['ai_probability'] is not None else 'not available'}\n\n"
         f"{essay}\n"
     )
-    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    store.exports.mkdir(parents=True, exist_ok=True)
     export_path.write_text(attachment, encoding="utf-8")
     document_attachment = document_filename = document_path = None
     if plan.export_document and upload and target_section:
         try:
             document_attachment = replace_document_section(upload.name, upload.data, target_section, essay)
             document_filename = f"AI_REDTEAM_{mode_tag}_{timestamp}_{prompt_hash}{upload.suffix}"
-            document_export_path = EXPORT_DIR / document_filename
+            document_export_path = store.exports / document_filename
             document_export_path.write_bytes(document_attachment)
             document_path = str(document_export_path.relative_to(ROOT))
         except (ImportError, ValueError, IndexError, KeyError) as exc:
@@ -974,20 +1077,22 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
 
 def _restore_last_result() -> None:
     """Show the most recent saved sample when the page opens in a new session."""
-    if RESULT in st.session_state or not OUTPUT_PATH.is_file():
+    store = _store()
+    if RESULT in st.session_state or not store.output.is_file():
         return
     try:
-        saved_rows = [json.loads(line) for line in OUTPUT_PATH.read_text(encoding="utf-8").splitlines() if line.strip()]
+        lines = store.output.read_text(encoding="utf-8").splitlines()
+        saved_rows = [json.loads(line) for line in lines if line.strip()]
         if not saved_rows:
             return
         saved = saved_rows[-1]
         saved_id = saved.get("id", "latest")
         saved_hash = hashlib.sha256(saved_id.encode()).hexdigest()[:12]
         saved_name = f"AI_REDTEAM_previous_{saved_hash}.txt"
-        saved_path = EXPORT_DIR / saved_name
+        saved_path = store.exports / saved_name
         saved_score = saved.get("ai_probability")
         if not saved_path.exists():
-            EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+            store.exports.mkdir(parents=True, exist_ok=True)
             saved_path.write_text(
                 "Open Detector | AI-labelled red-team sample\n"
                 f"Attack: {saved.get('attack', 'red-team')}\n"
@@ -1080,9 +1185,13 @@ def _show_result(result: dict, profile: str) -> None:
                                    icon=":material/download:", key="download_latest_redteam_document")
             if st.button("Analyze in Detect", icon=":material/search:", type="primary"):
                 _open_in_detect(result.get("detect_text") or result["essay"])
-        saved = [Path(result["path"]).name] + ([result["document_filename"]] if result.get("document_path") else [])
-        st.caption(f"Saved as {' and '.join(saved)} in {Path(result['path']).parent}, and recorded as AI text in "
-                   f"{OUTPUT_PATH.relative_to(ROOT)}.")
+        if public():
+            st.caption("Recorded as AI text for this browser session only. Download what you want to keep: "
+                       "reloading or closing the page forgets it.")
+        else:
+            saved = [Path(result["path"]).name] + ([result["document_filename"]] if result.get("document_path") else [])
+            st.caption(f"Saved as {' and '.join(saved)} in {Path(result['path']).parent}, and recorded as AI text in "
+                       f"{OUTPUT_PATH.relative_to(ROOT)}.")
 
 
 @st.cache_data(show_spinner=False)
@@ -1098,10 +1207,11 @@ def _saved_rows(path: str, modified: float) -> list[dict]:
 
 def _history() -> None:
     """Every saved sample: how often each kind got past the detector."""
-    if not OUTPUT_PATH.is_file():
+    output = _store().output
+    if not output.is_file():
         st.info("No samples yet. Generated samples are listed here with their scores.", icon=":material/history:")
         return
-    rows = _saved_rows(str(OUTPUT_PATH), OUTPUT_PATH.stat().st_mtime)
+    rows = _saved_rows(str(output), output.stat().st_mtime)
     scored = [row for row in rows if row.get("verdict") in ("likely_ai", "needs_review", "likely_human")]
     with st.container(horizontal=True):
         st.metric("Samples", f"{len(rows):,}", border=True)
@@ -1154,7 +1264,8 @@ def _history() -> None:
             "Text": st.column_config.TextColumn(width="large"),
         },
     )
-    st.caption(f"All samples are in `{OUTPUT_PATH.relative_to(ROOT)}`, labelled as AI text.")
+    st.caption("The samples from this browser session, labelled as AI text." if public()
+               else f"All samples are in `{OUTPUT_PATH.relative_to(ROOT)}`, labelled as AI text.")
 
 
 def render() -> None:
@@ -1165,10 +1276,12 @@ def render() -> None:
 
     st.title("Red team", anchor=False)
     _finish_ended_batches()
-    running = [worker for worker in running_batches().values() if worker.is_alive()]
+    running = [worker for worker in _own_batches().values() if worker.is_alive()]
     if running:
         # Generator mode: while a batch runs, the page shows only its progress. One batch runs at a time.
-        st.markdown("A batch is running. The detector is unloaded until the blocks are written, and the Mac stays "
+        st.markdown("A batch is running. Keep this tab open: reloading or closing it loses the results."
+                    if public() else
+                    "A batch is running. The detector is unloaded until the blocks are written, and the Mac stays "
                     "awake until it ends. You can close this tab: a notification says when it's done.")
         for worker in running:
             _batch_progress(worker)

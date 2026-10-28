@@ -94,7 +94,14 @@ tries a configurable fallback list after quota or temporary service errors. Its 
 `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.1-flash-lite`, and `gemini-3-flash-preview`.
 The older 2.5 Flash models are omitted because Google restricts them for new users. After those it
 falls back to a local Ollama model (`gemma3:4b` by default), and the sidebar says whether that can
-run. The public deploys leave the page out with `OPENDETECTOR_REDTEAM=off`.
+run. `OPENDETECTOR_REDTEAM=off` leaves the page out, as the Hugging Face deploy does.
+
+On the public Streamlit site the page runs in **public mode** (`OPENDETECTOR_PUBLIC=on`). Each
+visitor pastes their own Gemini key in the sidebar and adds their own style profile with **Add a
+style profile**. Both are kept only for that browser session and never saved; the host's own
+keys and `data/styles/` profiles are never used. Each visitor sees only their own samples and
+batches, and reloading the page starts afresh, so download what you want to keep. Public mode
+always writes with Gemini: the API address can't be changed and there is no local fallback.
 
 ```bash
 .venv/bin/python -m opendetector essay.txt
@@ -229,7 +236,7 @@ ensemble. The **slim** profile runs Desklib alone, the strongest single engine, 
 the CPU. It peaks around 1.5 GB, its scores match the full build's Desklib scores (correlation
 1.000), and it has its own combiner, `models/combiner_slim.json`, so its verdicts are still
 calibrated. The same `app.py` runs both builds; `deploy/streamlit_cloud/streamlit_app.py` just
-pins the slim profile and leaves out the Red team page. The theme comes from
+pins the slim profile and runs the Red team page in public mode (see above). The theme comes from
 `.streamlit/config.toml` at the repository root. (bfloat16 and int8 were measured and rejected:
 bfloat16 is emulated on most CPUs and took minutes per essay, and int8 cut Desklib's AUROC from
 0.998 to 0.934.)
@@ -245,10 +252,10 @@ bfloat16 is emulated on most CPUs and took minutes per essay, and int8 cut Deskl
    installs CPU-only PyTorch. The first analysis downloads Desklib (1.7 GB) and takes a few
    minutes; later ones are much faster.
 
-To run the slim build locally:
+To run it locally as the public site does:
 
 ```bash
-OPENDETECTOR_PROFILE=slim .venv/bin/streamlit run app.py
+OPENDETECTOR_PROFILE=slim OPENDETECTOR_PUBLIC=on .venv/bin/streamlit run app.py
 ```
 
 ## Deploy to Hugging Face Spaces (needs PRO)

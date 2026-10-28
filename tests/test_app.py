@@ -93,7 +93,7 @@ def test_switched_off_engine_is_left_out():
     assert result["missing"] == ["bino_doc", "bino_min"]
 
 
-def test_public_deploy_leaves_out_the_red_team_page(monkeypatch):
+def test_redteam_off_leaves_out_the_red_team_page(monkeypatch):
     from ui import nav
 
     built = []
@@ -120,18 +120,20 @@ def stub_model(monkeypatch, tmp_path):
 
     for name, path in (("ROOT", tmp_path), ("OUTPUT_PATH", tmp_path / "local_redteam.jsonl"),
                        ("EXPORT_DIR", tmp_path / "exports"), ("BATCH_DIR", tmp_path / "batches"),
-                       ("STYLE_DIR", tmp_path / "styles")):
+                       ("STYLE_DIR", tmp_path / "styles"), ("VISITOR_DIR", tmp_path / "visitors")):
         monkeypatch.setattr(redteam, name, path)
     monkeypatch.setattr(redteam, "load_env", lambda: None)  # never read the real .env
     monkeypatch.setattr(redteam, "local_fallback_problem", lambda url, model: None)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    stub = SimpleNamespace(prompts=[], systems=[], orders=[], local_models=[], notifications=[], failures=[],
-                           gate=threading.Event())
+    stub = SimpleNamespace(prompts=[], systems=[], keys=[], urls=[], orders=[], local_models=[], notifications=[],
+                           failures=[], gate=threading.Event())
     stub.gate.set()
 
     def write(base_url, api_key, models, prompt, temperature, system, local_url="", local_model="", *args):
         stub.prompts.append(prompt)
         stub.systems.append(system)
+        stub.keys.append(api_key)
+        stub.urls.append(base_url)
         stub.orders.append(list(models))
         stub.local_models.append(local_model)
         assert stub.gate.wait(30)
@@ -285,6 +287,100 @@ def test_a_running_batch_takes_over_the_page_with_a_countdown(stub_model, tmp_pa
     assert run_until_batch_ends(at)[0] == "success"
     assert len(list((tmp_path / "exports").glob("AI_REDTEAM_full_document_*.docx"))) == 1
     assert "Aim for about 11 words" in stub_model.prompts[0], "the batch kept its match-the-length setting"
+
+
+def public_page(visitor):
+    """The Red team page on a public deploy, as the browser session `visitor` sees it."""
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.session_state["redteam:visitor"] = visitor
+    at.run()
+    assert not at.exception, at.exception
+    return at
+
+
+def test_public_mode_writes_only_with_the_visitors_own_key(stub_model, monkeypatch):
+    from eval.generate_essays import GEMINI_API_URL
+
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")  # the host's GEMINI_API_KEY is set, and must go unused
+    at = public_page("a")
+    assert not any(t.key == "keep:redteam:base_url" for t in at.text_input), "no visitor-chosen API address"
+    at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
+    button(at, "Generate sample").click()
+    at.run()
+    assert [e.value for e in at.error] == ["Paste your Gemini API key in the sidebar first."]
+    assert stub_model.prompts == []
+
+    at.text_input(key="keep:redteam:api_key").input("visitor-key")
+    button(at, "Generate sample").click()
+    at.run()
+    assert not at.exception, at.exception
+    assert (stub_model.keys, stub_model.urls, stub_model.local_models) == (["visitor-key"], [GEMINI_API_URL], [""])
+
+
+def test_public_visitors_see_only_their_own_profiles_and_samples(stub_model, monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
+    (tmp_path / "styles").mkdir()
+    (tmp_path / "styles" / "alexandria_profile.json").write_text("{}")  # the host's own, never offered
+    own_styles = tmp_path / "visitors" / "a" / "styles"
+    own_styles.mkdir(parents=True)
+    (own_styles / "friend.json").write_text(json.dumps({"tone": "breezy"}))
+    at = public_page("a")
+    assert at.selectbox(key="keep:redteam:style_name").options == ["friend"]
+    at.text_input(key="keep:redteam:api_key").input("visitor-key")
+    at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
+    button(at, "Generate sample").click()
+    at.run()
+    assert not at.exception, at.exception
+    assert "tone: breezy" in stub_model.systems[-1]
+    assert len((tmp_path / "visitors" / "a" / "local_redteam.jsonl").read_text().splitlines()) == 1
+    assert not (tmp_path / "local_redteam.jsonl").exists()
+
+    other = public_page("b")
+    assert "last_generated_result" not in other.session_state
+    assert not any(s.key == "keep:redteam:style_name" for s in other.selectbox)
+    assert any("No samples yet" in i.value for i in other.info)
+
+
+def test_public_visitors_dont_see_each_others_batches(stub_model, monkeypatch):
+    from ui.components import Upload
+
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
+    stub_model.gate.clear()  # hold the first block until the end of the test
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.session_state["redteam:visitor"] = "a"
+    at.session_state["keep:redteam:api_key"] = "visitor-key"
+    at.session_state["upload:redteam:file"] = Upload("bees.docx", essay_docx())
+    at.session_state["keep:redteam:task"] = "blocks"
+    at.run()
+    button(at, "Rewrite 2 blocks").click()
+    at.run()
+    assert [b.label for b in at.button] == ["Stop"]
+
+    other = public_page("b")
+    assert "Generate sample" in [b.label for b in other.button], "another visitor's batch doesn't take over"
+    stub_model.gate.set()
+    assert run_until_batch_ends(at)[0] == "success"
+
+
+def test_an_added_style_profile_is_kept_for_the_visitor_and_picked(monkeypatch, tmp_path):
+    from ui import redteam
+
+    state = {"redteam:style_upload": SimpleNamespace(name="My Style.json", getvalue=lambda: b'{"tone": "breezy"}')}
+    monkeypatch.setattr(redteam, "st", SimpleNamespace(session_state=state))
+    monkeypatch.setattr(redteam, "VISITOR_DIR", tmp_path / "visitors")
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
+    redteam._add_style_profile()
+    saved = tmp_path / "visitors" / state["redteam:visitor"] / "styles" / "My_Style.json"
+    assert saved.read_text() == '{"tone": "breezy"}'
+    assert (state["keep:redteam:style_name"], state["redteam:style_notice"][0]) == ("My_Style", "success")
+
+    for name, data in (("list.json", b"[1, 2]"), ("broken.json", b"{"), ("My Style.json", b'{"tone": "dry"}')):
+        state["redteam:style_upload"] = SimpleNamespace(name=name, getvalue=lambda data=data: data)
+        redteam._add_style_profile()
+        assert state["redteam:style_notice"][0] == "error", name
+    assert saved.read_text() == '{"tone": "breezy"}', "a different profile of the same name isn't overwritten"
 
 
 def test_block_prompts_start_with_the_same_document():
