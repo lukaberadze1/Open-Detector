@@ -9,7 +9,8 @@ the same run of the document's blocks (at least --words words) the way a challen
 same prompts and the style profile as the system prompt, and records:
 
 - detector: the AI likelihood of the rewritten run, from the --profile build of the detector
-- style: how closely the rewrite follows the style profile (see StyleYardstick)
+- style: how closely the rewrite follows the style profile (see StyleYardstick); with --no-style the
+  rewrite is written without one and still measured against it, the control for the profile's effect
 - speed: seconds of writing per block, counting only the request that answered: a 503 says how busy
   the server was that minute, not how fast the setting is
 - quota: requests per block, Gemini's own count of input, output and thinking tokens per block, and
@@ -277,7 +278,7 @@ def _transient(exc: APIError) -> bool:
             else any(text in message for text in ("could not reach", "empty response")))
 
 
-def run_trial(trial: dict, jobs: list[dict], plan, system: str, api_key: str, temperature: float) -> dict:
+def run_trial(trial: dict, jobs: list[dict], plan, system: str | None, api_key: str, temperature: float) -> dict:
     """Rewrite the sample run with one setting, as a batch would: a request per group, then any block
     its reply leaves out on its own. Raises QuotaExhausted, or APIError for a request that keeps failing."""
     model, thinking, size = trial["model"], trial["thinking"], trial["group_size"]
@@ -500,6 +501,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("document", nargs="?", help=".md, .docx or .pptx to rewrite")
     parser.add_argument("--style", type=Path, default=ROOT / "data/styles/alexandria_profile.json",
                         help="style profile sent as the system prompt and measured against")
+    parser.add_argument("--no-style", action="store_true",
+                        help="write without a style profile, still measuring against --style: the control a "
+                             "profile's effect is measured against")
     parser.add_argument("--models", default=",".join(MODELS))
     parser.add_argument("--thinking", default=",".join(LEVELS))
     parser.add_argument("--groups", default=",".join(map(str, GROUPS)), help="blocks per request to try")
@@ -552,11 +556,12 @@ def main(argv: list[str] | None = None) -> int:
         data = path.read_bytes()
         # Two requests or more at the largest group size, so every size measured is one a batch would send.
         jobs, plan = sample_jobs(path.name, data, args.words, min_blocks=2 * max(groups))
-        system = style_instructions(load_style_profile(args.style))
+        system = None if args.no_style else style_instructions(load_style_profile(args.style))
         source = hashlib.sha256(data).hexdigest()[:16]
-        meta = {"document": path.name, "source": source, "style_profile": args.style.stem, "words": args.words,
+        written_in = "plain" if args.no_style else args.style.stem
+        meta = {"document": path.name, "source": source, "style_profile": written_in, "words": args.words,
                 "sample_words": sum(count_words(job["previous"]) for job in jobs), "blocks": len(jobs),
-                "context_chars": len(system) + len(plan.context_text), "detector_profile": args.profile,
+                "context_chars": len(system or "") + len(plan.context_text), "detector_profile": args.profile,
                 "baseline_model": args.baseline_model, "temperature": args.temperature}
     same = ("source", "style_profile", "words", "blocks")
     trials = [trial for trial in others if all(trial.get("meta", {}).get(key) == meta.get(key) for key in same)]

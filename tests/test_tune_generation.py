@@ -332,3 +332,27 @@ def test_a_setting_carries_its_temperature():
     table = {"rows": [{**row("m", "low", 8, 0.1, 50, 1.0, 0.1, 1000), "temperature": 1.3}]}
     assert generation_settings.choose(table, EVEN).temperature == 1.3
     assert generation_settings.choose(TABLE, EVEN).temperature is None, "a table measured before temperature was"
+
+
+def test_the_control_writes_without_the_profile_and_is_still_measured_against_it(monkeypatch, tmp_path):
+    gemini = FakeGemini(monkeypatch)
+    monkeypatch.setattr(tune_generation, "load_env", lambda: None)
+    monkeypatch.setattr(tune_generation, "LABELLED", tmp_path / "tuning_redteam.jsonl")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    import opendetector
+
+    detector = SimpleNamespace(analyze=lambda text, sentences: SimpleNamespace(ai_probability=0.4))
+    monkeypatch.setattr(opendetector.Detector, "from_config", classmethod(lambda cls, config: detector))
+    source = tmp_path / "notes.docx"
+    source.write_bytes(document(BLOCKS))
+    argv = [str(source), "--style", str(corpus_profile(tmp_path)), "--no-style", "--models", "a",
+            "--baseline-model", "a", "--thinking", "low", "--groups", "4", "--temperatures", "0.8",
+            "--repeats", "1", "--words", "40",
+            "--out", str(tmp_path / "trials.jsonl"), "--table", str(tmp_path / "table.json"),
+            "--report", str(tmp_path / "report.md"), "--limits", str(tmp_path / "limits.json")]
+    assert tune_generation.main(argv) == 0
+    assert gemini.calls and all(call["system"] is None for call in gemini.calls)
+    table = json.loads((tmp_path / "table.json").read_text())
+    assert table["style_profile"] == "plain" and table["rows"][0]["style"] is not None
+    (logged,) = [json.loads(line) for line in (tmp_path / "tuning_redteam.jsonl").read_text().splitlines()]
+    assert logged["attack"] == "full_document+plain"

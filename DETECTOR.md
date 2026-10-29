@@ -140,6 +140,10 @@ skips a model whose quota runs out; every rewrite is logged as labelled AI data.
 `models/generation_tuning.json` and a report, `eval/reports/tuning.md`, with the spread between
 repeats: differences smaller than that are noise.
 
+`--no-style` writes without the style profile while still measuring against it, the control for the
+profile's effect: on 2026-10-29 the profile took the detector's AI likelihood from 96 to 98% down to
+2 to 3% (`eval/reports/style_profile_ab.md`).
+
 How much of this the detector catches is measured with
 
 ```bash
