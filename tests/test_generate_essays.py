@@ -1,8 +1,12 @@
 """The essay generator against a fake OpenAI-compatible server on localhost."""
 
+import contextlib
+import io
 import json
 import os
 import threading
+import urllib.error
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pandas as pd
@@ -444,3 +448,76 @@ def test_load_env_reads_dotenv_without_overriding(monkeypatch, tmp_path):
     assert os.environ["GEMINI_API_KEY"] == "from-file"
     assert os.environ["OTHER_KEY"] == "already-set", "exported variables win over the file"
     load_env(tmp_path / "missing.env")  # a missing file is fine
+
+
+def test_each_model_is_asked_for_a_thinking_level_it_has():
+    level = generate_essays.thinking_level
+    assert level("gemini-3-flash-preview", "minimal") == "minimal"
+    assert level("gemini-3.8-flash", "minimal") == "low", "3.8 Flash starts at low"
+    assert level("gemini-3-pro-preview", "medium") == "high"
+    assert level("gemini-9-flash", "minimal") == "minimal", "an unknown model is asked as given"
+    assert level("gemini-3.8-flash", None) is None
+
+
+class FakeGemini:
+    """Stands in for urllib's urlopen against Gemini: replies with the queued (status, body) pairs and
+    records each request's body."""
+
+    def __init__(self, monkeypatch, replies):
+        self.replies, self.bodies = list(replies), []
+        monkeypatch.setattr(generate_essays.urllib.request, "urlopen", self.urlopen)
+
+    def urlopen(self, request, timeout):
+        self.bodies.append(json.loads(request.data))
+        status, body = self.replies.pop(0)
+        payload = io.BytesIO(json.dumps(body).encode())
+        if status != 200:
+            raise urllib.error.HTTPError(request.full_url, status, "error", Message(), payload)
+        return contextlib.closing(payload)
+
+
+def gemini_output(text, usage=None):
+    return 200, {"status": "completed", "usage": usage or {},
+                 "steps": [{"type": "model_output", "content": [{"type": "text", "text": text}]}]}
+
+
+def test_gemini_gets_the_thinking_level_and_the_json_shape(monkeypatch):
+    gemini = FakeGemini(monkeypatch, [gemini_output('{"blocks": []}', {"total_input_tokens": 900})])
+    schema, usage = {"type": "object"}, {}
+    assert generate_essays.chat(generate_essays.GEMINI_API_URL, "key", "gemini-3-flash-preview", "Write.", 0.8,
+                                retries=1, thinking="low", json_schema=schema, usage=usage) == '{"blocks": []}'
+    assert usage == {"total_input_tokens": 900}
+    (body,) = gemini.bodies
+    assert body["generation_config"] == {"temperature": 0.8, "thinking_level": "low"}
+    assert body["response_format"] == {"type": "text", "mime_type": "application/json", "schema": schema}
+
+
+def test_a_model_that_turns_down_the_level_or_json_is_asked_again_without_it(monkeypatch):
+    gemini = FakeGemini(monkeypatch, [
+        (400, {"error": {"message": "thinking_level is not supported for this model."}}),
+        (400, {"error": {"message": "Invalid value at 'response_format.schema'."}}),
+        gemini_output("Written."),
+    ])
+    assert generate_essays.chat(generate_essays.GEMINI_API_URL, "key", "gemini-3.6-flash", "Write.", 0.8,
+                                retries=1, thinking="low", json_schema={"type": "object"}) == "Written."
+    first, second, third = gemini.bodies
+    assert first["generation_config"] == {"thinking_level": "low"} and "response_format" in first
+    assert "generation_config" not in second and "response_format" in second
+    assert "generation_config" not in third and "response_format" not in third
+
+
+def test_other_bad_requests_are_not_asked_again(monkeypatch):
+    gemini = FakeGemini(monkeypatch, [(400, {"error": {"message": "API key not valid."}})])
+    with pytest.raises(generate_essays.APIError, match="HTTP 400"):
+        generate_essays.chat(generate_essays.GEMINI_API_URL, "key", "gemini-3.6-flash", "Write.", 0.8, retries=1,
+                             thinking="low")
+    assert len(gemini.bodies) == 1
+
+
+def test_ollama_gets_the_json_shape_as_its_format():
+    local = FakeServer([ollama_reply('{"blocks": []}')])
+    try:
+        generate_essays.chat_local(local.url, "gemma3:4b", "Write.", 0.8, json_schema={"type": "object"})
+    finally:
+        local.close()
+    assert local.requests[0]["body"]["format"] == {"type": "object"}

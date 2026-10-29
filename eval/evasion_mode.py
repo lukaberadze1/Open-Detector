@@ -6,7 +6,7 @@ Every candidate remains AI-generated and should be retained as an AI-labelled ha
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from collections.abc import Callable
 
 
 @dataclass

@@ -81,8 +81,41 @@ columns included), or a rewrite of every text block, which keeps headings, title
 tables fixed. If a file doesn't support a task, the page says why. Document tasks export a
 separate Markdown/DOCX/PPTX copy that keeps the uploaded structure; the original is left unchanged.
 The two batch tasks run in the background, save each block as it is written, and resume where they
-stopped. A style profile picked from `data/styles/` becomes the system prompt, and its file name
-joins the attack label.
+stopped. They rewrite several neighbouring blocks in one request (**Blocks per request**, 6 by
+default), so the style profile and the document are sent once per group rather than once per block,
+and write a few groups at the same time (**Requests at once**, 2 by default). The reply is JSON with
+one entry per block; a block it leaves out is written again on its own. Robustness mode drafts and
+scores each block on its own, one at a time. A style profile picked from `data/styles/` becomes the
+system prompt, and its file name joins the attack label.
+
+**Priorities** decide how a run trades four things: getting past the detector, sounding like the
+style profile, speed and quota. Spend 12 points over them (at most 6 on one) and the page picks the
+measured setting with the best points-weighted score, shows it with the time, requests and tokens it
+should take, and draws the points as a diamond. Even points are the default. The settings are a
+model, its thinking level (how long Gemini reasons before it writes) and how many blocks go in one
+request; speed points also send more requests at once. **Set by hand** chooses them yourself.
+
+The measurements come from a benchmark run on a document:
+
+```bash
+.venv/bin/python -m eval.tune_generation report.docx
+```
+
+It rewrites the same run of blocks (250 words by default) with each setting, the way a batch does,
+and records the detector's AI likelihood of the rewrite, its style match, seconds per block, and
+requests and Gemini's token count per block. Quota also counts each model's free requests a day:
+Gemini's quota errors state the limit, so a model that runs out during a run has it recorded in
+`eval/cache/tuning_limits.json`, and `--daily-limit MODEL=N` sets one by hand (AI Studio lists your
+project's limits). The page then weighs how much of that allowance the document in hand would take:
+a 100-block batch on a model allowing 20 requests a day uses most of the day. The style match ranks the rewrite among passages of the
+writer's own writing (`data/styles/<name>/corpus.jsonl`): the share of them further from the
+profile's measurements than it is, so 50% is as typical as the writer's median passage. Measuring
+every combination would cost more requests than the free tier gives, so each model is measured at
+each thinking level with the largest group, the group sizes on one model, and the rest predicted by
+adding those effects (`--design full` measures everything). The run resumes where it stopped and
+skips a model whose quota runs out; every rewrite is logged as labelled AI data. It writes
+`models/generation_tuning.json` and a report, `eval/reports/tuning.md`, with the spread between
+repeats: differences smaller than that are noise.
 
 Each sample can be scored once with the detector, and its probability, verdict, calibration state
 and detector build are recorded next to `label: 1` in `data/essays/local_redteam.jsonl`. These

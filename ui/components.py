@@ -55,6 +55,7 @@ CSS = """
   color: var(--tone); margin: 0.35rem 0 0.5rem; }
 .od-meaning { font-size: 0.95rem; color: var(--od-ink); opacity: 0.86; max-width: 30rem; line-height: 1.5; }
 .od-dial { width: 230px; height: 196px; display: block; max-width: 100%; }
+.od-priorities { width: 100%; max-width: 190px; height: auto; display: block; margin: 0 auto; }
 .od-zones { position: relative; display: flex; flex-wrap: wrap; gap: 0.45rem; margin-top: 1.1rem; font-size: 0.78rem; }
 .od-zones span { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.22rem 0.65rem 0.22rem 0.5rem;
   border-radius: 999px; border: 1px solid var(--od-hair); color: var(--od-muted); }
@@ -261,6 +262,43 @@ def dial(probability: float, review: float, ai: float, verdict: str, instrument:
     data = base64.b64encode(svg.encode()).decode()
     label = f"AI likelihood {probability:.0%}; needs review above {review:.0%}, likely AI above {ai:.0%}"
     return f'<img class="od-dial" src="data:image/svg+xml;base64,{data}" alt="{label}">'
+
+
+# The Red team page's priorities, clockwise from the top of their diamond.
+CORNERS = {"detector": (0, -1, "DETECTOR"), "style": (1, 0, "STYLE"), "speed": (0, 1, "SPEED"),
+           "quota": (-1, 0, "QUOTA")}
+
+
+def priorities_chart(points: dict[str, int], most: int) -> str:
+    """The points spent on each priority as a diamond, a corner each, as an <img> in the active look's
+    colours (st.html strips inline SVG)."""
+    c = look_tones()
+    cx, cy, r = 95.0, 75.0, 50.0
+    mono = "'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace"
+
+    def corner(measure: str, share: float) -> str:
+        dx, dy, _ = CORNERS[measure]
+        return f"{cx + dx * r * share:.1f},{cy + dy * r * share:.1f}"
+
+    parts = [f'<polygon points="{" ".join(corner(m, ring) for m in CORNERS)}" fill="none" stroke="{c["track"]}" '
+             f'stroke-width="{1.4 if ring == 1 else 1}"/>' for ring in (1 / 3, 2 / 3, 1)]
+    parts += [f'<line x1="{cx}" y1="{cy}" x2="{corner(m, 1).split(",")[0]}" y2="{corner(m, 1).split(",")[1]}" '
+              f'stroke="{c["track"]}"/>' for m in CORNERS]
+    shares = {m: max(points.get(m, 0) / most, 0.04) for m in CORNERS}  # a corner with no points still shows
+    parts.append(f'<polygon points="{" ".join(corner(m, shares[m]) for m in CORNERS)}" fill="{c["accent"]}" '
+                 f'fill-opacity="0.28" stroke="{c["accent"]}" stroke-width="2" stroke-linejoin="round"/>')
+    parts += [f'<circle cx="{corner(m, shares[m]).split(",")[0]}" cy="{corner(m, shares[m]).split(",")[1]}" r="3" '
+              f'fill="{c["accent"]}"/>' for m in CORNERS]
+    for dx, dy, label in CORNERS.values():
+        x, y = cx + dx * (r + 8), cy + dy * (r + 8) + (3 if dx else 0) + (-2 if dy < 0 else 9 if dy > 0 else 0)
+        anchor = "middle" if not dx else "start" if dx > 0 else "end"
+        parts.append(f'<text x="{x:.1f}" y="{y:.1f}" text-anchor="{anchor}" font-family="{html.escape(mono)}" '
+                     f'font-size="9.5" font-weight="600" letter-spacing="1" fill="{c["muted"]}">{label}</text>')
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 190 150" width="190" height="150">'
+           f'{"".join(parts)}</svg>')
+    data = base64.b64encode(svg.encode()).decode()
+    label = ", ".join(f"{CORNERS[m][2].lower()} {points.get(m, 0)} of {most}" for m in CORNERS)
+    return f'<img class="od-priorities" src="data:image/svg+xml;base64,{data}" alt="Priorities: {label}">'
 
 
 def verdict_badge(verdict: str | None) -> None:

@@ -40,6 +40,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -170,6 +171,24 @@ MAX_WAIT = 120  # seconds; a server asking us to wait longer than this means a s
 # that times out starts over, so a local server gets far longer than a hosted API.
 REMOTE_TIMEOUT, LOCAL_TIMEOUT = 300, 1800
 _RETRY_IN = re.compile(r"retry in (?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s)?")
+# How long a Gemini model reasons before it answers: less is faster and spends less quota.
+THINKING_LEVELS = ("minimal", "low", "medium", "high")
+# The levels each model accepts, from Google's thinking guide (October 2026). A model not listed here
+# is asked for the level as given, and asked again without one if it turns that level down.
+_THINKING_SUPPORT = {
+    "gemini-3.6-flash": THINKING_LEVELS,
+    "gemini-3.5-flash-lite": THINKING_LEVELS,
+    "gemini-3-flash-preview": THINKING_LEVELS,
+    "gemini-3.8-flash": ("low", "medium", "high"),
+    "gemini-3.1-pro-preview": ("low", "medium", "high"),
+    "gemini-3-pro-preview": ("low", "high"),
+    "gemini-2.5-pro": ("low", "medium", "high"),
+    "gemini-2.5-flash": ("low", "medium", "high"),
+    "gemini-2.5-flash-lite": ("low", "medium", "high"),
+}
+# A laptop runs one local model, so the groups of a batch written at the same time take turns with it:
+# each request gets the whole machine, and its timeout doesn't run out while it waits in Ollama's queue.
+_LOCAL_TURN = threading.Lock()
 
 
 class APIError(RuntimeError):
@@ -206,11 +225,26 @@ def _error_details(exc: urllib.error.HTTPError) -> tuple[str, float | None]:
     return message, None
 
 
+def thinking_level(model: str, level: str | None) -> str | None:
+    """The level to ask `model` for: `level` if the model has it, else the next one up it has (Gemini
+    3.8 Flash starts at low), else its highest."""
+    supported = _THINKING_SUPPORT.get(model)
+    if level is None or supported is None or level in supported:
+        return level
+    return next((other for other in THINKING_LEVELS[THINKING_LEVELS.index(level):] if other in supported),
+                supported[-1])
+
+
 def chat(base_url: str, api_key: str, model: str, prompt: str, temperature: float, retries: int = 5,
-         system: str | None = None, timeout: int = REMOTE_TIMEOUT) -> str:
-    """Use Google's current Interactions API for Gemini, or another provider's OpenAI API."""
+         system: str | None = None, timeout: int = REMOTE_TIMEOUT, thinking: str | None = None,
+         json_schema: dict | None = None, usage: dict | None = None) -> str:
+    """Use Google's current Interactions API for Gemini, or another provider's OpenAI API. `thinking`
+    is a Gemini thinking level, and `json_schema` makes Gemini reply with JSON in that shape; other
+    providers get their own default thinking, and only the prompt asks them for JSON. Gemini's token
+    counts for the request (total_input_tokens, total_output_tokens and so on) are added to `usage`."""
     if urllib.parse.urlparse(base_url).hostname == "generativelanguage.googleapis.com":
-        return _gemini_interaction(model, api_key, prompt, temperature, retries, system, timeout)
+        return _gemini_interaction(model, api_key, prompt, temperature, retries, system, timeout,
+                                   thinking_level(model, thinking), json_schema, usage)
 
     messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
     body = json.dumps({"model": model, "messages": messages, "temperature": temperature}).encode()
@@ -243,20 +277,30 @@ def chat(base_url: str, api_key: str, model: str, prompt: str, temperature: floa
     raise AssertionError("unreachable")
 
 
-def _gemini_interaction(model: str, api_key: str, prompt: str, temperature: float,
-                        retries: int, system: str | None, timeout: int) -> str:
+def _gemini_interaction(model: str, api_key: str, prompt: str, temperature: float, retries: int,
+                        system: str | None, timeout: int, thinking: str | None = None,
+                        json_schema: dict | None = None, usage: dict | None = None) -> str:
     """Create a text interaction through Google's first-party Gemini API."""
     payload = {"model": model, "input": prompt}
     if system:
         payload["system_instruction"] = system
+    if json_schema:
+        payload["response_format"] = {"type": "text", "mime_type": "application/json", "schema": json_schema}
+    config = {}
     if model not in {"gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash"}:
-        payload["generation_config"] = {"temperature": temperature}
-    req = urllib.request.Request(
-        "https://generativelanguage.googleapis.com/v1beta/interactions",
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-    )
-    for attempt in range(retries):
+        config["temperature"] = temperature
+    if thinking:
+        config["thinking_level"] = thinking
+    attempt = 0
+    while attempt < retries:
+        if config:
+            payload["generation_config"] = config
+        req = urllib.request.Request(
+            "https://generativelanguage.googleapis.com/v1beta/interactions",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+        )
+        attempt += 1
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 data = json.load(response)
@@ -272,18 +316,29 @@ def _gemini_interaction(model: str, api_key: str, prompt: str, temperature: floa
             ).strip()
             if not content:
                 raise APIError(f"empty response from {model}")
+            if usage is not None:
+                usage.update(data.get("usage") or {})
             return content
         except urllib.error.HTTPError as exc:
             message, delay = _error_details(exc)
+            lower = message.lower()
+            # A model without this thinking level or JSON mode: ask again without it. The prompt still
+            # asks for JSON, and the reply is checked either way.
+            if exc.code == 400 and (("thinking" in lower and config.pop("thinking_level", None))
+                                    or (("response_format" in lower or "schema" in lower)
+                                        and payload.pop("response_format", None))):
+                attempt -= 1
+                payload.pop("generation_config", None)
+                continue
             if exc.code == 429 and delay is not None and delay > MAX_WAIT:
                 raise QuotaExhausted(f"{model} is out of quota: {message}") from exc
-            if exc.code not in RETRYABLE_STATUS or attempt == retries - 1:
+            if exc.code not in RETRYABLE_STATUS or attempt == retries:
                 raise APIError(f"HTTP {exc.code} from Gemini Interactions API: {message}") from exc
-            reason, wait = f"HTTP {exc.code}", delay if delay is not None else 2 ** attempt * 5
+            reason, wait = f"HTTP {exc.code}", delay if delay is not None else 2 ** (attempt - 1) * 5
         except (urllib.error.URLError, TimeoutError) as exc:
-            if attempt == retries - 1:
+            if attempt == retries:
                 raise APIError(f"could not reach Gemini Interactions API: {getattr(exc, 'reason', exc)}") from exc
-            reason, wait = str(getattr(exc, "reason", exc)), 2 ** attempt * 5
+            reason, wait = str(getattr(exc, "reason", exc)), 2 ** (attempt - 1) * 5
         print(f"  Gemini request failed ({reason}); retrying in {wait:.0f}s", file=sys.stderr)
         time.sleep(wait)
     raise AssertionError("unreachable")
@@ -306,19 +361,28 @@ def local_context_size(system: str | None, prompt: str, max_tokens: int) -> int:
 
 
 def chat_local(local_url: str, model: str, prompt: str, temperature: float, system: str | None = None,
-               max_tokens: int | None = None, context: int | None = None, timeout: int = LOCAL_TIMEOUT) -> str:
-    """Ask a local server. Ollama gets its own chat endpoint, which, unlike its OpenAI-compatible one,
-    takes a context window and an answer length. Every block of a batch starts with the same document,
-    so Ollama reads it once and keeps it cached. A server without that endpoint (LM Studio) gets the
-    OpenAI-compatible request."""
+               max_tokens: int | None = None, context: int | None = None, timeout: int = LOCAL_TIMEOUT,
+               json_schema: dict | None = None) -> str:
+    """Ask a local server, one request at a time. Ollama gets its own chat endpoint, which, unlike its
+    OpenAI-compatible one, takes a context window, an answer length and a JSON schema. Every block of a
+    batch starts with the same document, so Ollama reads it once and keeps it cached. A server without
+    that endpoint (LM Studio) gets the OpenAI-compatible request."""
+    with _LOCAL_TURN:
+        return _chat_local(local_url, model, prompt, temperature, system, max_tokens, context, timeout, json_schema)
+
+
+def _chat_local(local_url: str, model: str, prompt: str, temperature: float, system: str | None,
+                max_tokens: int | None, context: int | None, timeout: int, json_schema: dict | None) -> str:
     parsed = urllib.parse.urlparse(local_url)
     max_tokens = max_tokens or answer_token_limit(500)
     options = {"temperature": temperature, "num_predict": max_tokens,
                "num_ctx": context or local_context_size(system, prompt, max_tokens)}
     messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
+    body = {"model": model, "messages": messages, "stream": False, "options": options}
+    if json_schema:
+        body["format"] = json_schema
     req = urllib.request.Request(
-        f"{parsed.scheme}://{parsed.netloc}/api/chat",
-        data=json.dumps({"model": model, "messages": messages, "stream": False, "options": options}).encode(),
+        f"{parsed.scheme}://{parsed.netloc}/api/chat", data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -340,18 +404,21 @@ def chat_local(local_url: str, model: str, prompt: str, temperature: float, syst
 def generate_with_fallback(base_url: str, api_key: str, models: list[str], prompt: str, temperature: float,
                            system: str | None, local_url: str = "", local_model: str = "",
                            max_tokens: int | None = None, local_context: int | None = None,
-                           spent: set[str] | None = None) -> tuple[str, str, list[str]]:
+                           spent: set[str] | None = None, *, thinking: str | None = None,
+                           json_schema: dict | None = None, timeout: int = 60) -> tuple[str, str, list[str]]:
     """Try the hosted models in order, advancing past quota and transient failures, then the local
     model, which needs no key and has no quota. `max_tokens` caps the local model's answer, and
     `local_context` fixes its context window (a batch passes one size for all its blocks). Models whose
-    quota is spent for hours, not just busy for a moment, are added to `spent`. Returns the text, the
-    model that wrote it and the errors of the models that failed before it."""
+    quota is spent for hours, not just busy for a moment, are added to `spent`. `thinking` and
+    `json_schema` go to `chat`, and `timeout` is each hosted request's. Returns the text, the model
+    that wrote it and the errors of the models that failed before it."""
     attempted = []
     errors = []
     for model_name in dict.fromkeys(name.strip() for name in models if name.strip()):
         attempted.append(model_name)
         try:
-            result = chat(base_url, api_key, model_name, prompt, temperature, retries=1, system=system, timeout=60)
+            result = chat(base_url, api_key, model_name, prompt, temperature, retries=1, system=system,
+                          timeout=timeout, thinking=thinking, json_schema=json_schema)
             return result, model_name, errors
         except APIError as exc:
             errors.append(f"{model_name}: {exc}")
@@ -367,7 +434,8 @@ def generate_with_fallback(base_url: str, api_key: str, models: list[str], promp
     if local_model:
         attempted.append(local_model)
         try:
-            result = chat_local(local_url, local_model, prompt, temperature, system, max_tokens, local_context)
+            result = chat_local(local_url, local_model, prompt, temperature, system, max_tokens, local_context,
+                                json_schema=json_schema)
             return result, local_model, errors
         except APIError as exc:
             errors.append(f"{local_model}: {exc}. Is Ollama running? Start it with `ollama serve` and "

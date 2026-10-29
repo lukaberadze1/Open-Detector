@@ -3,6 +3,7 @@ combiners, and a stand-in text model on the Red team page writing to a temporary
 
 import io
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -114,9 +115,10 @@ def red_team_page():
 
 @pytest.fixture
 def stub_model(monkeypatch, tmp_path):
-    """The Red team page writing to tmp_path, with a stand-in text model that records its prompts and
-    the local model it was offered, and waits for `gate` before answering. Notifications are recorded,
-    and nothing keeps the machine awake."""
+    """The Red team page writing to tmp_path, with a stand-in text model that records its prompts, the
+    local model it was offered and its other options, and waits for `gate` before answering. Asked for
+    JSON, it answers every block of a group except those in `drop`. Notifications are recorded, and
+    nothing keeps the machine awake."""
     from ui import redteam
 
     for name, path in (("ROOT", tmp_path), ("DATA_ROOT", tmp_path), ("OUTPUT_PATH", tmp_path / "local_redteam.jsonl"),
@@ -124,25 +126,33 @@ def stub_model(monkeypatch, tmp_path):
                        ("STYLE_DIR", tmp_path / "styles"), ("VISITOR_DIR", tmp_path / "visitors")):
         monkeypatch.setattr(redteam, name, path)
     monkeypatch.setattr(redteam, "load_env", lambda: None)  # never read the real .env
+    monkeypatch.setattr(redteam.generation_settings, "load_table", lambda: None)  # settings by hand, unless a test
+    # gives the priorities a table
     monkeypatch.setattr(redteam, "local_fallback_problem", lambda url, model: None)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    stub = SimpleNamespace(prompts=[], systems=[], keys=[], urls=[], orders=[], local_models=[], notifications=[],
-                           failures=[], gate=threading.Event())
+    stub = SimpleNamespace(prompts=[], systems=[], keys=[], urls=[], orders=[], local_models=[], options=[],
+                           notifications=[], failures=[], drop=set(), gate=threading.Event())
     stub.gate.set()
 
-    def write(base_url, api_key, models, prompt, temperature, system, local_url="", local_model="", *args):
+    def write(base_url, api_key, models, prompt, temperature, system, local_url="", local_model="", *args,
+              **options):
         stub.prompts.append(prompt)
         stub.systems.append(system)
         stub.keys.append(api_key)
         stub.urls.append(base_url)
         stub.orders.append(list(models))
         stub.local_models.append(local_model)
+        stub.options.append(options)
         assert stub.gate.wait(30)
         if stub.failures:  # "busy", or "spent:<model>" for a model whose quota runs out
             failure = stub.failures.pop(0)
             if failure.startswith("spent:"):
                 args[-1].add(failure.removeprefix("spent:"))
             raise redteam.APIError(f"Every configured text model failed: {failure}")
+        if options.get("json_schema"):
+            ids = re.findall(r"^\[(B\d+)\]", prompt, re.MULTILINE)
+            reply = {"blocks": [{"id": block_id, "text": AI * 15} for block_id in ids if block_id not in stub.drop]}
+            return json.dumps(reply), "stub-model", []
         return AI * 15, "stub-model", []
 
     monkeypatch.setattr(redteam, "generate_with_fallback", write)
@@ -193,7 +203,7 @@ def robustness_page(monkeypatch, replies, until_target):
     from ui import redteam
 
     answers = iter(replies)
-    monkeypatch.setattr(redteam, "generate_with_fallback", lambda *args: (*next(answers), []))
+    monkeypatch.setattr(redteam, "generate_with_fallback", lambda *args, **options: (*next(answers), []))
     monkeypatch.setattr(redteam, "generate_until_target", until_target)
     at = AppTest.from_function(red_team_page, default_timeout=60)
     at.session_state["profile"] = "slim"
@@ -242,21 +252,29 @@ def test_robustness_mode_keeps_its_drafts_when_the_models_run_out(stub_model, tm
     assert [(r["model"], r["evasion_kept"], r["evasion_reached_target"]) for r in rows] == [("model-a", True, False)]
 
 
-def test_robustness_mode_follows_the_scoring_switch(stub_model, tmp_path, monkeypatch):
+def test_robustness_mode_turns_scoring_on(stub_model, tmp_path, monkeypatch):
     from ui import redteam
 
-    monkeypatch.setattr(redteam, "generate_until_target", lambda *args: pytest.fail("robustness mode ran"))
+    scores = []
+
+    def one_draft(generate, score, prompt):
+        text = generate(prompt)
+        scores.append(score(text))
+        return SimpleNamespace(text=text)
+
+    monkeypatch.setattr(redteam, "generate_until_target", one_draft)
     at = AppTest.from_function(red_team_page, default_timeout=60)
     at.session_state["profile"] = "slim"
     at.session_state["keep:redteam:evasion"] = True
-    at.session_state["keep:redteam:score"] = False  # the robustness toggle is greyed out but still on
+    at.session_state["keep:redteam:score"] = False  # robustness mode needs scores, so it scores anyway
     at.run()
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
     button(at, "Generate sample").click()
     at.run()
     assert not at.exception, at.exception
+    assert len(scores) == 1 and scores[0] is not None, "each draft was scored"
     row = json.loads((tmp_path / "local_redteam.jsonl").read_text())
-    assert "evasion_mode" not in row and row["verdict"] is None
+    assert row["evasion_kept"] and row["verdict"] == "likely_ai"
 
 
 def test_red_team_writes_in_the_style_profile_picked(stub_model, tmp_path):
@@ -314,10 +332,11 @@ def test_red_team_rewrites_every_block_of_a_word_document(stub_model, tmp_path):
     assert [toast.value for toast in at.toast] == ["All 2 blocks of bees.docx are done and exported."]
     assert stub_model.notifications == ["All 2 blocks of bees.docx are written and exported."]
 
-    assert [prompt.split("---\n\n")[1].split(". ")[0] for prompt in stub_model.prompts] == [
-        "Rewrite only the existing text block labelled Paragraph 2",
-        "Rewrite only the existing text block labelled Paragraph 4",
-    ]
+    (prompt,) = stub_model.prompts  # both blocks in one request, which sends the document once
+    assert prompt.count("Full document context:") == 1
+    assert "[B1] A rewrite of the existing text block labelled Paragraph 2. Aim for about 11 words." in prompt
+    assert "[B2] A rewrite of the existing text block labelled Paragraph 4" in prompt
+    assert stub_model.options[0]["thinking"] == "low" and stub_model.options[0]["json_schema"]
     (exported,) = (tmp_path / "exports").glob("AI_REDTEAM_full_document_*.docx")
     assert [p.text for p in Document(exported).paragraphs] == [
         "Keeping bees", (AI * 15).strip(), "What do bees eat?", (AI * 15).strip(),
@@ -472,6 +491,7 @@ def test_an_added_style_profile_is_kept_for_the_visitor_and_picked(monkeypatch, 
 
 def test_block_prompts_start_with_the_same_document():
     """A local model keeps a prompt's start cached, so every block's prompt opens with the document."""
+    from eval.redteam_batch import block_prompt
     from opendetector.documents import extract_answer_slots, extract_document, rewritable_blocks
     from ui import redteam
     from ui.components import Upload
@@ -480,7 +500,7 @@ def test_block_prompts_start_with_the_same_document():
     plan = redteam.Plan("Keep it short.", Upload("bees.docx", data), extract_document("bees.docx", data),
                         extract_answer_slots("bees.docx", data), rewritable_blocks("bees.docx", data), "blocks",
                         "slim", rewrite_all_blocks=True)
-    prompts = [redteam._block_prompt(plan, job) for job in redteam._batch_jobs(plan)]
+    prompts = [block_prompt(plan, job) for job in redteam._batch_jobs(plan)]
     shared = f"Full document context:\n{plan.context_text}\n\n---\n\nRewrite only the existing text block labelled "
     assert [prompt.startswith(shared) for prompt in prompts] == [True, True]
     assert [prompt.endswith(previous) for prompt, previous in zip(prompts, (
@@ -497,7 +517,7 @@ def test_a_local_model_too_big_for_the_machine_is_left_out(stub_model, monkeypat
     button(at, "Rewrite 2 blocks").click()
     at.run()
     run_until_batch_ends(at)
-    assert stub_model.local_models == ["", ""], "gemma3:4b, the page's default, is never offered"
+    assert stub_model.local_models == [""], "gemma3:4b, the page's default, is never offered"
 
 
 def test_a_batch_waits_out_busy_models_and_drops_only_spent_ones(stub_model, monkeypatch):
@@ -506,6 +526,8 @@ def test_a_batch_waits_out_busy_models_and_drops_only_spent_ones(stub_model, mon
     monkeypatch.setattr(redteam, "BUSY_WAIT", 0)
     stub_model.failures = ["spent:gemini-3.8-flash", "busy"]
     at = word_document_page()
+    at.session_state["keep:redteam:group_size"] = 1
+    at.session_state["keep:redteam:parallel"] = 1
     button(at, "Rewrite 2 blocks").click()
     at.run()
     assert run_until_batch_ends(at)[0] == "success"
@@ -513,6 +535,95 @@ def test_a_batch_waits_out_busy_models_and_drops_only_spent_ones(stub_model, mon
     first, second, third, _ = stub_model.orders
     assert "gemini-3.8-flash" in first and "gemini-3.8-flash" not in second
     assert third == second, "a model that was only busy stays in the list"
+
+
+def test_a_block_a_grouped_reply_leaves_out_is_written_on_its_own(stub_model, tmp_path):
+    stub_model.drop = {"B2"}
+    at = word_document_page()
+    button(at, "Rewrite 2 blocks").click()
+    at.run()
+    assert run_until_batch_ends(at)[0] == "success"
+    assert len(stub_model.prompts) == 2
+    assert stub_model.prompts[1].split("---\n\n")[1].startswith(
+        "Rewrite only the existing text block labelled Paragraph 4")
+    assert "json_schema" not in stub_model.options[1]
+    (exported,) = (tmp_path / "exports").glob("AI_REDTEAM_full_document_*.docx")
+    assert [p.text for p in Document(exported).paragraphs][1::2] == [(AI * 15).strip()] * 2
+
+
+def test_the_thinking_level_picked_reaches_the_model(stub_model):
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.run()
+    at.select_slider(key="keep:redteam:thinking").set_value("minimal")
+    at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
+    button(at, "Generate sample").click()
+    at.run()
+    assert not at.exception, at.exception
+    assert stub_model.options == [{"thinking": "minimal"}]
+
+
+def test_robustness_mode_batches_draft_one_block_per_request(stub_model):
+    at = word_document_page()
+    at.toggle(key="keep:redteam:evasion").set_value(True)
+    at.run()
+    button(at, "Rewrite 2 blocks").click()
+    at.run()
+    assert run_until_batch_ends(at)[0] == "success"
+    assert stub_model.prompts and not any(options.get("json_schema") for options in stub_model.options)
+    assert {prompt.split("---\n\n")[1].split(". ")[0] for prompt in stub_model.prompts} == {
+        "Rewrite only the existing text block labelled Paragraph 2",
+        "Rewrite only the existing text block labelled Paragraph 4",
+    }
+
+
+def measured_table(monkeypatch):
+    """The priorities reading a measured table: a careful setting, a balanced one, and a quick one."""
+    from ui import redteam
+
+    def row(model, thinking, group, ai, style, seconds, requests, tokens):
+        return {"model": model, "thinking": thinking, "group_size": group, "ai": ai, "style": style,
+                "seconds_per_block": seconds, "requests_per_block": requests, "tokens_per_block": tokens,
+                "measured": True}
+
+    table = {"context_chars": 1000, "daily_requests": {"gemini-3.6-flash": 20}, "rows": [
+        row("gemini-3.8-flash", "high", 1, 0.20, 80, 30.0, 1.0, 9000),
+        row("gemini-3.6-flash", "low", 8, 0.35, 70, 3.0, 0.125, 1500),
+        row("gemini-3.5-flash-lite", "minimal", 8, 0.80, 30, 1.0, 0.125, 1200),
+    ]}
+    monkeypatch.setattr(redteam.generation_settings, "load_table", lambda: table)
+
+
+def test_points_pick_the_batch_settings(stub_model, monkeypatch):
+    measured_table(monkeypatch)
+    at = word_document_page()
+    assert not any(s.key == "keep:redteam:group_size" for s in at.slider), "points, not sliders"
+    assert any("gemini-3.6-flash" in m.value and "8 blocks per request · 2 at once" in m.value for m in at.markdown)
+    assert any("1 request (5% of its 20 free requests a day)" in c.value for c in at.caption)
+    for measure in ("detector", "style", "quota"):  # every point on speed
+        for _ in range(3):
+            at.button(key=f"redteam:less:{measure}").click().run()
+    for _ in range(3):
+        at.button(key="redteam:more:speed").click().run()
+    assert at.button(key="redteam:more:speed").disabled, "six points is the most one priority takes"
+    assert any("gemini-3.5-flash-lite" in m.value and "4 at once" in m.value for m in at.markdown)
+    button(at, "Rewrite 2 blocks").click()
+    at.run()
+    assert run_until_batch_ends(at)[0] == "success"
+    assert stub_model.options[0]["thinking"] == "minimal"
+    assert stub_model.orders[0][0] == "gemini-3.5-flash-lite", "the batch starts with the model the points picked"
+
+
+def test_settings_can_still_be_set_by_hand(stub_model, monkeypatch):
+    measured_table(monkeypatch)
+    at = word_document_page()
+    at.toggle(key="keep:redteam:by_hand").set_value(True).run()
+    assert at.slider(key="keep:redteam:group_size").value == 6
+    at.select_slider(key="keep:redteam:thinking").set_value("high").run()
+    button(at, "Rewrite 2 blocks").click()
+    at.run()
+    assert run_until_batch_ends(at)[0] == "success"
+    assert stub_model.options[0]["thinking"] == "high" and stub_model.orders[0][0] == "gemini-3.8-flash"
 
 
 def test_the_downloadable_app_offers_robustness_mode_but_no_local_model(stub_model, monkeypatch):

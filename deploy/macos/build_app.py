@@ -44,8 +44,9 @@ LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/Laun
 # What the standalone app runs: the Streamlit app, the modules it imports, the fitted combiners and the
 # theme. Development tools, evaluation data and everything under data/ stay out.
 APP_FILES = ("app.py", "LICENSE", ".streamlit/config.toml", "models/combiner.json", "models/combiner_slim.json",
+             "models/generation_tuning.json",
              "deploy/macos/launcher.py", "eval/__init__.py", "eval/generate_essays.py", "eval/redteam_batch.py",
-             "eval/evasion_mode.py")
+             "eval/evasion_mode.py", "eval/generation_settings.py")
 APP_PACKAGES = ("opendetector", "ui")
 MACHO_MAGICS = {b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}
 
