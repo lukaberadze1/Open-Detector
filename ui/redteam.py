@@ -482,11 +482,13 @@ def _setup(profile: str) -> Plan:
     if not public():  # the packaged app allows labelled robustness samples, but public deploys do not
         evasion = st.toggle(
             "Detector robustness mode · aim below 5%", key=keep("keep:redteam:evasion", False),
-            disabled=not plan.score or plan.batch,
+            disabled=False,
             help="For labelled red-team samples, try up to three AI drafts and keep the lowest detector score. "
-                 "Available for single samples with scoring on; it does not guarantee a score under 5%.",
+                 "Available for single samples and document batches; it does not guarantee a score under 5%.",
         )
-        plan.evasion = evasion and plan.score and not plan.batch  # a disabled toggle keeps its value
+        plan.evasion = evasion
+        if plan.evasion:
+            plan.score = True
     if plan.evasion:
         st.caption("Every draft is saved as AI-labelled evaluation data; the kept one records the mode and score.")
     return plan
@@ -919,7 +921,28 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
 
     def generate_block(key: str) -> tuple[str, str]:
         job = by_key[key]
-        answer, used_model, model_errors = write(_block_prompt(plan, job), answer_token_limit(_target_words(plan, job)))
+        prompt = _block_prompt(plan, job)
+        max_tokens = answer_token_limit(_target_words(plan, job))
+        if plan.evasion:
+            candidates: dict[str, tuple[str, float | None]] = {}
+
+            def draft(candidate_prompt: str) -> str:
+                answer, candidate_model, errors = write(candidate_prompt, max_tokens)
+                candidates[answer] = (candidate_model, errors)
+                return answer
+
+            def score_candidate(answer: str) -> float | None:
+                if conn.local_model and candidates[answer][0] == local_model:
+                    unload_local_model(conn.local_url, conn.local_model)
+                return score_text(answer, plan.profile).get("ai_probability")
+
+            status["note"] = f"Trying up to three drafts for {job['label']}…"
+            result = generate_until_target(draft, score_candidate, f"{prompt}\n\n{PROFILE_INSTRUCTIONS}")
+            answer = result.text
+            used_model, model_errors = candidates.get(answer, (conn.model, []))
+            status["note"] = None
+        else:
+            answer, used_model, model_errors = write(prompt, max_tokens)
         if used_model != status["model"]:
             status["log"].append(f"Writing with {used_model}" + (
                 f" after {len(model_errors)} model(s) failed. Last error: {model_errors[-1][:300]}"
