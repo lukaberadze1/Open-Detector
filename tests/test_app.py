@@ -131,7 +131,7 @@ def stub_model(monkeypatch, tmp_path):
     monkeypatch.setattr(redteam, "local_fallback_problem", lambda url, model: None)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     stub = SimpleNamespace(prompts=[], systems=[], keys=[], urls=[], orders=[], local_models=[], options=[],
-                           notifications=[], failures=[], drop=set(), gate=threading.Event())
+                           temperatures=[], notifications=[], failures=[], drop=set(), gate=threading.Event())
     stub.gate.set()
 
     def write(base_url, api_key, models, prompt, temperature, system, local_url="", local_model="", *args,
@@ -143,11 +143,15 @@ def stub_model(monkeypatch, tmp_path):
         stub.orders.append(list(models))
         stub.local_models.append(local_model)
         stub.options.append(options)
+        stub.temperatures.append(temperature)
         assert stub.gate.wait(30)
         if stub.failures:  # "busy", or "spent:<model>" for a model whose quota runs out
             failure = stub.failures.pop(0)
             if failure.startswith("spent:"):
-                args[-1].add(failure.removeprefix("spent:"))
+                model = failure.removeprefix("spent:")
+                args[-1].add(model)
+                failure = (f"\n- {model}: {model} is out of quota: Rate limit exceeded for model {model} "
+                           "(limit: 20 requests per day on Free Tier).")
             raise redteam.APIError(f"Every configured text model failed: {failure}")
         if options.get("json_schema"):
             ids = re.findall(r"^\[(B\d+)\]", prompt, re.MULTILINE)
@@ -191,6 +195,7 @@ def test_red_team_sample_is_recorded_as_ai_with_its_score(stub_model, tmp_path):
         "model": "stub-model", "attack": "prompt+plain", "group": "ai", "group_key": None, "prompt": None,
         "source_file": None, "target_section": None, "ai_probability": None, "verdict": "likely_ai",
         "calibrated": True, "detector_profile": "slim", "style_match": None,
+        "thinking": "low", "temperature": 0.8, "style_profile": "plain", "blocks_per_request": None,
     }
     assert rows[0]["ai_probability"] > 0.9
     assert len(list((tmp_path / "exports").glob("AI_REDTEAM_prompt_*.txt"))) == 1
@@ -535,6 +540,8 @@ def test_a_batch_waits_out_busy_models_and_drops_only_spent_ones(stub_model, mon
     first, second, third, _ = stub_model.orders
     assert "gemini-3.8-flash" in first and "gemini-3.8-flash" not in second
     assert third == second, "a model that was only busy stays in the list"
+    assert redteam.generation_settings.learned_limits() == {"gemini-3.8-flash": 20}, (
+        "the limit its quota error stated is kept for the priorities' next picks")
 
 
 def test_a_block_a_grouped_reply_leaves_out_is_written_on_its_own(stub_model, tmp_path):
@@ -577,19 +584,64 @@ def test_robustness_mode_batches_draft_one_block_per_request(stub_model):
     }
 
 
+def labelled_docx():
+    document = Document()
+    document.add_heading("Keeping bees", level=1)
+    document.add_paragraph("14 August")
+    document.add_paragraph("Bees need a dry hive and a nearby source of water.")
+    document.add_paragraph("Done")
+    document.add_paragraph("They live on nectar and pollen from flowers.")
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def test_labels_stay_and_your_originals_are_saved_once_beside_their_rewrites(stub_model, tmp_path):
+    from ui.components import Upload
+
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.session_state["upload:redteam:file"] = Upload("bees.docx", labelled_docx())
+    at.session_state["keep:redteam:task"] = "blocks"
+    at.run()
+    assert any("so do 2 short labels, names, dates and numbers" in c.value for c in at.caption)
+    at.toggle(key="keep:redteam:human_source").set_value(True).run()
+    for _ in range(2):  # the same document twice
+        button(at, "Generate 2 block challenges").click()
+        at.run()
+        assert run_until_batch_ends(at)[0] == "success"
+    assert re.findall(r"^\[(B\d+)\]", stub_model.prompts[0], re.MULTILINE) == ["B1", "B2"], (
+        "the date and the label aren't rewritten")
+    (exported, *_) = sorted((tmp_path / "exports").glob("AI_REDTEAM_full_document_*.docx"))
+    assert [p.text for p in Document(exported).paragraphs][1:4:2] == ["14 August", "Done"]
+
+    rows = [json.loads(line) for line in (tmp_path / "local_redteam.jsonl").read_text().splitlines()]
+    human = [row for row in rows if row["label"] == 0]
+    assert sorted(row["text"] for row in human) == sorted([
+        "Bees need a dry hive and a nearby source of water.", "They live on nectar and pollen from flowers.",
+        "Bees need a dry hive and a nearby source of water.\n\nThey live on nectar and pollen from flowers."]), (
+        "each original once, the whole one too, however often it is rewritten")
+    assert {row["group_key"] for row in rows} == {human[0]["group_key"]}, "every original beside its rewrites"
+    ai = [row for row in rows if row["label"] == 1]
+    assert all(row["thinking"] == "low" and row["temperature"] == 0.8 and row["blocks_per_request"] == 6
+               for row in ai), "each sample records how it was written"
+    at.tabs[1].run()
+    assert any(m.label == "Your originals" and m.value == "3" for m in at.metric)
+
+
 def measured_table(monkeypatch):
     """The priorities reading a measured table: a careful setting, a balanced one, and a quick one."""
     from ui import redteam
 
-    def row(model, thinking, group, ai, style, seconds, requests, tokens):
+    def row(model, thinking, group, ai, style, seconds, requests, tokens, temperature=0.8):
         return {"model": model, "thinking": thinking, "group_size": group, "ai": ai, "style": style,
                 "seconds_per_block": seconds, "requests_per_block": requests, "tokens_per_block": tokens,
-                "measured": True}
+                "temperature": temperature, "measured": True}
 
     table = {"context_chars": 1000, "daily_requests": {"gemini-3.6-flash": 20}, "rows": [
         row("gemini-3.8-flash", "high", 1, 0.20, 80, 30.0, 1.0, 9000),
         row("gemini-3.6-flash", "low", 8, 0.35, 70, 3.0, 0.125, 1500),
-        row("gemini-3.5-flash-lite", "minimal", 8, 0.80, 30, 1.0, 0.125, 1200),
+        row("gemini-3.5-flash-lite", "minimal", 8, 0.80, 30, 1.0, 0.125, 1200, temperature=1.3),
     ]}
     monkeypatch.setattr(redteam.generation_settings, "load_table", lambda: table)
 
@@ -610,7 +662,7 @@ def test_points_pick_the_batch_settings(stub_model, monkeypatch):
     button(at, "Generate 2 block challenges").click()
     at.run()
     assert run_until_batch_ends(at)[0] == "success"
-    assert stub_model.options[0]["thinking"] == "minimal"
+    assert stub_model.options[0]["thinking"] == "minimal" and stub_model.temperatures[0] == 1.3
     assert stub_model.orders[0][0] == "gemini-3.5-flash-lite", "the batch starts with the model the points picked"
 
 

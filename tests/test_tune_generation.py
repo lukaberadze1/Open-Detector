@@ -105,6 +105,20 @@ def test_the_main_design_measures_each_model_once_per_level_and_the_groups_on_on
     assert len(full) == 4
 
 
+def test_temperatures_are_measured_on_the_baseline_model_and_never_on_one_that_ignores_them():
+    trials = tune_generation.planned_trials(["gemini-3.8-flash", "b"], ["low"], [1, 4], 1, "main", "b",
+                                            temperatures=[1.0, 1.3])
+    assert sorted({(t["model"], t["group_size"], t["temperature"]) for t in trials}) == [
+        ("b", 1, 0.8), ("b", 4, 0.8), ("b", 4, 1.0), ("b", 4, 1.3), ("gemini-3.8-flash", 4, 0.8)]
+    base_keys = {t["key"] for t in trials if t["temperature"] == 0.8}
+    assert base_keys == {"b|low|1|1", "b|low|4|1", "gemini-3.8-flash|low|4|1"}, (
+        "trials at the default temperature keep the names they had before temperature was measured")
+    full = tune_generation.planned_trials(["gemini-3.8-flash", "b"], ["low"], [4], 1, "full", "b",
+                                          temperatures=[1.3])
+    assert sorted((t["model"], t["temperature"]) for t in full) == [
+        ("b", 0.8), ("b", 1.3), ("gemini-3.8-flash", 0.8)]
+
+
 def document(blocks):
     doc = Document()
     doc.add_heading("Field notes", level=1)
@@ -129,7 +143,8 @@ class FakeGemini:
 
     def chat(self, base_url, api_key, model, prompt, temperature, retries=5, system=None, timeout=300,
              thinking=None, json_schema=None, usage=None):
-        self.calls.append({"model": model, "thinking": thinking, "json": json_schema is not None, "system": system})
+        self.calls.append({"model": model, "thinking": thinking, "json": json_schema is not None, "system": system,
+                           "temperature": temperature})
         if self.busy:
             self.busy -= 1
             raise generate_essays.APIError("HTTP 503 from Gemini Interactions API: high demand")
@@ -142,17 +157,35 @@ class FakeGemini:
 
 def test_a_trial_rewrites_the_run_as_a_batch_would(monkeypatch):
     gemini = FakeGemini(monkeypatch, drop={"B2"}, busy=1)
-    jobs, plan = tune_generation.sample_jobs("notes.docx", document(BLOCKS), words=40)
-    assert len(jobs) == 4, "blocks from the first until the run holds 40 words"
-    trial = {"model": "m", "thinking": "low", "group_size": 3, "repeat": 1, "key": "m|low|3|1"}
+    jobs, plan = tune_generation.sample_jobs("notes.docx", document(["14 August", "Done", *BLOCKS]), words=40)
+    assert len(jobs) == 4, "the date and the label stay as they are; prose blocks until the run holds 40 words"
+    trial = {"model": "m", "thinking": "low", "group_size": 3, "temperature": 1.3, "repeat": 1, "key": "m|low|3|1|t1.3"}
     result = tune_generation.run_trial(trial, jobs, plan, "Style rules.", "key", 0.8)
-    assert [call["json"] for call in gemini.calls] == [True, True, False, False], (
-        "a group that answered busy is asked again; its left-out block goes alone, and so does the last block")
-    assert (result["requests"], result["retried"], result["left_out"]) == (3, 1, 1)
-    assert result["tokens"]["total_tokens"] == 3000 and result["blocks"] == 4
+    assert [call["json"] for call in gemini.calls] == [True, True, False], (
+        "13-word blocks take less than half a place each, so all four share a request; it answered busy and was "
+        "asked again, and the block its reply left out went alone")
+    assert (result["requests"], result["retried"], result["left_out"]) == (2, 1, 1)
+    assert result["tokens"]["total_tokens"] == 2000 and result["blocks"] == 4
     assert result["text"].split("\n\n") == ["New text B1.", "A block written on its own.", "New text B3.",
-                                            "A block written on its own."]
-    assert all(call["system"] == "Style rules." and call["thinking"] == "low" for call in gemini.calls)
+                                            "New text B4."]
+    assert all(call["system"] == "Style rules." and call["thinking"] == "low" and call["temperature"] == 1.3
+               for call in gemini.calls)
+
+
+def test_a_model_that_keeps_timing_out_is_given_up_on_after_two_tries(monkeypatch):
+    calls = []
+
+    def silent(*args, **kwargs):
+        calls.append(1)
+        raise generate_essays.APIError("could not reach Gemini Interactions API: The read operation timed out")
+
+    monkeypatch.setattr(generate_essays, "chat", silent)
+    monkeypatch.setattr(tune_generation.time, "sleep", lambda seconds: None)
+    jobs, plan = tune_generation.sample_jobs("notes.docx", document(BLOCKS), words=40)
+    trial = {"model": "m", "thinking": "low", "group_size": 8, "repeat": 1, "key": "m|low|8|1"}
+    with pytest.raises(generate_essays.APIError, match="timed out"):
+        tune_generation.run_trial(trial, jobs, plan, "Style rules.", "key", 0.8)
+    assert len(calls) == 2
 
 
 def test_settings_not_measured_are_predicted_from_the_group_size_effect():
@@ -171,6 +204,22 @@ def test_settings_not_measured_are_predicted_from_the_group_size_effect():
     assert predicted["seconds_per_block"] == pytest.approx(10.0)
     assert predicted["requests_per_block"] == pytest.approx(1.0)
     assert len(rows) == 4
+
+
+def test_a_temperature_measured_on_the_baseline_carries_to_models_that_take_one():
+    def trial(model, temperature, ai, style, seconds):
+        return {"model": model, "thinking": "low", "group_size": 8, "temperature": temperature, "blocks": 10,
+                "ai": ai, "style": style, "seconds": seconds, "requests": 2, "tokens": {"total_tokens": 200}}
+
+    rows = tune_generation.fit([
+        trial("base", 0.8, 0.40, 60.0, 20.0), trial("base", 1.3, 0.25, 55.0, 22.0),
+        trial("other", 0.8, 0.30, 50.0, 10.0), trial("gemini-3.8-flash", 0.8, 0.30, 50.0, 10.0),
+    ], baseline="base")
+    hot = next(r for r in rows if (r["model"], r["temperature"]) == ("other", 1.3))
+    assert not hot["measured"] and hot["ai"] == pytest.approx(0.15) and hot["style"] == pytest.approx(45.0)
+    assert hot["seconds_per_block"] == pytest.approx(1.1)
+    assert not any(r["model"] == "gemini-3.8-flash" and r["temperature"] != 0.8 for r in rows), (
+        "3.8 Flash ignores temperature, so it gets no predicted row at another")
 
 
 WORDS = ["the", "hive", "bees", "water", "shade", "honey", "frame", "comb", "queen", "smoke", "field", "flower",
@@ -221,9 +270,9 @@ def test_a_run_measures_scores_writes_the_table_and_resumes(monkeypatch, tmp_pat
     source.write_bytes(document(BLOCKS))
     profile = corpus_profile(tmp_path)
     paths = ["--out", str(tmp_path / "trials.jsonl"), "--table", str(tmp_path / "table.json"),
-             "--report", str(tmp_path / "report.md")]
+             "--report", str(tmp_path / "report.md"), "--limits", str(tmp_path / "limits.json")]
     argv = [str(source), "--style", str(profile), "--models", "a,b", "--thinking", "low,high", "--groups", "1,4",
-            "--baseline-model", "a", "--repeats", "1", "--words", "40", *paths]
+            "--baseline-model", "a", "--repeats", "1", "--words", "40", "--temperatures", "0.8", *paths]
     assert tune_generation.main(argv) == 0
 
     table = json.loads((tmp_path / "table.json").read_text())
@@ -255,7 +304,31 @@ def test_a_model_out_of_quota_is_skipped_for_the_rest_of_the_run_and_its_limit_k
     source.write_bytes(document(BLOCKS))
     argv = [str(source), "--style", str(corpus_profile(tmp_path)), "--models", "a", "--repeats", "3",
             "--out", str(tmp_path / "trials.jsonl"), "--table", str(tmp_path / "table.json"),
-            "--report", str(tmp_path / "report.md")]
+            "--report", str(tmp_path / "report.md"), "--limits", str(tmp_path / "limits.json")]
     assert tune_generation.main(argv) == 1, "nothing was measured"
     assert not (tmp_path / "trials.jsonl").exists()
-    assert json.loads((tmp_path / "trials_limits.json").read_text())["a"] == 1500
+    assert json.loads((tmp_path / "limits.json").read_text())["a"] == 1500
+
+
+def test_daily_limits_are_read_from_quota_errors_and_kept_between_runs(tmp_path):
+    errors = ("Every configured text model failed (gemini-3.6-flash, gemini-3-flash-preview):\n"
+              "- gemini-3.6-flash: gemini-3.6-flash is out of quota: Rate limit exceeded for model gemini-3.6-flash "
+              "(limit: 20 requests per day on Free Tier). Please retry in 14h11m31s\n"
+              "- gemini-3-flash-preview: HTTP 503 from Gemini Interactions API: high demand")
+    found = generation_settings.limits_in(errors)
+    assert found == {"gemini-3.6-flash": 20}
+    path = tmp_path / "limits.json"
+    generation_settings.record_limits(found, path)
+    generation_settings.record_limits({"gemini-3.5-flash-lite": 1500}, path)
+    assert generation_settings.learned_limits(path) == {"gemini-3.5-flash-lite": 1500, "gemini-3.6-flash": 20}
+
+    (tmp_path / "table.json").write_text(json.dumps({**TABLE, "daily_requests": {"gemini-3.6-flash": 50}}))
+    table = generation_settings.load_table(tmp_path / "table.json", path)
+    assert table["daily_requests"] == {"gemini-3.6-flash": 20, "gemini-3.5-flash-lite": 1500}, (
+        "what this computer has learned since the table was measured comes first")
+
+
+def test_a_setting_carries_its_temperature():
+    table = {"rows": [{**row("m", "low", 8, 0.1, 50, 1.0, 0.1, 1000), "temperature": 1.3}]}
+    assert generation_settings.choose(table, EVEN).temperature == 1.3
+    assert generation_settings.choose(TABLE, EVEN).temperature is None, "a table measured before temperature was"

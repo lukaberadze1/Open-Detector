@@ -86,10 +86,20 @@ text block while headings, titles, questions and tables stay fixed. If a file do
 the page says why. Document tasks export a
 separate Markdown/DOCX/PPTX copy that keeps the uploaded structure; the original is left unchanged.
 The two batch tasks run in the background, save each block as it is written, and resume where they
-stopped. They generate several neighbouring blocks in one request (**Blocks per request**, 6 by
-default), so the style profile and the document are sent once per group rather than once per block,
+stopped. Short labels, names, dates and numbers ("14 August", "Done", "1") stay as they are: only
+prose blocks, a sentence of four words or more or eight words without one, are generated. They
+generate several neighbouring blocks in one request (**Blocks per request**, 6 by default, counted in
+30-word blocks, so a run of one-line blocks shares a request and a long paragraph takes the room of
+several), so the style profile and the document are sent once per group rather than once per block,
 and write a few groups at the same time (**Requests at once**, 2 by default). The reply is JSON with
-one entry per block; a block it leaves out is generated again on its own. Adaptive challenge mode
+one entry per block; a block it leaves out is generated again on its own.
+
+**This document is my own writing** also saves each original block, and the whole original, as
+human-labelled data (label 0) beside its generated version, under the same `group_key`, so a split
+keeps them together. That gives paired data: the same content written by you and by an AI imitating
+you, which is what a detector learns the difference from best. Each original is saved once, however
+often it is regenerated. Leave it off for a document that is AI-written or someone else's. Every
+generated sample also records its thinking level, temperature, style profile and blocks per request. Adaptive challenge mode
 generates up to three labelled candidates and uses detector feedback plus the selected style-profile
 measurement to rank them. The target, profile and candidate scores are recorded as evaluation
 metadata. The current detector target is below 5% AI likelihood; a selected style profile also uses
@@ -101,8 +111,9 @@ its file name joins the challenge label.
 match, speed and quota. Spend 12 points over them (at most 6 on one) and the page picks the
 measured setting with the best points-weighted score, shows it with the time, requests and tokens it
 should take, and draws the points as a diamond. Even points are the default. The settings are a
-model, its thinking level (how long Gemini reasons before it writes) and how many blocks go in one
-request; speed points also send more requests at once. **Set by hand** chooses them yourself.
+model, its thinking level (how long Gemini reasons before it writes), its temperature and how many
+blocks go in one request; speed points also send more requests at once. **Set by hand** chooses them
+yourself, creativity (the temperature) included.
 
 The measurements come from a benchmark run on a document:
 
@@ -110,12 +121,15 @@ The measurements come from a benchmark run on a document:
 .venv/bin/python -m eval.tune_generation report.docx
 ```
 
-It rewrites the same run of blocks (250 words by default) with each setting, the way a batch does,
-and records the detector's AI likelihood of each generated challenge, its style match, seconds per block, and
-requests and Gemini's token count per block. Quota also counts each model's free requests a day:
-Gemini's quota errors state the limit, so a model that runs out during a run has it recorded in
-`eval/cache/tuning_limits.json`, and `--daily-limit MODEL=N` sets one by hand (AI Studio lists your
-project's limits). The page then weighs how much of that allowance the document in hand would take:
+It rewrites the same run of prose blocks (250 words by default) with each setting, the way a batch
+does, and records the detector's AI likelihood of each generated challenge, its style match, seconds
+per block, and requests and Gemini's token count per block. Temperatures (`--temperatures`, 0.8, 1.0
+and 1.3 by default) are measured on the baseline model, and carried to the other models that take a
+temperature; Gemini 3.6, 3.7 and 3.8 Flash use their own. Quota also counts each model's free requests
+a day: Gemini's quota errors state the limit, so a model that runs out, in the benchmark or in one of
+your batches, has it recorded in `data/model_limits.json`, and `--daily-limit MODEL=N` sets one by
+hand (AI Studio lists your project's limits). A model that times out twice is skipped for the rest of
+the run. The page then weighs how much of that allowance the document in hand would take:
 a 100-block batch on a model allowing 20 requests a day uses most of the day. The style match ranks
 a generated sample among passages of the writer's own writing (`data/styles/<name>/corpus.jsonl`): the share of them further from the
 profile's measurements than it is, so 50% is as typical as the writer's median passage. Measuring
@@ -125,6 +139,19 @@ adding those effects (`--design full` measures everything). The run resumes wher
 skips a model whose quota runs out; every rewrite is logged as labelled AI data. It writes
 `models/generation_tuning.json` and a report, `eval/reports/tuning.md`, with the spread between
 repeats: differences smaller than that are noise.
+
+How much of this the detector catches is measured with
+
+```bash
+.venv/bin/python -m eval.redteam_report
+```
+
+which scores every saved sample of 150 words or more (`--profile full` for every engine) and writes
+`eval/reports/redteam.md`: the share of AI samples it misses and of your originals it wrongly flags,
+with Wilson intervals, overall and by attack, model, thinking level, temperature and blocks per
+request. It changes nothing and caches its scores, so a second run scores only new samples. The miss
+rate is the number to bring down by training on these samples; refitting the combiner alone can only
+reweight the engines it already has.
 
 Each sample's probability, verdict, calibration state and detector build are recorded next to
 `label: 1` in `data/essays/local_redteam.jsonl`. Standard generation scores a sample once; adaptive

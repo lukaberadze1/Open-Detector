@@ -101,17 +101,42 @@ class Checkpoint:
         self.path.unlink(missing_ok=True)
 
 
+# A block of about this many words takes one place in a group. The settings benchmark's blocks averaged
+# about this length, so "8 blocks per request" means the same request size there and here.
+UNIT_WORDS = 30
+
+
+def group_by_words(keys: list[str], size: int, words: Callable[[str], int] | None = None) -> list[list[str]]:
+    """Neighbouring keys in groups that fill up to `size` places. With `words`, a block takes a place
+    per UNIT_WORDS words it should come to, and at least a quarter of one: a run of one-line blocks
+    shares a request, and a long paragraph takes the room of several. Size 1 is a block per request."""
+    size = max(1, size)
+    if size == 1 or words is None:
+        return [keys[start:start + size] for start in range(0, len(keys), size)]
+    groups: list[list[str]] = []
+    filled = 0.0
+    for key in keys:
+        place = max(0.25, words(key) / UNIT_WORDS)
+        if groups and filled + place <= size:
+            groups[-1].append(key)
+            filled += place
+        else:
+            groups.append([key])
+            filled = place
+    return groups
+
+
 def generate_missing(checkpoint: Checkpoint, keys: list[str],
                      generate: Callable[[list[str]], Iterable[tuple[str, str, str]]],
-                     on_block: Callable[[str], None] | None = None, group_size: int = 1, workers: int = 1) -> None:
-    """Generate each block the checkpoint lacks, in groups of up to `group_size` neighbouring blocks,
+                     on_block: Callable[[str], None] | None = None, group_size: int = 1, workers: int = 1,
+                     words: Callable[[str], int] | None = None) -> None:
+    """Generate each block the checkpoint lacks, in groups of neighbouring blocks (`group_by_words`),
     `workers` groups at a time. `generate(group)` yields (key, text, model) for each block as it is
     written, and each is saved before `on_block` reports it. Whatever interrupts the batch (an exception
     from `generate`, or from `on_block` when a stop is asked for) starts no new group, waits for the
     groups being written, and is raised once they are saved, so no finished block is lost."""
     missing = [key for key in keys if not checkpoint.blocks.get(key, {}).get("text")]
-    size = max(1, group_size)
-    groups = iter([missing[start:start + size] for start in range(0, len(missing), size)])
+    groups = iter(group_by_words(missing, group_size, words))
 
     def write(group: list[str]) -> tuple[list[str], BaseException | None]:
         saved = []
@@ -156,6 +181,15 @@ def score_missing(checkpoint: Checkpoint, keys: list[str], score: Callable[[str]
 
 
 # -- prompts --------------------------------------------------------------------------
+
+
+def worth_rewriting(text: str) -> bool:
+    """Whether a text block is prose worth rewriting: a sentence of four words or more, or eight words
+    without one. A table cell's label, a name, a date or a number ("14 August", "Done", "1") stays as
+    it is: rewriting it costs a request's share, adds a sample the detector can't learn from, and can
+    break the document."""
+    words = len(re.findall(r"[^\W\d_]+(?:['\u2019][^\W\d_]+)*", text))  # words of letters, not "1" or "."
+    return words >= 8 or (words >= 4 and bool(re.search(r"[.!?]", text)))
 
 
 def person_instruction(*samples: str) -> str:
@@ -311,19 +345,20 @@ class BatchWorker(threading.Thread):
     groups in progress are saved. `finish`, if given, runs once both passes are complete, and `on_end`
     runs last however the batch ended. `status` is a dict the callbacks may fill for the page to show.
     `seconds` holds the time between finished blocks, per pass, and `window` how many of the latest
-    the page averages for the time left: enough to cover a few rounds of groups."""
+    the page averages for the time left: enough to cover a few rounds of groups. `words(key)` is how
+    long a block should come out, for grouping by words."""
 
     def __init__(self, checkpoint: Checkpoint, keys: list[str],
                  generate: Callable[[list[str]], Iterable[tuple[str, str, str]]],
                  score: Callable[[str], dict | None] | None = None,
                  before_scoring: Callable[[], None] | None = None, finish: Callable[[], None] | None = None,
                  status: dict | None = None, on_end: Callable[[], None] | None = None,
-                 group_size: int = 1, workers: int = 1):
+                 group_size: int = 1, workers: int = 1, words: Callable[[str], int] | None = None):
         super().__init__(daemon=True)
         self.checkpoint, self.keys = checkpoint, keys
         self._generate, self._score, self._before_scoring, self._finish = generate, score, before_scoring, finish
         self._on_end = on_end
-        self.group_size, self.workers = max(1, group_size), max(1, workers)
+        self.group_size, self.workers, self._words = max(1, group_size), max(1, workers), words
         self._stop_requested = threading.Event()
         self.status = status if status is not None else {}
         self.phase = "generating"
@@ -356,7 +391,7 @@ class BatchWorker(threading.Thread):
     def run(self) -> None:
         try:
             generate_missing(self.checkpoint, self.keys, self._generate, self._reporter("generated"),
-                             self.group_size, self.workers)
+                             self.group_size, self.workers, self._words)
             if self._score:
                 self.phase = "scoring"
                 if self._before_scoring:

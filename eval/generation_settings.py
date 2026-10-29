@@ -1,15 +1,16 @@
 """Pick an adversarial challenge-generation setting from four measured priorities.
 
-eval/tune_generation.py measures settings (a model, its thinking level, and how many blocks go in one
-request) on a document and writes what it found to models/generation_tuning.json. Each setting has
-four measures:
+eval/tune_generation.py measures settings (a model, its thinking level, its temperature, and how many
+blocks go in one request) on a document and writes what it found to models/generation_tuning.json.
+Each setting has four measures:
 
 - detector: challenge strength, measured by the generated text's mean AI likelihood on this detector
 - style: similarity to the selected style profile, measured against the writer's own passages, of the
   same length, that are further from the profile than it is
 - speed: seconds of writing per block
 - quota: requests and tokens per block, and how much of the model's daily allowance of requests a
-  run takes (the table's `daily_requests`, from the limits Gemini's quota errors state)
+  run takes (the table's `daily_requests`, from the limits Gemini's quota errors state, together with
+  the limits this computer's own batches have run into: `learned_limits`)
 
 The writer spreads POINTS points over the four, at most MAX_POINTS on one, and the setting with the
 highest points-weighted sum of its four scores is picked. Each score runs from 0 to 1. The detector
@@ -29,8 +30,11 @@ many requests a batch sends at once, which costs no quota.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from opendetector.config import DATA_ROOT
 
 MEASURES = ("detector", "style", "speed", "quota")
 POINTS, MAX_POINTS = 12, 6
@@ -38,6 +42,9 @@ EVEN = dict.fromkeys(MEASURES, POINTS // len(MEASURES))
 TABLE = Path(__file__).resolve().parents[1] / "models/generation_tuning.json"
 REFERENCE_BLOCKS = 100  # the document size a batch's pick is made for when none is given
 PROMPT_CHARS = 2000  # a request's own instructions, beside the style profile and document it carries
+LIMITS = DATA_ROOT / "data/model_limits.json"  # free requests a day, as quota errors have stated them
+# How Gemini's quota errors state a daily limit, after the model they are about.
+_DAILY_LIMIT = re.compile(r"([\w.-]+): [^\n]*?limit: ([\d,]+) requests per day")
 
 
 @dataclass(frozen=True)
@@ -55,15 +62,46 @@ class Setting:
     tokens_per_block: float
     measured: bool  # False when predicted from the settings around it
     input_tokens_per_block: float | None = None  # the part of tokens_per_block the requests carried in
+    temperature: float | None = None  # None in a table measured before temperature was
 
 
-def load_table(path: Path = TABLE) -> dict | None:
-    """The measured table, or None before the benchmark has run."""
+def load_table(path: Path = TABLE, limits: Path | None = None) -> dict | None:
+    """The measured table, or None before the benchmark has run, with the daily limits this computer
+    has learned since added to the ones it was measured with."""
     try:
         table = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return table if isinstance(table, dict) and table.get("rows") else None
+    if not isinstance(table, dict) or not table.get("rows"):
+        return None
+    table["daily_requests"] = {**(table.get("daily_requests") or {}), **learned_limits(limits)}
+    return table
+
+
+def limits_in(text: str) -> dict[str, int]:
+    """The daily request limits that quota errors in `text` state, by model: the lines
+    generate_with_fallback writes as "<model>: <error>" and the benchmark as "<model> is out of quota:"."""
+    found = _DAILY_LIMIT.findall(text.replace(" is out of", ":"))
+    return {model: int(limit.replace(",", "")) for model, limit in found}
+
+
+def learned_limits(path: Path | None = None) -> dict[str, int]:
+    try:
+        known = json.loads((path or LIMITS).read_text(encoding="utf-8"))
+        return {str(model): int(limit) for model, limit in known.items()}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def record_limits(found: dict[str, int], path: Path | None = None) -> None:
+    """Keep daily limits for later picks. A limit belongs to the Gemini project the key is from, so a
+    public deploy, where every visitor brings their own key, doesn't call this."""
+    path = path or LIMITS
+    known = learned_limits(path)
+    if not found or all(known.get(model) == limit for model, limit in found.items()):
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(sorted({**known, **found}.items())), indent=2) + "\n", encoding="utf-8")
 
 
 def parallel_for(points: dict[str, int]) -> int:
@@ -119,7 +157,8 @@ def choose(table: dict, points: dict[str, int], models: list[str] | None = None,
     row = rows[max(range(len(rows)), key=value)]
     return Setting(row["model"], row["thinking"], row["group_size"], parallel_for(points) if batch else 1,
                    row["ai"], row["style"], row["seconds_per_block"], row["requests_per_block"],
-                   row["tokens_per_block"], row["measured"], row.get("input_tokens_per_block"))
+                   row["tokens_per_block"], row["measured"], row.get("input_tokens_per_block"),
+                   row.get("temperature"))
 
 
 def estimate(setting: Setting, blocks: int, table: dict, context_chars: int | None = None) -> dict:

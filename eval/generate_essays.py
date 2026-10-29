@@ -228,6 +228,14 @@ def _error_details(exc: urllib.error.HTTPError) -> tuple[str, float | None]:
     return message, None
 
 
+# Gemini models that turn a temperature down: they are asked at their own.
+_NO_TEMPERATURE = frozenset({"gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash"})
+
+
+def takes_temperature(model: str) -> bool:
+    return model not in _NO_TEMPERATURE
+
+
 def thinking_level(model: str, level: str | None) -> str | None:
     """The level to ask `model` for: `level` if the model has it, else the next one up it has (Gemini
     3.8 Flash starts at low), else its highest."""
@@ -290,7 +298,7 @@ def _gemini_interaction(model: str, api_key: str, prompt: str, temperature: floa
     if json_schema:
         payload["response_format"] = {"type": "text", "mime_type": "application/json", "schema": json_schema}
     config = {}
-    if model not in {"gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash"}:
+    if takes_temperature(model):
         config["temperature"] = temperature
     if thinking:
         config["thinking_level"] = thinking

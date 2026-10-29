@@ -59,10 +59,30 @@ from eval.generate_essays import (
     clean_essay,
     load_style_profile,
     style_instructions,
+    takes_temperature,
     thinking_level,
 )
-from eval.generation_settings import EVEN, MAX_POINTS, MEASURES, REFERENCE_BLOCKS, TABLE, choose, scores
-from eval.redteam_batch import GROUP_SCHEMA, block_prompt, group_prompt, parse_group_reply
+from eval.generation_settings import (
+    EVEN,
+    LIMITS,
+    MAX_POINTS,
+    MEASURES,
+    REFERENCE_BLOCKS,
+    TABLE,
+    choose,
+    learned_limits,
+    limits_in,
+    record_limits,
+    scores,
+)
+from eval.redteam_batch import (
+    GROUP_SCHEMA,
+    block_prompt,
+    group_by_words,
+    group_prompt,
+    parse_group_reply,
+    worth_rewriting,
+)
 from opendetector.config import DATA_ROOT
 from opendetector.documents import extract_document, rewritable_blocks
 from opendetector.env import load_env
@@ -73,11 +93,12 @@ MODELS = ("gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemi
           "gemini-3-flash-preview")  # the Adversarial Lab's model and fallbacks
 LEVELS = ("minimal", "low", "medium", "high")
 GROUPS = (1, 4, 8)
+TEMPERATURES = (0.8, 1.0, 1.3)
+BASE_TEMPERATURE = 0.8  # the page's default creativity, which the first trials were measured at
 TOKEN_FIELDS = ("total_tokens", "total_input_tokens", "total_cached_tokens", "total_output_tokens",
                 "total_thought_tokens")
 LABELLED = DATA_ROOT / "data/essays/tuning_redteam.jsonl"
 TRIES = 6  # per request, for a server that is busy or briefly unreachable
-DAILY_LIMIT = re.compile(r"limit: ([\d,]+) requests per day")
 
 
 # -- style match ----------------------------------------------------------------------
@@ -206,6 +227,8 @@ def sample_jobs(name: str, data: bytes, words: int, min_blocks: int = 1) -> tupl
     for index, block in enumerate(blocks, 1):
         if total >= words and len(jobs) >= min_blocks:
             break
+        if not worth_rewriting(block.text):  # left as it is, as a batch leaves it
+            continue
         jobs.append({"kind": kind, "label": block.label, "question": "", "previous": block.text, "target": block,
                      "key": f"{index:03d} {kind} {block.label}"})
         total += count_words(block.text)
@@ -214,23 +237,37 @@ def sample_jobs(name: str, data: bytes, words: int, min_blocks: int = 1) -> tupl
     return jobs, plan
 
 
+def trial_key(model: str, level: str, group: int, temperature: float, repeat: int) -> str:
+    """A trial's name. Trials at the page's default temperature keep the name they had before
+    temperature was measured, so they still count."""
+    return f"{model}|{level}|{group}|{repeat}" + ("" if temperature == BASE_TEMPERATURE else f"|t{temperature:g}")
+
+
 def planned_trials(models: list[str], levels: list[str], groups: list[int], repeats: int, design: str,
-                   baseline: str) -> list[dict]:
+                   baseline: str, temperatures: list[float] | None = None,
+                   base_temperature: float = 0.8) -> list[dict]:
     """Every trial to run: each model at each of its thinking levels (a model without a level is
-    asked for the next one up, so it is measured once) with the largest group, and either every group
-    size with those, or every group size with the baseline model at low thinking."""
+    asked for the next one up, so it is measured once) with the largest group at the base temperature,
+    and either every group size and temperature with those, or every group size and every temperature
+    with the baseline model at low thinking. A model that ignores temperature is measured at one."""
     largest = max(groups)
+    temperatures = list(dict.fromkeys([base_temperature, *(temperatures or [])]))
     combos = {}
     for model in models:
+        heats = temperatures if design == "full" and takes_temperature(model) else [base_temperature]
         for level in dict.fromkeys(thinking_level(model, level) for level in levels):
             for group in (groups if design == "full" else [largest]):
-                combos[(model, level, group)] = None
+                for heat in heats:
+                    combos[(model, level, group, heat)] = None
     if design == "main":
+        low = thinking_level(baseline, "low")
         for group in groups:
-            combos[(baseline, thinking_level(baseline, "low"), group)] = None
-    return [{"model": model, "thinking": level, "group_size": group, "repeat": repeat,
-             "key": f"{model}|{level}|{group}|{repeat}"}
-            for (model, level, group) in combos for repeat in range(1, repeats + 1)]
+            combos[(baseline, low, group, base_temperature)] = None
+        for heat in temperatures if takes_temperature(baseline) else []:
+            combos[(baseline, low, largest, heat)] = None
+    return [{"model": model, "thinking": level, "group_size": group, "temperature": heat, "repeat": repeat,
+             "key": trial_key(model, level, group, heat, repeat)}
+            for (model, level, group, heat) in combos for repeat in range(1, repeats + 1)]
 
 
 def _transient(exc: APIError) -> bool:
@@ -244,10 +281,12 @@ def run_trial(trial: dict, jobs: list[dict], plan, system: str, api_key: str, te
     """Rewrite the sample run with one setting, as a batch would: a request per group, then any block
     its reply leaves out on its own. Raises QuotaExhausted, or APIError for a request that keeps failing."""
     model, thinking, size = trial["model"], trial["thinking"], trial["group_size"]
+    temperature = trial.get("temperature", temperature)
     seconds, requests, retried, tokens, texts = 0.0, 0, 0, Counter(), {}
 
     def ask(prompt: str, **options) -> str:
         nonlocal seconds, requests, retried
+        timeouts = 0
         for attempt in range(TRIES):
             usage: dict = {}
             started = time.monotonic()
@@ -257,7 +296,10 @@ def run_trial(trial: dict, jobs: list[dict], plan, system: str, api_key: str, te
             except QuotaExhausted:
                 raise
             except APIError as exc:
-                if not _transient(exc) or attempt == TRIES - 1:
+                # A model that doesn't answer within the timeout twice is down for this run: waiting out
+                # four more timeouts cost 3.8 Flash twelve minutes once.
+                timeouts += "timed out" in str(exc)
+                if not _transient(exc) or attempt == TRIES - 1 or timeouts >= 2:
                     raise
                 retried += 1
                 time.sleep(min(60, 5 * 2 ** attempt))
@@ -269,8 +311,9 @@ def run_trial(trial: dict, jobs: list[dict], plan, system: str, api_key: str, te
         raise AssertionError("unreachable")
 
     left_out = 0
-    for start in range(0, len(jobs), size):
-        group = jobs[start:start + size]
+    by_key = {job["key"]: job for job in jobs}
+    for keys in group_by_words(list(by_key), size, lambda key: count_words(by_key[key]["previous"])):
+        group = [by_key[key] for key in keys]
         alone = group
         if len(group) > 1:
             reply = ask(group_prompt(plan, group), json_schema=GROUP_SCHEMA, timeout=60 + 15 * len(group))
@@ -308,6 +351,7 @@ def aggregate(trials: list[dict]) -> dict:
     tokens = sum(trial["tokens"].get("total_tokens") or sum(trial["tokens"].get(field, 0) for field in TOKEN_FIELDS[1:])
                  for trial in trials)
     return {"model": trials[0]["model"], "thinking": trials[0]["thinking"], "group_size": trials[0]["group_size"],
+            "temperature": trials[0].get("temperature", BASE_TEMPERATURE),
             "ai": _mean(ai), "ai_sd": _sd(ai), "style": _mean(style), "style_sd": _sd(style),
             "seconds_per_block": sum(trial["seconds"] for trial in trials) / blocks,
             "requests_per_block": sum(trial["requests"] for trial in trials) / blocks,
@@ -316,39 +360,54 @@ def aggregate(trials: list[dict]) -> dict:
             "trials": len(trials), "measured": True}
 
 
-def fit(trials: list[dict], baseline: str) -> list[dict]:
-    """Every measured setting, and every other combination of a measured model and thinking level
-    with a measured group size, predicted by adding the group size's effect on the baseline model."""
+def fit(trials: list[dict], baseline: str, base_temperature: float = BASE_TEMPERATURE) -> list[dict]:
+    """Every measured setting, and every other combination of a measured model and thinking level with
+    a measured group size and temperature, predicted by adding the baseline model's effect of each:
+    its change from the largest group to that size, and from the base temperature to that one. A model
+    that ignores temperature gets no temperature but its own."""
     by_setting: dict[tuple, list[dict]] = {}
     for trial in trials:
-        by_setting.setdefault((trial["model"], trial["thinking"], trial["group_size"]), []).append(trial)
+        setting = (trial["model"], trial["thinking"], trial["group_size"], trial.get("temperature", base_temperature))
+        by_setting.setdefault(setting, []).append(trial)
     measured = {setting: aggregate(group) for setting, group in by_setting.items()}
     rows = dict(measured)
-    largest = max((group for _, _, group in measured), default=0)
-    base = {group: row for (model, level, group), row in measured.items()
-            if model == baseline and level == thinking_level(baseline, "low")}
-    reference = base.get(largest)
-    for (model, level, group), anchor in measured.items():
-        if group != largest or reference is None:
+    largest = max((group for _, _, group, _ in measured), default=0)
+    low = thinking_level(baseline, "low")
+    reference = measured.get((baseline, low, largest, base_temperature))
+    by_group = {group: row for (model, level, group, heat), row in measured.items()
+                if (model, level, heat) == (baseline, low, base_temperature)}
+    by_heat = {heat: row for (model, level, group, heat), row in measured.items()
+               if (model, level, group) == (baseline, low, largest)}
+    for (model, level, group, heat), anchor in measured.items():
+        if reference is None or group != largest or heat != base_temperature:
             continue
-        for other, effect in base.items():
-            if (model, level, other) not in rows:
-                rows[(model, level, other)] = _predicted(anchor, effect, reference, other)
+        heats = by_heat if takes_temperature(model) else {base_temperature: reference}
+        for other_group, group_effect in by_group.items():
+            for other_heat, heat_effect in heats.items():
+                if (model, level, other_group, other_heat) not in rows:
+                    rows[(model, level, other_group, other_heat)] = _predicted(
+                        anchor, reference, (group_effect, heat_effect), other_group, other_heat)
     return sorted(rows.values(), key=lambda row: (row["model"], LEVELS.index(row["thinking"])
-                                                   if row["thinking"] in LEVELS else 9, row["group_size"]))
+                                                   if row["thinking"] in LEVELS else 9, row["group_size"],
+                                                   row["temperature"]))
 
 
-def _predicted(anchor: dict, effect: dict, reference: dict, group: int) -> dict:
-    """The anchor's setting with another group size: the baseline model's change from its own
-    reference group to that size, added to the detector and style scores and multiplied into the rest."""
+def _predicted(anchor: dict, reference: dict, effects: tuple[dict, ...], group: int, temperature: float) -> dict:
+    """The anchor's setting at another group size and temperature: each of the baseline model's changes
+    from its reference setting, added to the detector and style scores and multiplied into the rest."""
     def shifted(name: str, low: float, high: float) -> float | None:
-        values = (anchor[name], effect[name], reference[name])
-        return None if None in values else min(high, max(low, values[0] + values[1] - values[2]))
+        values = (anchor[name], reference[name], *(effect[name] for effect in effects))
+        if None in values:
+            return None
+        return min(high, max(low, anchor[name] + sum(effect[name] - reference[name] for effect in effects)))
 
     def scaled(name: str) -> float:
-        return anchor[name] * effect[name] / reference[name] if reference[name] else anchor[name]
+        value = anchor[name]
+        for effect in effects:
+            value = value * effect[name] / reference[name] if reference[name] else value
+        return value
 
-    return {"model": anchor["model"], "thinking": anchor["thinking"], "group_size": group,
+    return {"model": anchor["model"], "thinking": anchor["thinking"], "group_size": group, "temperature": temperature,
             "ai": shifted("ai", 0.0, 1.0), "ai_sd": None, "style": shifted("style", 0.0, 100.0), "style_sd": None,
             "seconds_per_block": scaled("seconds_per_block"), "requests_per_block": scaled("requests_per_block"),
             "tokens_per_block": scaled("tokens_per_block"), "input_tokens_per_block": scaled("input_tokens_per_block"),
@@ -359,7 +418,7 @@ def _pick(table: dict, measure: str | None) -> dict:
     points = EVEN if measure is None else {m: MAX_POINTS if m == measure else 0 for m in MEASURES}
     setting = choose(table, points)
     return {"model": setting.model, "thinking": setting.thinking, "group_size": setting.group_size,
-            "parallel": setting.parallel}
+            "temperature": setting.temperature, "parallel": setting.parallel}
 
 
 def report(table: dict) -> str:
@@ -370,7 +429,8 @@ def report(table: dict) -> str:
     known = ", ".join(f"{model} {limit:,}" for model, limit in sorted(limits.items())) or "none yet"
 
     def setting(pick: dict) -> str:
-        return f"{pick['model']}, {pick['thinking']} thinking, {pick['group_size']} blocks per request"
+        heat = f", temperature {pick['temperature']:g}" if pick.get("temperature") is not None else ""
+        return f"{pick['model']}, {pick['thinking']} thinking{heat}, {pick['group_size']} blocks per request"
 
     def number(value: float | None, sd: float | None, scale: float = 1, digits: int = 0) -> str:
         if value is None:
@@ -393,13 +453,14 @@ def report(table: dict) -> str:
         f"Free requests a day, from Gemini's quota errors or set by hand: {known}. A model whose limit isn't "
         f"known loses no quota score for it. The picks and scores here are for a {REFERENCE_BLOCKS}-block "
         "batch; the Adversarial Lab scores the document it has.", "",
-        "| Model | Thinking | Blocks per request | AI likelihood % | Style match % | Seconds per block "
-        "| Requests per block | Tokens per block | Trials | Even-points score |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Model | Thinking | Temperature | Blocks per request | AI likelihood % | Style match % "
+        "| Seconds per block | Requests per block | Tokens per block | Trials | Even-points score |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row, value in sorted(zip(rows, utility, strict=True), key=lambda pair: -pair[1]):
         lines.append(
-            f"| {row['model']} | {row['thinking']} | {row['group_size']} | {number(row['ai'], row['ai_sd'], 100)} "
+            f"| {row['model']} | {row['thinking']} | {row.get('temperature', BASE_TEMPERATURE):g} "
+            f"| {row['group_size']} | {number(row['ai'], row['ai_sd'], 100)} "
             f"| {number(row['style'], row['style_sd'])} | {row['seconds_per_block']:.1f} "
             f"| {row['requests_per_block']:.2f} | {row['tokens_per_block']:,.0f} "
             f"| {row['trials'] or 'predicted'} | {value:.2f} |")
@@ -428,25 +489,10 @@ def _log_labelled(trial: dict, document: str, source: str, style: str) -> None:
     row = {"id": f"tuning-{source}-{trial['key'].replace('|', '-')}", "text": trial["text"], "label": 1,
            "dataset": "local_tuning", "domain": "document_combined", "model": trial["model"],
            "attack": f"full_document+{style}", "group": "ai", "group_key": f"document-{source}",
-           "thinking": trial["thinking"], "group_size": trial["group_size"], "source_file": document}
+           "thinking": trial["thinking"], "group_size": trial["group_size"],
+           "temperature": trial.get("temperature", BASE_TEMPERATURE), "source_file": document}
     with LABELLED.open("a", encoding="utf-8") as output:
         output.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
-def _limits_path(trials_path: Path) -> Path:
-    return trials_path.with_name(trials_path.stem + "_limits.json")
-
-
-def _load_limits(path: Path) -> dict[str, int]:
-    try:
-        return {str(model): int(limit) for model, limit in json.loads(path.read_text(encoding="utf-8")).items()}
-    except (OSError, ValueError, AttributeError):
-        return {}
-
-
-def _save_limits(path: Path, limits: dict[str, int]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(dict(sorted(limits.items())), indent=2) + "\n", encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -462,7 +508,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="the model the group sizes are measured with in the main design")
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--words", type=int, default=250, help="how much of the document each trial rewrites")
-    parser.add_argument("--temperature", type=float, default=0.8)
+    parser.add_argument("--temperature", type=float, default=BASE_TEMPERATURE,
+                        help="the temperature every model is measured at")
+    parser.add_argument("--temperatures", default=",".join(f"{t:g}" for t in TEMPERATURES),
+                        help="temperatures to measure on the baseline model (every model with --design full)")
     parser.add_argument("--profile", choices=("full", "slim"), default="slim", help="the detector build")
     parser.add_argument("--api-key-env", default="GEMINI_API_KEY")
     parser.add_argument("--out", type=Path, default=ROOT / "eval/cache/tuning.jsonl")
@@ -471,25 +520,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fit-only", action="store_true", help="skip new trials; fit what --out holds")
     parser.add_argument("--daily-limit", action="append", default=[], metavar="MODEL=N",
                         help="a model's free requests a day, when its quota errors haven't said; repeatable")
+    parser.add_argument("--limits", type=Path, help=f"where daily limits are kept (default {LIMITS}); the Red "
+                                                    "team page reads and adds to the same file")
     args = parser.parse_args(argv)
     sys.stdout.reconfigure(line_buffering=True)  # progress shows as it happens, also in a log file
     models = [name.strip() for name in args.models.split(",") if name.strip()]
     levels = [name.strip() for name in args.thinking.split(",") if name.strip()]
     groups = sorted({int(size) for size in args.groups.split(",")})
+    temperatures = [float(heat) for heat in args.temperatures.split(",") if heat.strip()]
     if unknown := set(levels) - set(LEVELS):
         parser.error(f"unknown thinking levels: {', '.join(sorted(unknown))}")
-    limits_path = _limits_path(args.out)
-    limits = _load_limits(limits_path)
+    given = {}
     for entry in args.daily_limit:
         model, _, limit = entry.partition("=")
         if not model.strip() or not limit.strip().isdigit():
             parser.error(f"--daily-limit takes MODEL=N, not {entry!r}")
-        limits[model.strip()] = int(limit)
-    if args.daily_limit:
-        _save_limits(limits_path, limits)
+        given[model.strip()] = int(limit)
+    record_limits(given, args.limits)
 
-    trials = _load_trials(args.out)
-    meta = trials[0].get("meta", {}) if trials else {}
+    # Trials measured on another sample stay in the file; only the latest sample's are run and fitted.
+    others = _load_trials(args.out)
+    meta = others[-1].get("meta", {}) if others else {}
     if not args.fit_only:
         if not args.document:
             parser.error("name a document to measure on, or pass --fit-only")
@@ -507,12 +558,15 @@ def main(argv: list[str] | None = None) -> int:
                 "sample_words": sum(count_words(job["previous"]) for job in jobs), "blocks": len(jobs),
                 "context_chars": len(system) + len(plan.context_text), "detector_profile": args.profile,
                 "baseline_model": args.baseline_model, "temperature": args.temperature}
-        same = ("source", "style_profile", "words", "blocks")
-        kept = [trial for trial in trials if all(trial.get("meta", {}).get(key) == meta[key] for key in same)]
-        if len(kept) < len(trials):
-            print(f"Leaving out {len(trials) - len(kept)} trials measured on another document, profile or length.")
-        trials, done = kept, {trial["key"] for trial in kept}
-        planned = planned_trials(models, levels, groups, args.repeats, args.design, args.baseline_model)
+    same = ("source", "style_profile", "words", "blocks")
+    trials = [trial for trial in others if all(trial.get("meta", {}).get(key) == meta.get(key) for key in same)]
+    others = [trial for trial in others if trial not in trials]
+    if not args.fit_only:
+        if others:
+            print(f"Leaving out {len(others)} trials measured on another document, profile, length or sample.")
+        done = {trial["key"] for trial in trials}
+        planned = planned_trials(models, levels, groups, args.repeats, args.design, args.baseline_model,
+                                 temperatures, args.temperature)
         skipped: set[str] = set()
         print(f"{len(planned) - len(done & {t['key'] for t in planned})} of {len(planned)} trials to run, "
               f"{len(jobs)} blocks each.")
@@ -524,16 +578,14 @@ def main(argv: list[str] | None = None) -> int:
             except QuotaExhausted as exc:
                 print(f"  {trial['model']} is out of quota; skipping its other trials this run. {exc}", file=sys.stderr)
                 skipped.add(trial["model"])
-                if match := DAILY_LIMIT.search(str(exc)):
-                    limits[trial["model"]] = int(match.group(1).replace(",", ""))
-                    _save_limits(limits_path, limits)
+                record_limits(limits_in(f"{trial['model']}: {exc}"), args.limits)
                 continue
             except APIError as exc:
                 print(f"  {trial['model']} failed; skipping its other trials this run. {exc}", file=sys.stderr)
                 skipped.add(trial["model"])
                 continue
             trials.append({**result, "meta": meta})
-            _save_trials(args.out, trials)
+            _save_trials(args.out, others + trials)
             _log_labelled(result, path.name, source, meta["style_profile"])
             print(f"  {trial['key']}: {result['requests']} requests, {result['seconds']:.0f} s")
 
@@ -547,17 +599,16 @@ def main(argv: list[str] | None = None) -> int:
             for trial in unscored:
                 trial["ai"] = detector.analyze(trial["text"], sentences=False).ai_probability
                 trial["style"] = yardstick.match(trial["text"]) if yardstick else None
-                _save_trials(args.out, trials)
+                _save_trials(args.out, others + trials)
 
     if not trials:
         print("No trials yet.")
         return 1
-    if args.fit_only:
-        meta = trials[0]["meta"]
     scored = [trial for trial in trials if "ai" in trial]
+    rows = fit(scored, meta["baseline_model"], meta.get("temperature", BASE_TEMPERATURE))
     table = {"created": time.strftime("%Y-%m-%d"), **{key: meta[key] for key in (
         "document", "blocks", "context_chars", "detector_profile", "style_profile", "baseline_model")},
-        "words": meta["sample_words"], "rows": fit(scored, meta["baseline_model"]), "daily_requests": limits}
+        "words": meta["sample_words"], "rows": rows, "daily_requests": learned_limits(args.limits)}
     table["default"] = _pick(table, None)
     args.table.parent.mkdir(parents=True, exist_ok=True)
     args.table.write_text(json.dumps(table, indent=2) + "\n", encoding="utf-8")

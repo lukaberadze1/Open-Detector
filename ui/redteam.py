@@ -56,10 +56,12 @@ from eval.redteam_batch import (
     StopRequested,
     batch_key,
     block_prompt,
+    group_by_words,
     group_prompt,
     parse_group_reply,
     person_instruction,
     target_words,
+    worth_rewriting,
 )
 from eval.evasion_mode import PROFILE_ID, PROFILE_INSTRUCTIONS, generate_until_target
 from opendetector import DetectorConfig
@@ -225,6 +227,7 @@ class Plan:
     group_size: int = 6  # blocks per request in a batch
     parallel: int = 2  # a batch's requests at once
     model: str | None = None  # the model to start with, when the priorities picked one
+    human_source: bool = False  # the uploaded document is the user's own writing: save it as paired human data
     style_path: Path | None = None
     score: bool = True
     evasion: bool = False
@@ -509,12 +512,24 @@ def _setup(profile: str, conn: Connection) -> Plan:
         if slots:
             plan.fill_answer_boxes = st.toggle(f"Also fill the {len(slots)} answer boxes",
                                                key=keep("keep:redteam:also_answers", False))
-        st.caption(f"Rewrites {len(blocks)} text blocks. Headings, titles, questions and tables stay as they are"
-                   + (" unless you fill the answer boxes too." if slots else "."))
-        with st.expander(f"Blocks to rewrite · {len(blocks)}", icon=":material/segment:"):
-            for block in blocks:
+        prose = [block for block in blocks if worth_rewriting(block.text)]
+        skipped = len(blocks) - len(prose)
+        st.caption(f"Rewrites {len(prose)} text blocks. Headings, titles, questions and tables stay as they are"
+                   + (" unless you fill the answer boxes too" if slots else "")
+                   + (f", and so do {skipped} short labels, names, dates and numbers, which a rewrite would only "
+                      "garble." if skipped else "."))
+        with st.expander(f"Blocks to rewrite · {len(prose)}", icon=":material/segment:"):
+            for block in prose:
                 st.markdown(f"**{block.label}**")
                 st.text(block.text if len(block.text) <= 300 else block.text[:300] + "…")
+    if plan.task in ("section", "answers", "blocks"):
+        plan.human_source = st.toggle(
+            "This document is my own writing", key=keep("keep:redteam:human_source", False),
+            help="Also saves each original block as human-written (label 0), paired with its rewrite under the "
+                 "same source, so the detector can learn the difference between you and an AI imitating you on "
+                 "the same content. Leave it off for a document that is AI-written or someone else's: a wrong "
+                 "human label teaches the detector the wrong thing.",
+        )
 
     st.markdown("##### :material/tune: Length, style and scoring")
     if plan.batch:
@@ -527,8 +542,6 @@ def _setup(profile: str, conn: Connection) -> Plan:
     else:
         plan.words = st.slider("Approximate length", min_value=150, max_value=1500, step=50,
                                key=keep("keep:redteam:words", 350), format="%d words")
-    plan.temperature = st.slider("Creativity", 0.0, 1.5, step=0.1, key=keep("keep:redteam:temperature", 0.8),
-                                 help="The model's temperature.")
     styles = {path.stem: path for path in sorted(_store().styles.glob("*.json"))}
     use_style = st.toggle(
         "Write in a style profile", key=keep("keep:redteam:style", True), disabled=not styles,
@@ -591,7 +604,7 @@ def _priorities(plan: Plan, conn: Connection) -> None:
         st.caption("Set by hand until the settings are measured: run `python -m eval.tune_generation` on a document "
                    "to let points pick them.")
     elif not st.toggle("Set by hand", key=keep("keep:redteam:by_hand", False),
-                       help="Choose the thinking level, blocks per request and requests at once yourself."):
+                       help="Choose the creativity, thinking level, blocks per request and requests at once yourself."):
         points = st.session_state.setdefault(POINTS, dict(generation_settings.EVEN))
         left = generation_settings.POINTS - sum(points.values())
         for measure in MEASURES:
@@ -613,12 +626,18 @@ def _priorities(plan: Plan, conn: Connection) -> None:
         if setting := generation_settings.choose(table, points, models_on_offer, plan.batch, blocks):
             plan.model, plan.thinking = setting.model, setting.thinking
             plan.group_size, plan.parallel = setting.group_size, setting.parallel
+            plan.temperature = (setting.temperature if setting.temperature is not None
+                                else st.session_state.get("keep:redteam:temperature", Plan.temperature))
             chart, readout = st.columns([1, 1.6], vertical_alignment="center")
             chart.html(priorities_chart(points, MAX_POINTS))
             with readout:
                 _readout(plan, table, setting, blocks)
             return
         st.caption("None of the measured settings uses the models in the sidebar, so set them by hand.")
+    plan.temperature = st.slider(
+        "Creativity", 0.0, 1.5, step=0.1, key=keep("keep:redteam:temperature", Plan.temperature),
+        help="The model's temperature: higher writes less predictably. Gemini 3.6, 3.7 and 3.8 Flash use their own.",
+    )
     plan.thinking = st.select_slider(
         "Model thinking", THINKING_LEVELS, key=keep("keep:redteam:thinking", Plan.thinking),
         format_func=str.capitalize,
@@ -648,7 +667,8 @@ def _readout(plan: Plan, table: dict, setting: generation_settings.Setting, bloc
         with contextlib.suppress(OSError, ValueError):
             context += len(style_instructions(load_style_profile(plan.style_path)))
     estimate = generation_settings.estimate(setting, blocks, table, context)
-    st.markdown(f":material/auto_awesome: **{setting.model}** · {setting.thinking} thinking"
+    heat = f" · temperature {setting.temperature:g}" if setting.temperature is not None else ""
+    st.markdown(f":material/auto_awesome: **{setting.model}** · {setting.thinking} thinking{heat}"
                 + (f" · {setting.group_size} blocks per request · {setting.parallel} at once" if plan.batch else ""))
     scores = [f"AI likelihood {setting.ai:.0%}" if setting.ai is not None else None,
               f"style match {setting.style:.0f}%" if setting.style is not None else None]
@@ -750,10 +770,36 @@ def _batch_jobs(plan: Plan) -> list[dict]:
             }
             for section in plan.blocks
         )
-    # Labels can repeat (two shapes with the same name), so a block's position is part of its key.
+    # Labels can repeat (two shapes with the same name), so a block's position is part of its key. Keys
+    # are numbered before short labels, dates and numbers are left out, so saved progress still resumes.
     for index, job in enumerate(jobs, 1):
         job["key"] = f"{index:03d} {job['kind']} {job['label']}"
-    return jobs
+    return [job for job in jobs if job["kind"] == "answer_box" or worth_rewriting(job["previous"])]
+
+
+def _settings(plan: Plan) -> dict:
+    """How a sample was written, saved with it so the evaluation can tell which settings the detector
+    misses. eval/datasets.py keeps only its own columns, so these never become detector features."""
+    return {"thinking": plan.thinking, "temperature": plan.temperature, "style_profile": plan.style_name,
+            "blocks_per_request": (1 if plan.evasion else plan.group_size) if plan.batch else None}
+
+
+def _human_rows(plan: Plan, originals: list[tuple[str, str, str]], group_key: str, store: Store) -> list[dict]:
+    """The user's own writing that samples were rewritten from, as human-labelled rows under the same
+    group_key, so a split keeps each original and its rewrite together. `originals` holds (part,
+    domain, text). Each original is saved once, however often it is rewritten."""
+    seen = set()
+    if store.output.is_file():
+        seen = {row.get("id") for row in _saved_rows(str(store.output), store.output.stat().st_mtime)}
+    rows = []
+    for part, domain, text in originals:
+        row_id = f"human-{plan.source_hash}-{hashlib.sha256(text.encode()).hexdigest()[:12]}"
+        if text.strip() and row_id not in seen:
+            seen.add(row_id)
+            rows.append({"id": row_id, "text": text, "label": 0, "dataset": "local_redteam", "domain": domain,
+                         "model": "human", "attack": "none", "group": "human", "group_key": group_key,
+                         "source_file": plan.upload.name, "target_section": part})
+    return rows
 
 
 def _checkpoint_path(plan: Plan) -> Path:
@@ -820,6 +866,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
             "source_file": upload.name,
             "target_section": item["label"],
             "detector_profile": None,
+            **_settings(plan),
             **(item.get("score") or {}),
         })
         checkpoint.blocks[item["key"]]["recorded"] = True
@@ -842,9 +889,19 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
             "prompt": f"Every regenerated block of {upload.name}, in document order.",
             "source_file": upload.name,
             "target_section": None,
+            **_settings(plan),
             **{key: value for key, value in document_score.items() if key != "words"},
         })
         checkpoint.meta["document_recorded"] = True
+    if plan.human_source and rows:
+        # The originals come from the uploaded file, not from the jobs: an improvement pass starts each
+        # job from the AI text it is improving.
+        domains = {"answer_box": "document_answer_box", "markdown_block": "markdown_text_block"}
+        originals = [(item["label"], domains.get(item["kind"], "document_text_block"), item["target"].text)
+                     for item in items]
+        if not partial:
+            originals.append((None, "document_combined", "\n\n".join(text for _, _, text in originals if text.strip())))
+        rows += _human_rows(plan, originals, f"document-{source_hash}", store)
     if rows:
         store.output.parent.mkdir(parents=True, exist_ok=True)
         with store.output.open("a", encoding="utf-8") as output:
@@ -1015,7 +1072,11 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
     # answers one request at a time anyway.
     group_size = 1 if plan.evasion else plan.group_size
     workers = 1 if plan.evasion or is_local(conn.base_url) else plan.parallel
-    groups = [jobs[start:start + group_size] for start in range(0, len(jobs), group_size)]
+
+    def words(key: str) -> int:
+        return target_words(plan, by_key[key])
+
+    groups = [[by_key[key] for key in group] for group in group_by_words(keys, group_size, words)]
 
     def group_tokens(group: list[dict]) -> int:
         """The most a local model may write for a group: each block's limit, and room for the JSON."""
@@ -1039,16 +1100,25 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
     shared = threading.Lock()  # groups written at the same time share the model order and the log
 
     # These run on the worker's threads, so they must not call Streamlit; they report through `status`.
+    def learn_limits(errors: str) -> None:
+        """Keep the daily limits a spent model's error states, for the priorities' next picks. Visitors to a
+        public deploy each bring their own key, and a limit belongs to the key's project."""
+        if not public():
+            generation_settings.record_limits(generation_settings.limits_in(errors))
+
     def write(prompt: str, max_tokens: int, **options) -> tuple[str, str, list[str]]:
         """Ask the models in turn. A model whose quota is spent for hours is dropped for the rest of the
         batch; when the ones left are only busy or rate-limited, wait and ask again."""
         for retry in range(BUSY_RETRIES + 1):
             spent: set[str] = set()
             try:
-                return generate_with_fallback(conn.base_url, conn.api_key, list(status["order"]), prompt,
-                                              plan.temperature, system, conn.local_url, local_model, max_tokens,
-                                              local_context, spent, thinking=plan.thinking, **options)
-            except APIError:
+                reply, used_model, model_errors = generate_with_fallback(
+                    conn.base_url, conn.api_key, list(status["order"]), prompt, plan.temperature, system,
+                    conn.local_url, local_model, max_tokens, local_context, spent, thinking=plan.thinking, **options)
+                learn_limits("\n".join(model_errors))
+                return reply, used_model, model_errors
+            except APIError as exc:
+                learn_limits(str(exc))
                 left = [model for model in status["order"] if model not in spent]
                 if retry == BUSY_RETRIES or not (left or local_model):
                     raise
@@ -1184,7 +1254,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         checkpoint, keys, generate_group,
         score=(lambda text: candidate_metrics(text, plan.profile, plan.style_path)) if plan.score else None,
         before_scoring=before_scoring, finish=score_document if plan.score else None, status=status,
-        on_end=on_end, group_size=group_size, workers=workers,
+        on_end=on_end, group_size=group_size, workers=workers, words=words,
     )
     # Kept on the worker so that whichever page run sees it end can export it, even after the page's
     # settings have changed.
@@ -1330,7 +1400,10 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         "detector_profile": plan.profile if score else None,
         "style_match": candidate_style.get(essay, style_match(essay, plan.style_path, style_cache))
         if plan.style_path else None,
+        **_settings(plan),
     }
+    if plan.evasion:
+        row["temperature"] = 0.95  # robustness mode drafts hotter than the setting
     if baseline_metrics is not None:
         row["baseline_ai_probability"] = baseline_metrics.get("ai_probability")
         row["baseline_style_match"] = baseline_metrics.get("style_match")
@@ -1340,8 +1413,12 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
                 "evasion_attempts": len(drafts), "evasion_reached_target": reached, "evasion_kept": True}
     store = _store()
     store.output.parent.mkdir(parents=True, exist_ok=True)
+    originals = [(target_section.label, "document_section", target_section.text)] if target_section else []
+    human = _human_rows(plan, originals, row["group_key"], store) if plan.human_source else []
     with store.output.open("a", encoding="utf-8") as output:
         output.write(json.dumps(row, ensure_ascii=False) + "\n")
+        for original in human:
+            output.write(json.dumps(original, ensure_ascii=False) + "\n")
         # The drafts robustness mode passed over are labelled AI data too; they share the prompt's group_key,
         # so a split never puts one in training and another in test.
         for attempt, (draft, draft_model) in enumerate(drafts.items() if plan.evasion else (), 1):
@@ -1577,10 +1654,14 @@ def _history() -> None:
     if not output.is_file():
         st.info("No samples yet. Generated samples are listed here with their scores.", icon=":material/history:")
         return
-    rows = _saved_rows(str(output), output.stat().st_mtime)
+    saved = _saved_rows(str(output), output.stat().st_mtime)
+    rows = [row for row in saved if row.get("label", 1) == 1]
     scored = [row for row in rows if row.get("verdict") in ("likely_ai", "needs_review", "likely_human")]
     with st.container(horizontal=True):
         st.metric("Samples", f"{len(rows):,}", border=True)
+        if human := len(saved) - len(rows):
+            st.metric("Your originals", f"{human:,}", border=True,
+                      help="Your own writing the samples were rewritten from, saved as human-labelled pairs.")
         st.metric("Scored", f"{len(scored):,}", border=True)
         if scored:
             passed = sum(row["verdict"] == "likely_human" for row in scored) / len(scored)

@@ -250,3 +250,22 @@ def test_a_group_reply_gives_each_known_block_its_text():
     assert parse_group_reply(odd, ids) == {}
     assert parse_group_reply("Sorry, I can't help with that.", ids) == {}
     assert parse_group_reply('{"blocks": [', ids) == {}
+
+
+def test_only_prose_blocks_are_worth_rewriting():
+    from eval.redteam_batch import worth_rewriting
+
+    assert [worth_rewriting(text) for text in ("14 August", "Done", "1", "Osuke, Dima", "I met criteria 1, 2, 3",
+                                               "Landed a Ollie .")] == [False] * 6
+    assert worth_rewriting("My first proper skating session ever.")
+    assert worth_rewriting("Notes from the hive on a warm and windy afternoon in late June")
+
+
+def test_short_blocks_share_a_request_and_a_long_one_takes_the_room_of_several():
+    from eval.redteam_batch import group_by_words
+
+    words = {"a": 6, "b": 6, "c": 6, "d": 150, "e": 30, "f": 30}
+    assert group_by_words(list(words), 2, words.get) == [["a", "b", "c", "d"][:3], ["d"], ["e", "f"]], (
+        "6-word blocks take a quarter place, a 150-word one five places on its own, 30-word ones a place each")
+    assert group_by_words(list(words), 1, words.get) == [[key] for key in words], "one block per request"
+    assert group_by_words(list(words), 4) == [["a", "b", "c", "d"], ["e", "f"]], "without lengths, by count"
