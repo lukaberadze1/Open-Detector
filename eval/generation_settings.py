@@ -37,6 +37,7 @@ POINTS, MAX_POINTS = 12, 6
 EVEN = dict.fromkeys(MEASURES, POINTS // len(MEASURES))
 TABLE = Path(__file__).resolve().parents[1] / "models/generation_tuning.json"
 REFERENCE_BLOCKS = 100  # the document size a batch's pick is made for when none is given
+PROMPT_CHARS = 2000  # a request's own instructions, beside the style profile and document it carries
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,7 @@ class Setting:
     requests_per_block: float
     tokens_per_block: float
     measured: bool  # False when predicted from the settings around it
+    input_tokens_per_block: float | None = None  # the part of tokens_per_block the requests carried in
 
 
 def load_table(path: Path = TABLE) -> dict | None:
@@ -117,16 +119,21 @@ def choose(table: dict, points: dict[str, int], models: list[str] | None = None,
     row = rows[max(range(len(rows)), key=value)]
     return Setting(row["model"], row["thinking"], row["group_size"], parallel_for(points) if batch else 1,
                    row["ai"], row["style"], row["seconds_per_block"], row["requests_per_block"],
-                   row["tokens_per_block"], row["measured"])
+                   row["tokens_per_block"], row["measured"], row.get("input_tokens_per_block"))
 
 
 def estimate(setting: Setting, blocks: int, table: dict, context_chars: int | None = None) -> dict:
     """About how long, how many requests and how many tokens `blocks` blocks take with `setting`, and
-    the model's daily limit when known. Most of a request's tokens are the style profile and the
-    document it carries, so tokens are scaled by this document's size against the one the table was
-    measured on."""
-    scale = context_chars / table["context_chars"] if context_chars and table.get("context_chars") else 1.0
+    the model's daily limit when known. Most of a request's input is the style profile and the
+    document it carries (`context_chars` characters, never less than the prompt's own instructions),
+    so the input tokens are scaled by that against what the table's requests carried; what the model
+    writes and thinks is not."""
+    tokens = setting.tokens_per_block
+    if context_chars is not None and table.get("context_chars"):
+        scale = max(context_chars, PROMPT_CHARS) / table["context_chars"]
+        carried = setting.input_tokens_per_block if setting.input_tokens_per_block is not None else tokens
+        tokens = carried * scale + tokens - carried
     return {"seconds": blocks * setting.seconds_per_block / setting.parallel,
             "requests": blocks * setting.requests_per_block,
-            "tokens": blocks * setting.tokens_per_block * scale,
+            "tokens": blocks * tokens,
             "daily_limit": (table.get("daily_requests") or {}).get(setting.model)}

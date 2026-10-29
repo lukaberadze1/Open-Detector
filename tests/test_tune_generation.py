@@ -79,6 +79,16 @@ def test_estimates_scale_with_the_document():
                         "daily_limit": None}
 
 
+def test_only_the_input_a_request_carries_scales_with_the_document():
+    table = {"context_chars": 50_000, "rows": [{**row("m", "minimal", 1, 0.1, 50, 5.0, 1.0, 16_000),
+                                                "input_tokens_per_block": 15_000}]}
+    setting = generation_settings.choose(table, EVEN, batch=False)
+    bare = generation_settings.estimate(setting, 1, table, context_chars=0)
+    assert bare["tokens"] == pytest.approx(15_000 * 2000 / 50_000 + 1000), (
+        "a sample with no profile or document still sends its instructions, and writes as much as before")
+    assert generation_settings.estimate(setting, 1, table, context_chars=100_000)["tokens"] == pytest.approx(31_000)
+
+
 def test_a_missing_or_empty_table_is_none(tmp_path):
     assert generation_settings.load_table(tmp_path / "missing.json") is None
     (tmp_path / "empty.json").write_text('{"rows": []}')

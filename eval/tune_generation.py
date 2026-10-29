@@ -291,7 +291,9 @@ def aggregate(trials: list[dict]) -> dict:
             "ai": _mean(ai), "ai_sd": _sd(ai), "style": _mean(style), "style_sd": _sd(style),
             "seconds_per_block": sum(trial["seconds"] for trial in trials) / blocks,
             "requests_per_block": sum(trial["requests"] for trial in trials) / blocks,
-            "tokens_per_block": tokens / blocks, "trials": len(trials), "measured": True}
+            "tokens_per_block": tokens / blocks,
+            "input_tokens_per_block": sum(trial["tokens"].get("total_input_tokens", 0) for trial in trials) / blocks,
+            "trials": len(trials), "measured": True}
 
 
 def fit(trials: list[dict], baseline: str) -> list[dict]:
@@ -329,7 +331,8 @@ def _predicted(anchor: dict, effect: dict, reference: dict, group: int) -> dict:
     return {"model": anchor["model"], "thinking": anchor["thinking"], "group_size": group,
             "ai": shifted("ai", 0.0, 1.0), "ai_sd": None, "style": shifted("style", 0.0, 100.0), "style_sd": None,
             "seconds_per_block": scaled("seconds_per_block"), "requests_per_block": scaled("requests_per_block"),
-            "tokens_per_block": scaled("tokens_per_block"), "trials": 0, "measured": False}
+            "tokens_per_block": scaled("tokens_per_block"), "input_tokens_per_block": scaled("input_tokens_per_block"),
+            "trials": 0, "measured": False}
 
 
 def _pick(table: dict, measure: str | None) -> dict:
