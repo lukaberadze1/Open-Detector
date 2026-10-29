@@ -106,7 +106,8 @@ TASKS = {
     "section": ("Create a section challenge", "Generate a replacement sample for one section of the uploaded "
                                                "test document, with the rest as context."),
     "answers": ("Populate a test worksheet", "Generate labelled AI answers for the right-hand answer boxes of "
-                                               "the document's question/answer tables or slides, then export a test copy."),
+                                               "the document's question/answer tables or slides, then export a "
+                                               "test copy."),
     "blocks": ("Generate block challenges", "Generate a labelled AI challenge for each text block, keeping "
                                               "headings, titles, questions and tables, then export a test copy."),
 }
@@ -1228,8 +1229,8 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     else:
         voice_rule = person_instruction(*(section.text for section in plan.sections))
         user_prompt = (
-            f"Write an AI-generated adversarial challenge sample based on the test material below. Aim for about {plan.words} "
-            "words. "
+            "Write an AI-generated adversarial challenge sample based on the test material below. "
+            f"Aim for about {plan.words} words. "
             f"{voice_rule} "
             "Return the sample only. This sample will be labelled as AI-generated evaluation data.\n\n"
             f"Test material:\n{test_material}"
@@ -1283,8 +1284,8 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
                     if not drafts:
                         raise
                     essay = min(drafts, key=likelihood)
-                    st.warning(f"Adaptive evaluation stopped after {len(drafts)} candidate(s), so the lowest-scoring one "
-                               f"is kept: {exc}")
+                    st.warning(f"Adaptive evaluation stopped after {len(drafts)} candidate(s), so the "
+                               f"lowest-scoring one is kept: {exc}")
             model = drafts.get(essay, model)
         else:
             with st.spinner(f"Generating with {conn.model}…"):

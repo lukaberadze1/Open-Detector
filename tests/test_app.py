@@ -180,7 +180,7 @@ def test_red_team_sample_is_recorded_as_ai_with_its_score(stub_model, tmp_path):
     at.run()
     assert not at.exception, at.exception
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
-    button(at, "Generate sample").click()
+    button(at, "Generate challenge sample").click()
     at.run()
     assert not at.exception, at.exception
 
@@ -210,7 +210,7 @@ def robustness_page(monkeypatch, replies, until_target):
     at.session_state["keep:redteam:evasion"] = True
     at.run()
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
-    button(at, "Generate sample").click()
+    button(at, "Generate challenge sample").click()
     at.run()
     assert not at.exception, at.exception
     return at
@@ -226,7 +226,7 @@ def test_robustness_mode_keeps_the_lowest_draft_and_saves_every_one(stub_model, 
 
     replies = [(AI * 15, "model-a"), (HUMAN * 15, "model-b"), (AI * 20, "model-c")]
     at = robustness_page(monkeypatch, replies, lowest_of_three)
-    assert prompts[0].startswith("Write an AI-generated red-team sample")
+    assert prompts[0].startswith("Write an AI-generated adversarial challenge sample")
 
     rows = [json.loads(line) for line in (tmp_path / "local_redteam.jsonl").read_text().splitlines()]
     assert [(r["model"], r["evasion_kept"], r["label"]) for r in rows] == [
@@ -247,7 +247,7 @@ def test_robustness_mode_keeps_its_drafts_when_the_models_run_out(stub_model, tm
         raise redteam.APIError("Every configured text model failed: quota")
 
     at = robustness_page(monkeypatch, [(AI * 15, "model-a")], quota_runs_out)
-    assert any("stopped after 1 draft" in w.value for w in at.warning)
+    assert any("stopped after 1 candidate" in w.value for w in at.warning)
     rows = [json.loads(line) for line in (tmp_path / "local_redteam.jsonl").read_text().splitlines()]
     assert [(r["model"], r["evasion_kept"], r["evasion_reached_target"]) for r in rows] == [("model-a", True, False)]
 
@@ -269,7 +269,7 @@ def test_robustness_mode_turns_scoring_on(stub_model, tmp_path, monkeypatch):
     at.session_state["keep:redteam:score"] = False  # robustness mode needs scores, so it scores anyway
     at.run()
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
-    button(at, "Generate sample").click()
+    button(at, "Generate challenge sample").click()
     at.run()
     assert not at.exception, at.exception
     assert len(scores) == 1 and scores[0] is not None, "each draft was scored"
@@ -289,7 +289,7 @@ def test_red_team_writes_in_the_style_profile_picked(stub_model, tmp_path):
     assert (picker.options, picker.value) == (["alexandria_profile", "friend"], "alexandria_profile")
     picker.select("friend")
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
-    button(at, "Generate sample").click()
+    button(at, "Generate challenge sample").click()
     at.run()
     assert not at.exception, at.exception
 
@@ -323,10 +323,10 @@ def word_document_page():
 def test_red_team_rewrites_every_block_of_a_word_document(stub_model, tmp_path):
     at = word_document_page()
     assert not at.exception, at.exception
-    assert any("Fill answer boxes** isn't available for this file: found no question/answer pairs" in caption.value
-               for caption in at.caption)
+    assert any("Populate a test worksheet** isn't available for this file: found no question/answer pairs"
+               in caption.value for caption in at.caption)
 
-    button(at, "Rewrite 2 blocks").click()
+    button(at, "Generate 2 block challenges").click()
     at.run()
     assert run_until_batch_ends(at) == ("success", "All 2 blocks of bees.docx are done and exported.")
     assert [toast.value for toast in at.toast] == ["All 2 blocks of bees.docx are done and exported."]
@@ -354,12 +354,12 @@ def test_red_team_rewrites_every_block_of_a_word_document(stub_model, tmp_path):
 def test_a_running_batch_takes_over_the_page_with_a_countdown(stub_model, tmp_path):
     stub_model.gate.clear()  # hold the first block until the end of the test
     at = word_document_page()
-    button(at, "Rewrite 2 blocks").click()
+    button(at, "Generate 2 block challenges").click()
     at.run()
     assert not at.exception, at.exception
 
     def progress_shown():
-        return any("Writing bees.docx** · Rewrite every block" in m.value for m in at.markdown)
+        return any("Writing bees.docx** · Generate block challenges" in m.value for m in at.markdown)
 
     assert progress_shown()
     assert {m.label: m.value for m in at.metric} == {
@@ -412,13 +412,13 @@ def test_public_mode_writes_only_with_the_visitors_own_key(stub_model, monkeypat
     assert not any(t.key == "keep:redteam:base_url" for t in at.text_input), "no visitor-chosen API address"
     assert not any(t.key == "keep:redteam:evasion" for t in at.toggle), "no detector-guided drafting for strangers"
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
-    button(at, "Generate sample").click()
+    button(at, "Generate challenge sample").click()
     at.run()
     assert [e.value for e in at.error] == ["Paste your Gemini API key in the sidebar first."]
     assert stub_model.prompts == []
 
     at.text_input(key="keep:redteam:api_key").input("visitor-key")
-    button(at, "Generate sample").click()
+    button(at, "Generate challenge sample").click()
     at.run()
     assert not at.exception, at.exception
     assert (stub_model.keys, stub_model.urls, stub_model.local_models) == (["visitor-key"], [GEMINI_API_URL], [""])
@@ -435,7 +435,7 @@ def test_public_visitors_see_only_their_own_profiles_and_samples(stub_model, mon
     assert at.selectbox(key="keep:redteam:style_name").options == ["friend"]
     at.text_input(key="keep:redteam:api_key").input("visitor-key")
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
-    button(at, "Generate sample").click()
+    button(at, "Generate challenge sample").click()
     at.run()
     assert not at.exception, at.exception
     assert "tone: breezy" in stub_model.systems[-1]
@@ -460,12 +460,12 @@ def test_public_visitors_dont_see_each_others_batches(stub_model, monkeypatch):
     at.session_state["upload:redteam:file"] = Upload("bees.docx", essay_docx())
     at.session_state["keep:redteam:task"] = "blocks"
     at.run()
-    button(at, "Rewrite 2 blocks").click()
+    button(at, "Generate 2 block challenges").click()
     at.run()
     assert [b.label for b in at.button] == ["Stop"]
 
     other = public_page("b")
-    assert "Generate sample" in [b.label for b in other.button], "another visitor's batch doesn't take over"
+    assert "Generate challenge sample" in [b.label for b in other.button], "another visitor's batch doesn't take over"
     stub_model.gate.set()
     assert run_until_batch_ends(at)[0] == "success"
 
@@ -514,7 +514,7 @@ def test_a_local_model_too_big_for_the_machine_is_left_out(stub_model, monkeypat
     monkeypatch.setattr(models, "RAM_GB", 8.0)
     monkeypatch.setattr(redteam, "SMALL_MACHINE_LOCAL_CONTEXT", 4096)  # smaller than any prompt's window
     at = word_document_page()
-    button(at, "Rewrite 2 blocks").click()
+    button(at, "Generate 2 block challenges").click()
     at.run()
     run_until_batch_ends(at)
     assert stub_model.local_models == [""], "gemma3:4b, the page's default, is never offered"
@@ -528,7 +528,7 @@ def test_a_batch_waits_out_busy_models_and_drops_only_spent_ones(stub_model, mon
     at = word_document_page()
     at.session_state["keep:redteam:group_size"] = 1
     at.session_state["keep:redteam:parallel"] = 1
-    button(at, "Rewrite 2 blocks").click()
+    button(at, "Generate 2 block challenges").click()
     at.run()
     assert run_until_batch_ends(at)[0] == "success"
     assert len(stub_model.prompts) == 4, "the first block is asked three times, the second once"
@@ -540,7 +540,7 @@ def test_a_batch_waits_out_busy_models_and_drops_only_spent_ones(stub_model, mon
 def test_a_block_a_grouped_reply_leaves_out_is_written_on_its_own(stub_model, tmp_path):
     stub_model.drop = {"B2"}
     at = word_document_page()
-    button(at, "Rewrite 2 blocks").click()
+    button(at, "Generate 2 block challenges").click()
     at.run()
     assert run_until_batch_ends(at)[0] == "success"
     assert len(stub_model.prompts) == 2
@@ -557,7 +557,7 @@ def test_the_thinking_level_picked_reaches_the_model(stub_model):
     at.run()
     at.select_slider(key="keep:redteam:thinking").set_value("minimal")
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
-    button(at, "Generate sample").click()
+    button(at, "Generate challenge sample").click()
     at.run()
     assert not at.exception, at.exception
     assert stub_model.options == [{"thinking": "minimal"}]
@@ -567,7 +567,7 @@ def test_robustness_mode_batches_draft_one_block_per_request(stub_model):
     at = word_document_page()
     at.toggle(key="keep:redteam:evasion").set_value(True)
     at.run()
-    button(at, "Rewrite 2 blocks").click()
+    button(at, "Generate 2 block challenges").click()
     at.run()
     assert run_until_batch_ends(at)[0] == "success"
     assert stub_model.prompts and not any(options.get("json_schema") for options in stub_model.options)
@@ -607,7 +607,7 @@ def test_points_pick_the_batch_settings(stub_model, monkeypatch):
         at.button(key="redteam:more:speed").click().run()
     assert at.button(key="redteam:more:speed").disabled, "six points is the most one priority takes"
     assert any("gemini-3.5-flash-lite" in m.value and "4 at once" in m.value for m in at.markdown)
-    button(at, "Rewrite 2 blocks").click()
+    button(at, "Generate 2 block challenges").click()
     at.run()
     assert run_until_batch_ends(at)[0] == "success"
     assert stub_model.options[0]["thinking"] == "minimal"
@@ -620,7 +620,7 @@ def test_settings_can_still_be_set_by_hand(stub_model, monkeypatch):
     at.toggle(key="keep:redteam:by_hand").set_value(True).run()
     assert at.slider(key="keep:redteam:group_size").value == 6
     at.select_slider(key="keep:redteam:thinking").set_value("high").run()
-    button(at, "Rewrite 2 blocks").click()
+    button(at, "Generate 2 block challenges").click()
     at.run()
     assert run_until_batch_ends(at)[0] == "success"
     assert stub_model.options[0]["thinking"] == "high" and stub_model.orders[0][0] == "gemini-3.8-flash"

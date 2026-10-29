@@ -7,6 +7,11 @@ text ─► normalize ─► sentences ─► overlapping windows ─┬─► G
                                                                                          regression)  held-out human text)
 ```
 
+**Mission.** This project is for scientific and engineering work: measuring AI-text detection
+rigorously, calibrating it with stated error rates, and stress-testing it with labelled synthetic
+samples so weaknesses can be found and fixed. It is not for deceiving readers or evading
+integrity rules, and a score is evidence, not proof of authorship.
+
 - **Whole document, never truncated.** Text is cut into overlapping windows of whole sentences,
   and every window is scored. Sentences inherit the average score of the windows around them,
   so no sentence is ever judged alone. The windows behind the highlights stay inside paragraphs

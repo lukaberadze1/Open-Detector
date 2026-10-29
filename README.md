@@ -22,6 +22,19 @@ hard examples to evaluation or training data, update the detector, then rerun th
 The generator and detector are experimental components with measurable limits; neither is claimed
 to defeat every competing system.
 
+## Mission
+
+Open Detector exists for scientific and engineering purposes. It is a research instrument for
+studying how well AI-written text can be detected, and for building detectors that are honest about
+their limits. The detector is calibrated on public benchmarks with stated false-positive rates, and
+every result is reported as statistical evidence, never as proof of authorship.
+
+The Adversarial Lab serves the same goal. Its labelled synthetic samples are test material for
+measuring where the detector fails, so those failures can be reproduced, studied and fixed. Every
+output is saved as AI-labelled evaluation data. The project is not a tool for passing off machine
+text as human work, for evading a school's, employer's or publisher's rules, or for accusing a
+person on a score alone.
+
 Try both pages at https://open-detector.streamlit.app. In the Adversarial Lab, paste your own Gemini
 key in the sidebar and add a style profile for a controlled challenge condition; both are kept only
 for your browser session.

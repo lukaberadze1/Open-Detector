@@ -49,6 +49,9 @@ def _key_panel() -> None:
     with st.container(key="od-panel-guide-key"):
         st.subheader("Your Gemini key, for the Adversarial Lab")
         st.markdown(
+            "Open Detector is a research and engineering tool: it measures how reliably AI-written text can be "
+            "detected, and the Lab's labelled samples exist to find and fix the detector's weak spots. "
+            "It is not for passing machine text off as human work.\n\n"
             "**Checking texts needs no key.** The Adversarial Lab uses Google's Gemini to generate labelled AI "
             "challenge samples for detector evaluation, including optional style-profile and detector-feedback "
             "conditions. Generated outputs are evaluation data. The free key is used only for those experiments:\n\n"
@@ -57,7 +60,8 @@ def _key_panel() -> None:
             "3. Paste it below and press **Save key**."
         )
         if saved:
-            st.success(f"A key is saved, ending in …{saved[-4:]}. The Adversarial Lab will use it.", icon=":material/key:")
+            st.success(f"A key is saved, ending in …{saved[-4:]}. The Adversarial Lab will use it.",
+                       icon=":material/key:")
         with st.form("guide:key", clear_on_submit=True, border=False):
             key = st.text_input("Gemini API key", type="password", placeholder="Paste your key here",
                                 label_visibility="collapsed")
@@ -82,8 +86,8 @@ def _key_panel() -> None:
         if saved and st.button("Remove the key", icon=":material/delete:"):
             save_env(KEY_NAME, "")
             st.rerun()
-        st.caption(f"The key is kept only on this computer, in {_where()}. The Adversarial Lab sends your instructions to "
-                   "Google to write each sample; checking a text sends nothing anywhere.")
+        st.caption(f"The key is kept only on this computer, in {_where()}. The Adversarial Lab sends your "
+                   "instructions to Google to write each sample; checking a text sends nothing anywhere.")
 
 
 def render() -> None:
