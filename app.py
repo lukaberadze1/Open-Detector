@@ -2,14 +2,14 @@
 
 Two pages share one set of loaded models and the detector choice in the sidebar:
 - Detect (ui/detect.py) scores pasted text, or a Markdown, Word or PowerPoint file.
-- Red team (ui/redteam.py) generates labelled AI samples to test the detector with.
-A third, the Guide (ui/guide.py), explains both and saves the Gemini key Red team uses. It opens first
+- Adversarial Lab (ui/redteam.py) generates labelled AI challenge samples to test the detector.
+A third, the Guide (ui/guide.py), explains both and saves the Gemini key the lab uses. It opens first
 the first time the app runs on a computer; a public deploy leaves it out.
 
 OPENDETECTOR_PROFILE=slim pins the slim build (Desklib alone on the CPU) for small hosts, and
-OPENDETECTOR_REDTEAM=off leaves out the Red team page. OPENDETECTOR_PUBLIC=on runs the Red team
+OPENDETECTOR_REDTEAM=off leaves out the Adversarial Lab page. OPENDETECTOR_PUBLIC=on runs the lab
 page for strangers: visitors bring their own key and see only their own work. The Streamlit Cloud
-deploy sets the profile and public mode; the Hugging Face one leaves the Red team page out.
+deploy sets the profile and public mode; the Hugging Face one leaves the lab page out.
 """
 
 from __future__ import annotations

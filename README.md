@@ -1,18 +1,30 @@
 # Open Detector
 
-An AI-text detector with a Streamlit app of two pages:
+An AI-text detector and adversarial evaluation lab. The Streamlit app has two connected pages:
 
 - **Detect** scores pasted text or a Word, PowerPoint or Markdown file. It gives a verdict (*Likely
   AI*, *Needs review* or *Likely human*), a calibrated AI likelihood, each engine's reading,
   sentence highlights and a score for every long section. For a worksheet it can score just the
   filled-in answer cells.
-- **Red team** writes labelled AI samples to test the detector with: a new sample from a prompt,
-  a rewrite of one section of an uploaded document, a new answer in every answer box, or a rewrite
-  of every text block. It writes with Gemini, can follow a writer's style profile, scores each
-  sample with the detector and saves it as labelled AI data.
+- **Adversarial Lab** generates clearly labelled AI challenge samples to probe the detector: a new
+  sample from a test prompt, a section-level challenge, answers for a test worksheet, or challenges
+  across a document's text blocks. Experiments can use measured style profiles as controlled
+  conditions, score each sample with the detector, and save every output as AI-labelled evaluation
+  data. Detector-guided runs record the target and results so they can be measured and reproduced.
 
-Try both pages at https://open-detector.streamlit.app. On the Red team page, paste your own Gemini
-key in the sidebar and add your own style profile; both are kept only for your browser session.
+The lab is for authorized detector evaluation and research. Its generated text is synthetic test
+material, not human-authored work; style-conditioned generation and detector feedback are explicit
+parts of the adversarial experiment. Scores are measurements against this detector build, not a
+guarantee about other systems or proof of authorship.
+
+The research loop is iterative: generate a labelled challenge, measure the detector response, add
+hard examples to evaluation or training data, update the detector, then rerun the same benchmark.
+The generator and detector are experimental components with measurable limits; neither is claimed
+to defeat every competing system.
+
+Try both pages at https://open-detector.streamlit.app. In the Adversarial Lab, paste your own Gemini
+key in the sidebar and add a style profile for a controlled challenge condition; both are kept only
+for your browser session.
 
 ## Download the Mac app
 
@@ -37,11 +49,11 @@ later, and about 4 GB of free space.
    You only do this once.
 4. The app opens on its **Guide**, which explains the rest. Your first check downloads the detector,
    about 1.7 GB, once; after that it works without the internet.
-5. Only for the Red team page: get a free Gemini API key at
+5. Only for the Adversarial Lab: get a free Gemini API key at
    [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and paste it on the Guide page.
    Checking texts needs no key.
 
-The texts you check never leave your Mac. Your key and Red team samples are kept in
+The texts you check never leave your Mac. Your key and generated challenge samples are kept in
 `~/Library/Application Support/Open Detector`, and the downloaded models in `~/.cache/huggingface`.
 To update, download the newest file and replace the app; your key and samples stay. To remove it,
 drag the app to the Bin and delete those two folders.
@@ -71,15 +83,16 @@ cp .env.example .env
 
 Put your Gemini key after `GEMINI_API_KEY=` in `.env` (free at
 [aistudio.google.com/apikey](https://aistudio.google.com/apikey)), or paste it on the app's Guide
-page, which saves it there. Only the Red team page needs it.
-To write in a style, save a JSON style profile in `data/styles/`; the page lists every one there.
+page, which saves it there. Only the Adversarial Lab needs it.
+To test style-conditioned generation, save a JSON style profile in `data/styles/`; the lab lists
+every profile there and records which one was used.
 Git ignores `.env` and `data/`, so your key and profile stay on your machine.
 
 ```bash
 .venv/bin/streamlit run app.py
 ```
 
-The app opens in your browser with **Detect** and **Red team** in the top bar. The first run
+The app opens in your browser with **Detect** and **Adversarial Lab** in the top bar. The first run
 downloads the models: 1.7 GB for Slim, about 4.4 GB for every engine. Machines with 8 GB of RAM or
 less start on Slim.
 
@@ -104,8 +117,8 @@ To score a file from the command line:
 
 ## More
 
-- [DETECTOR.md](DETECTOR.md): setup, the evaluation and calibration workflow, deployment and
-  red-teaming.
+- [DETECTOR.md](DETECTOR.md): setup, evaluation and calibration, deployment, and the adversarial
+  challenge workflow.
 - [eval/reports/latest.md](eval/reports/latest.md): the current evaluation results.
 - Known limits: English only; AI paraphrasing of human writing is the hardest case; a score is
   statistical evidence, not proof of who wrote a text.

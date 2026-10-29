@@ -190,7 +190,7 @@ def test_red_team_sample_is_recorded_as_ai_with_its_score(stub_model, tmp_path):
         "id": None, "text": None, "label": 1, "dataset": "local_redteam", "domain": "custom_prompt",
         "model": "stub-model", "attack": "prompt+plain", "group": "ai", "group_key": None, "prompt": None,
         "source_file": None, "target_section": None, "ai_probability": None, "verdict": "likely_ai",
-        "calibrated": True, "detector_profile": "slim",
+        "calibrated": True, "detector_profile": "slim", "style_match": None,
     }
     assert rows[0]["ai_probability"] > 0.9
     assert len(list((tmp_path / "exports").glob("AI_REDTEAM_prompt_*.txt"))) == 1
@@ -222,7 +222,7 @@ def test_robustness_mode_keeps_the_lowest_draft_and_saves_every_one(stub_model, 
     def lowest_of_three(generate, score, prompt):
         prompts.append(prompt)
         drafts = [generate(prompt) for _ in range(3)]
-        return SimpleNamespace(text=min(drafts, key=score))
+        return SimpleNamespace(text=min(drafts, key=lambda draft: score(draft)["ai_probability"]))
 
     replies = [(AI * 15, "model-a"), (HUMAN * 15, "model-b"), (AI * 20, "model-c")]
     at = robustness_page(monkeypatch, replies, lowest_of_three)

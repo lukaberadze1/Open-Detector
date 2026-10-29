@@ -1,9 +1,9 @@
-"""Red-team harness: generate text with Claude, then rewrite it until the local ensemble
+"""Adaptive adversarial evaluation: generate text with Claude, then revise it until the local ensemble
 scores it below a target AI likelihood.
 
 Detector-guided rewriting is the strongest attack a detector faces, so this is how you
 find out how robust the ensemble really is. Every draft is saved (with --log) as a
-labelled AI sample, so evasions can be scored with `python -m eval.featurize local` and
+labelled AI sample, so challenge outcomes can be scored with `python -m eval.featurize local` and
 used as hard examples when you train your own model.
 
     python align_engine.py "Write a 600-word essay on loneliness in Of Mice and Men" \\

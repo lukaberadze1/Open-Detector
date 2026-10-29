@@ -20,8 +20,9 @@ Replies are unwrapped before they are saved: chat preambles ("Here's my essay!")
     python -m eval.generate_essays --persuade persuade_2.0.csv --n 200 \\
         --style student --out data/essays/mirrors_gemini_student.jsonl
 
-Styles: plain (default), student (asks for a student's voice), humanize (writes, then asks
-the model to rewrite the essay so it evades AI detectors — the attack you need to resist).
+Styles: plain (default), student (a matched academic-writing condition), humanize (a detector-evasion
+condition that asks the model to revise the generated sample). These are labelled benchmark conditions;
+all generated samples remain labelled AI in the output data.
 
 --style-profile adds a JSON style profile (a writer's measured rhythm, vocabulary, banned
 phrases and mechanical slips) as the system prompt, so the mirrors imitate one writer:
@@ -67,8 +68,9 @@ PROMPTS = {
     "student": "You are a grade {grade} student. Write your essay for the assignment below in your own "
                "natural voice, about {words} words. Reply with the essay only.\n\nAssignment:\n{assignment}",
 }
-HUMANIZE = ("Rewrite this essay so it reads as if a real student wrote it and would not be flagged by AI "
-            "detectors. Keep the content and length. Reply with the essay only.\n\n{essay}")
+HUMANIZE = ("For this detector-evasion benchmark condition, revise the AI-generated sample to reduce the "
+            "likelihood that an AI-text detector flags it. Preserve its claims and approximate length. "
+            "This output is synthetic evaluation data and remains labelled AI. Reply with the revised sample only.\n\n{essay}")
 STYLE_INTRO = ("Write in the style of the writer profiled below. Follow every rule exactly. The spelling slips, "
                "missing apostrophes, stray capitals and spacing quirks are part of the style: keep them, don't "
                "correct them. The reference section is the measured style the rules come from.")

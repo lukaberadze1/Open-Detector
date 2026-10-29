@@ -45,8 +45,8 @@ uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requi
 .venv/bin/streamlit run app.py
 ```
 
-**Your own key and style profile.** The Detect page needs neither. The Red team page writes with
-Gemini: copy `.env.example` to `.env` and put your key after `GEMINI_API_KEY=` (free at
+**Your own key and style profile.** The Detect page needs neither. The Adversarial Lab generates
+challenge data with Gemini: copy `.env.example` to `.env` and put your key after `GEMINI_API_KEY=` (free at
 [aistudio.google.com/apikey](https://aistudio.google.com/apikey)). To write in a style, save a
 JSON style profile in `data/styles/`; the page lists every JSON file there. To measure one from a
 sample of your own writing:
@@ -74,22 +74,26 @@ worksheet, a toggle scores just the filled-in answer cells of its question/answe
 command line's `--answers-only`. Reference documents can be uploaded alongside to read; their text
 is never scored. The detector does not fill templates or rewrite content to target a score.
 
-**Red team** generates labelled AI samples to test the detector with. Enter a test prompt or upload
-a Markdown, Word or PowerPoint source, then pick a task: a new sample, a rewrite of one section, a
-new answer in every paired left-question/right-answer box (Markdown tables with question and answer
-columns included), or a rewrite of every text block, which keeps headings, titles, questions and
-tables fixed. If a file doesn't support a task, the page says why. Document tasks export a
+**Adversarial Lab** generates synthetic, labelled AI challenge samples for detector evaluation.
+Enter a test prompt or upload a Markdown, Word or PowerPoint source, then pick a task: a new
+challenge sample, a section-level challenge, answers for a test worksheet, or challenges for each
+text block while headings, titles, questions and tables stay fixed. If a file doesn't support a task,
+the page says why. Document tasks export a
 separate Markdown/DOCX/PPTX copy that keeps the uploaded structure; the original is left unchanged.
 The two batch tasks run in the background, save each block as it is written, and resume where they
-stopped. They rewrite several neighbouring blocks in one request (**Blocks per request**, 6 by
+stopped. They generate several neighbouring blocks in one request (**Blocks per request**, 6 by
 default), so the style profile and the document are sent once per group rather than once per block,
 and write a few groups at the same time (**Requests at once**, 2 by default). The reply is JSON with
-one entry per block; a block it leaves out is written again on its own. Robustness mode drafts and
-scores each block on its own, one at a time. A style profile picked from `data/styles/` becomes the
-system prompt, and its file name joins the attack label.
+one entry per block; a block it leaves out is generated again on its own. Adaptive challenge mode
+generates up to three labelled candidates and uses detector feedback plus the selected style-profile
+measurement to rank them. The target, profile and candidate scores are recorded as evaluation
+metadata. The current detector target is below 5% AI likelihood; a selected style profile also uses
+a 35th-percentile floor when ranking candidates. These are experiment settings, not guarantees.
+A style profile picked from `data/styles/` becomes part of the generation condition, and
+its file name joins the challenge label.
 
-**Priorities** decide how a run trades four things: getting past the detector, sounding like the
-style profile, speed and quota. Spend 12 points over them (at most 6 on one) and the page picks the
+**Priorities** decide how a run trades four measured goals: lower detector score, style-profile
+match, speed and quota. Spend 12 points over them (at most 6 on one) and the page picks the
 measured setting with the best points-weighted score, shows it with the time, requests and tokens it
 should take, and draws the points as a diamond. Even points are the default. The settings are a
 model, its thinking level (how long Gemini reasons before it writes) and how many blocks go in one
@@ -102,13 +106,13 @@ The measurements come from a benchmark run on a document:
 ```
 
 It rewrites the same run of blocks (250 words by default) with each setting, the way a batch does,
-and records the detector's AI likelihood of the rewrite, its style match, seconds per block, and
+and records the detector's AI likelihood of each generated challenge, its style match, seconds per block, and
 requests and Gemini's token count per block. Quota also counts each model's free requests a day:
 Gemini's quota errors state the limit, so a model that runs out during a run has it recorded in
 `eval/cache/tuning_limits.json`, and `--daily-limit MODEL=N` sets one by hand (AI Studio lists your
 project's limits). The page then weighs how much of that allowance the document in hand would take:
-a 100-block batch on a model allowing 20 requests a day uses most of the day. The style match ranks the rewrite among passages of the
-writer's own writing (`data/styles/<name>/corpus.jsonl`): the share of them further from the
+a 100-block batch on a model allowing 20 requests a day uses most of the day. The style match ranks
+a generated sample among passages of the writer's own writing (`data/styles/<name>/corpus.jsonl`): the share of them further from the
 profile's measurements than it is, so 50% is as typical as the writer's median passage. Measuring
 every combination would cost more requests than the free tier gives, so each model is measured at
 each thinking level with the largest group, the group sizes on one model, and the rest predicted by
@@ -117,9 +121,11 @@ skips a model whose quota runs out; every rewrite is logged as labelled AI data.
 `models/generation_tuning.json` and a report, `eval/reports/tuning.md`, with the spread between
 repeats: differences smaller than that are noise.
 
-Each sample can be scored once with the detector, and its probability, verdict, calibration state
-and detector build are recorded next to `label: 1` in `data/essays/local_redteam.jsonl`. These
-scores help measure false negatives; the generator does not revise text based on a score. The
+Each sample's probability, verdict, calibration state and detector build are recorded next to
+`label: 1` in `data/essays/local_redteam.jsonl`. Standard generation scores a sample once; adaptive
+challenge mode also records every candidate score and uses those measurements to select a candidate.
+These results measure this detector's responses on labelled synthetic data; they do not establish
+performance against every detector or prove authorship. The
 latest sample downloads as a `.txt` file, and it and any document copy are also saved under
 `data/essays/exports/` with an `AI_REDTEAM_` filename. **Analyze in Detect** sends it to the Detect
 page for a full analysis with highlights. The **Saved samples** tab totals every recorded sample:
@@ -186,10 +192,10 @@ The RAID run reads 300 random 1 MB slices of RAID-train (about 300 MB, all 11 at
 domains) instead of downloading 11.8 GB. GLYPH was trained on RAID's non-adversarial data, so
 RAID flatters it. Watch the attacked slices and MAGE.
 
-**2. Student essays,** which is where false positives hurt. Download PERSUADE 2.0 (human essays
+**2. Academic writing,** a domain where false positives can affect students. Download PERSUADE 2.0 (human essays
 from grades 6-12, with English-learner status) from
 [github.com/scrosseye/persuade_corpus_2.0](https://github.com/scrosseye/persuade_corpus_2.0).
-Then write AI essays on the same assignments. The generator defaults to Gemini's Interactions
+Then generate labelled AI challenge samples for the same assignments. The generator defaults to Gemini's Interactions
 API, using `GEMINI_API_KEY` from the project's `.env` file (see below):
 
 ```bash
@@ -209,12 +215,13 @@ generator prints Google's message and switches to `--fallback-model` (default
 `gemini-3.5-flash-lite`). Each essay records the model that actually wrote it, and rerunning
 the command resumes where it stopped.
 
-Repeat the generation for other model families and for `--style humanize`, which is the attack
-you most need to resist. For other providers, pass `--base-url` and `--api-key-env` (OpenAI,
+Repeat the generation for other model families and for `--style humanize`, the detector-evasion
+condition used to measure robustness against humanized AI outputs. This condition is explicit in
+the benchmark, and generated examples remain labelled AI. For other providers, pass `--base-url` and `--api-key-env` (OpenAI,
 OpenRouter, or a local LM Studio/Ollama server, which needs no key). Any of your own labelled
 data works too: a JSONL with `text` and `label` (`human`/`ai`).
 
-To test the detector against AI text that imitates one writer, add `--style-profile` with a
+To test the detector against AI text conditioned on one measured writing profile, add `--style-profile` with a
 JSON style profile. Its rules and measurements become the system prompt: sentence rhythm,
 vocabulary, banned phrases, and mechanical slips such as missing apostrophes. Keep profiles in
 `data/styles/`, which git ignores, because a profile of real writing is personal. The profile's
@@ -280,7 +287,7 @@ The app runs this checkout with its `.venv`, so a `git pull`, a refit or a new s
 up the next time it opens; build it again only after moving the project folder. When it opens it
 starts the server on `127.0.0.1:8517` (another free port if that one is taken), reachable from
 this Mac only, and shows a loading page until the server answers. Closing the window or quitting
-stops the server. If a Red team batch is running, it asks first; the saved blocks resume as
+stops the server. If an Adversarial Lab batch is running, it asks first; the saved blocks resume as
 usual. The server's output goes to `~/Library/Logs/Open Detector/server.log`, and if the server
 stops the window shows the log with a button to start it again. To run the window without
 building the app:
@@ -296,7 +303,7 @@ ensemble. The **slim** profile runs Desklib alone, the strongest single engine, 
 the CPU. It peaks around 1.5 GB, its scores match the full build's Desklib scores (correlation
 1.000), and it has its own combiner, `models/combiner_slim.json`, so its verdicts are still
 calibrated. The same `app.py` runs both builds; `deploy/streamlit_cloud/streamlit_app.py` just
-pins the slim profile and runs the Red team page in public mode (see above). The theme comes from
+pins the slim profile and runs the Adversarial Lab in public mode (see above). The theme comes from
 `.streamlit/config.toml` at the repository root. (bfloat16 and int8 were measured and rejected:
 bfloat16 is emulated on most CPUs and took minutes per essay, and int8 cut Desklib's AUROC from
 0.998 to 0.934.)
@@ -333,18 +340,19 @@ precision. Sign in once with a **write** token from huggingface.co/settings/toke
 ```
 
 This creates a private Space, `<your-username>/open-detector`, and uploads only `app.py` with its
-`ui` package and theme (without the Red team page), the `opendetector` package, the fitted
+`ui` package and theme (without the Adversarial Lab), the `opendetector` package, the fitted
 combiner and the files in `deploy/huggingface/`. No `.env` or API keys are uploaded. Run the same
 command again to redeploy after changes. Add `--public` for a
 public Space, or change its visibility later in the Space's settings. The first analysis after a
 restart downloads about 4 GB of models and takes a few minutes.
 
-## Red-team the detector
+## Adversarial evaluation
 
-`align_engine.py` is the attack this detector has to survive. It has Claude write a text,
-scores it with the ensemble, and has Claude rewrite the flagged passages with varied
-sentence rhythm and phrasing, until the AI likelihood falls under a target (default 5%) or
-it runs out of attempts. It needs Anthropic credentials (`ANTHROPIC_API_KEY`, or `ant auth login`).
+`align_engine.py` is an adaptive detector-evasion experiment. It has Claude generate a text,
+scores it with the ensemble, and requests revisions to flagged passages until the AI likelihood
+falls under a configured target (default 5%) or it runs out of attempts. This feedback loop is
+reported openly as an adversarial test condition; all drafts are labelled AI. It needs Anthropic
+credentials (`ANTHROPIC_API_KEY`, or `ant auth login`).
 
 ```bash
 .venv/bin/python align_engine.py "Write a 600-word essay on loneliness in Of Mice and Men" --log data/attacks/mice.jsonl
@@ -354,9 +362,10 @@ it runs out of attempts. It needs Anthropic credentials (`ANTHROPIC_API_KEY`, or
 .venv/bin/python -m eval.featurize local --path data/attacks/mice.jsonl --out eval/cache/attacks.jsonl
 ```
 
-Every draft goes into the log labelled as AI. The share of prompts that reach the target is
-your detector's evasion rate under adaptive attack. The drafts that got through are the
-hard positives to train on in Phase 2. The harness loads all three engines, so don't run it
+Every draft goes into the log labelled as AI. Report the share of prompts that reach the target,
+the detector build and the attack settings alongside the result. These are benchmark outcomes for
+this detector and test distribution, not universal claims about detector evasion. The resulting
+hard positives can support detector training in Phase 2. The harness loads all three engines, so don't run it
 alongside a featurize job on an 8 GB machine.
 
 ## Tests

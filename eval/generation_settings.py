@@ -1,11 +1,11 @@
-"""Pick a red-team generation setting from four priorities, using measured trade-offs.
+"""Pick an adversarial challenge-generation setting from four measured priorities.
 
 eval/tune_generation.py measures settings (a model, its thinking level, and how many blocks go in one
 request) on a document and writes what it found to models/generation_tuning.json. Each setting has
 four measures:
 
-- detector: how well its writing gets past the detector, from the detector's mean AI likelihood
-- style: how closely it follows the style profile: the share of the writer's own passages, of the
+- detector: challenge strength, measured by the generated text's mean AI likelihood on this detector
+- style: similarity to the selected style profile, measured against the writer's own passages, of the
   same length, that are further from the profile than it is
 - speed: seconds of writing per block
 - quota: requests and tokens per block, and how much of the model's daily allowance of requests a

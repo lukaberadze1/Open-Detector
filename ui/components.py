@@ -264,7 +264,7 @@ def dial(probability: float, review: float, ai: float, verdict: str, instrument:
     return f'<img class="od-dial" src="data:image/svg+xml;base64,{data}" alt="{label}">'
 
 
-# The Red team page's priorities, clockwise from the top of their diamond.
+# The Adversarial Lab's priorities, clockwise from the top of the diamond.
 CORNERS = {"detector": (0, -1, "DETECTOR"), "style": (1, 0, "STYLE"), "speed": (0, 1, "SPEED"),
            "quota": (-1, 0, "QUOTA")}
 

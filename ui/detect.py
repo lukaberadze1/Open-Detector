@@ -31,7 +31,7 @@ SOURCES = ("Paste text", "Upload a file")
 HIGHLIGHTS = ("Every sentence", "Flagged only")
 MIN_WORDS = 150  # DetectorConfig.min_words, for the hint under the input
 RESULT = "detect:result"
-# Set by the Red team page to send a sample here: the text goes in the paste box and is analyzed.
+# Set by the Adversarial Lab to send a labelled challenge sample here for detector analysis.
 AUTORUN = "detect:autorun"
 
 

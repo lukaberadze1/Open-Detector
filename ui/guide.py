@@ -1,5 +1,5 @@
 """The Guide page: how to use the app, written for someone who has never set up anything like it, and
-a place to save the Gemini API key the Red team page writes with. app.py opens it first the first time
+a place to save the Gemini API key the Adversarial Lab uses. app.py opens it first the first time
 the app runs on a computer. A public deploy leaves it out: visitors there paste their key in the sidebar."""
 
 from __future__ import annotations
@@ -47,16 +47,17 @@ def _key_panel() -> None:
     load_env()
     saved = os.environ.get(KEY_NAME, "")
     with st.container(key="od-panel-guide-key"):
-        st.subheader("Your Gemini key, for Red team only")
+        st.subheader("Your Gemini key, for the Adversarial Lab")
         st.markdown(
-            "**Checking texts needs no key.** The Red team page writes AI samples with Google's Gemini, to test "
-            "the detector, and for that it needs your own key. It's free:\n\n"
+            "**Checking texts needs no key.** The Adversarial Lab uses Google's Gemini to generate labelled AI "
+            "challenge samples for detector evaluation, including optional style-profile and detector-feedback "
+            "conditions. Generated outputs are evaluation data. The free key is used only for those experiments:\n\n"
             f"1. Open [aistudio.google.com/apikey]({KEY_PAGE}) and sign in with a Google account.\n"
             "2. Press **Create API key**, then copy the key it shows.\n"
             "3. Paste it below and press **Save key**."
         )
         if saved:
-            st.success(f"A key is saved, ending in …{saved[-4:]}. Red team will use it.", icon=":material/key:")
+            st.success(f"A key is saved, ending in …{saved[-4:]}. The Adversarial Lab will use it.", icon=":material/key:")
         with st.form("guide:key", clear_on_submit=True, border=False):
             key = st.text_input("Gemini API key", type="password", placeholder="Paste your key here",
                                 label_visibility="collapsed")
@@ -73,7 +74,7 @@ def _key_panel() -> None:
                 if keep:
                     save_env(KEY_NAME, key)
                     st.session_state["guide:notice"] = ("warning" if message else "success",
-                                                        message or "Saved. Red team is ready to use.")
+                                                        message or "Saved. The Adversarial Lab is ready to use.")
                     st.rerun()
                 st.error(message, icon=":material/key_off:")
         if notice := st.session_state.pop("guide:notice", None):
@@ -81,7 +82,7 @@ def _key_panel() -> None:
         if saved and st.button("Remove the key", icon=":material/delete:"):
             save_env(KEY_NAME, "")
             st.rerun()
-        st.caption(f"The key is kept only on this computer, in {_where()}. Red team sends your instructions to "
+        st.caption(f"The key is kept only on this computer, in {_where()}. The Adversarial Lab sends your instructions to "
                    "Google to write each sample; checking a text sends nothing anywhere.")
 
 

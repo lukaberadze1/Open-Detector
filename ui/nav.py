@@ -14,7 +14,7 @@ def detect_page() -> st.Page:
 
 
 def redteam_enabled() -> bool:
-    """OPENDETECTOR_REDTEAM=off leaves the Red team page out."""
+    """OPENDETECTOR_REDTEAM=off leaves the Adversarial Lab page out."""
     return os.environ.get("OPENDETECTOR_REDTEAM", "on").strip().lower() not in ("0", "off", "false", "no")
 
 
@@ -25,7 +25,7 @@ def _red_team() -> None:
 
 
 def redteam_page() -> st.Page:
-    return st.Page(_red_team, title="Red team", icon=":material/science:", url_path="red-team")
+    return st.Page(_red_team, title="Adversarial Lab", icon=":material/science:", url_path="red-team")
 
 
 def guide_page() -> st.Page:

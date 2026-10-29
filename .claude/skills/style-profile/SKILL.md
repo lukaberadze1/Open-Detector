@@ -6,8 +6,9 @@ description: Weekly update of the living style profile (data/styles/alexandria_p
 # /style-profile
 
 The profile is a JSON file in a fixed format (the one in `data/styles/pasted_style_profile.json`). It
-describes how the writer writes, and `eval/generate_essays.py --style-profile` uses it as a system
-prompt to produce labelled AI red-team essays for the detector. Each week it absorbs the writer's
+describes measured writing patterns, and `eval/generate_essays.py --style-profile` uses it as a
+controlled condition to produce labelled AI challenge samples for adversarial detector evaluation.
+Each week it absorbs the writer's
 new notes. **It stacks: what was learned in earlier weeks stays unless the evidence turns against
 it.** Run every command from the repo root.
 

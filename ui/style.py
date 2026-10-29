@@ -201,7 +201,10 @@ BASE_CSS = """
 [data-testid="stBaseButton-secondary"] { background: var(--od-panel-strong) !important;
   border-color: var(--od-hair) !important;
   border-radius: 999px !important; }
-[data-testid="stButtonGroup"] { background: var(--od-track); border-radius: 999px; padding: 3px; width: fit-content; }
+[data-testid="stButtonGroup"] { background: var(--od-track); border-radius: 1.4rem; padding: 3px; width: fit-content;
+  max-width: 100%; }
+/* A segmented control wider than its column wraps onto a second row instead of running under the next one */
+[data-testid="stButtonGroup"] > div { flex-wrap: wrap; }
 [data-testid="stButtonGroup"] button { border: 0 !important; border-radius: 999px !important;
   background: transparent !important; }
 [data-testid="stButtonGroup"] button[aria-checked="true"] { background: var(--od-panel-solid) !important;

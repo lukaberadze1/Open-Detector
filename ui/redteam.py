@@ -1,4 +1,4 @@
-"""The Red team page: generate labelled AI samples and see how the detector scores them.
+"""The Adversarial Lab: generate labelled AI challenge samples and measure detector responses.
 
 Everything it writes is AI-labelled evaluation data. Each sample is appended to
 data/essays/local_redteam.jsonl with label 1 and exported under data/essays/exports/. Batches, which
@@ -86,7 +86,8 @@ EXPORT_DIR = DATA_ROOT / "data/essays/exports"
 BATCH_DIR = DATA_ROOT / "data/essays/batches"
 VISITOR_DIR = DATA_ROOT / "data/visitors"  # a public deploy's per-visitor folders
 MAX_STYLE_BYTES = 500_000
-EVASION_TARGET = 0.05  # the AI likelihood robustness mode aims below
+EVASION_TARGET = 0.05  # configured detector-challenge benchmark target
+STYLE_FLOOR = 35  # minimum style-profile percentile used to rank challenge candidates
 DEFAULT_FALLBACK_MODELS = (
     "gemini-3.5-flash-lite",
     "gemini-3.6-flash",
@@ -100,20 +101,22 @@ MIME_TYPES = {
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
 TASKS = {
-    "sample": ("New sample", "Write a new sample from your instructions, with any uploaded document as source "
-                             "material."),
-    "section": ("Rewrite a section", "Write a replacement for one section of the uploaded document, with the "
-                                     "rest of it as context."),
-    "answers": ("Fill answer boxes", "Write a new answer in every right-hand answer box of the document's "
-                                     "question/answer tables or slides, then export a filled copy."),
-    "blocks": ("Rewrite every block", "Rewrite each text block in turn, keeping headings, titles, questions and "
-                                      "tables, then export the rewritten file."),
+    "sample": ("Create a challenge sample", "Generate a labelled AI sample from your test instructions, with any "
+                                              "uploaded document as source material."),
+    "section": ("Create a section challenge", "Generate a replacement sample for one section of the uploaded "
+                                               "test document, with the rest as context."),
+    "answers": ("Populate a test worksheet", "Generate labelled AI answers for the right-hand answer boxes of "
+                                               "the document's question/answer tables or slides, then export a test copy."),
+    "blocks": ("Generate block challenges", "Generate a labelled AI challenge for each text block, keeping "
+                                              "headings, titles, questions and tables, then export a test copy."),
 }
 RESULT = "last_generated_result"
+IMPROVE_TEXT = "redteam:improve_text"
+IMPROVE_BATCH = "redteam:improve_batch"
 POINTS = "redteam:points"  # the priorities' points, kept for the browser session
 PRIORITIES = {
-    "detector": (":material/visibility_off:", "Gets past the detector"),
-    "style": (":material/draw:", "Sounds like you"),
+    "detector": (":material/visibility_off:", "Detector challenge (lower score)"),
+    "style": (":material/draw:", "Style-profile match"),
     "speed": (":material/bolt:", "Speed"),
     "quota": (":material/savings:", "Saves quota"),
 }
@@ -296,6 +299,66 @@ def score_text(text: str, profile: str) -> dict:
             "calibrated": analysis.calibrated,
         }
     return {**result, "detector_profile": profile}
+
+
+def style_match(text: str, profile_path: Path | None, cache: dict | None = None) -> float | None:
+    """Compare text with a length-matched sample from the selected profile corpus."""
+    if profile_path is None or not text.strip():
+        return None
+    words = count_words(text)
+    reference_words = max(50, round(words / 50) * 50)
+    key = (str(profile_path), reference_words)
+    yardstick = cache.get(key) if cache is not None else None
+    if yardstick is None:
+        from eval.tune_generation import StyleYardstick
+
+        yardstick = StyleYardstick.build(profile_path, reference_words)
+        if cache is not None:
+            cache[key] = yardstick
+    return yardstick.match(text) if yardstick else None
+
+
+def style_feedback(text: str, profile_path: Path | None, cache: dict | None = None) -> list[str]:
+    """Explain the largest measurable gaps between a draft and its selected style profile."""
+    if profile_path is None or not text.strip():
+        return []
+    from eval.tune_generation import StyleYardstick
+
+    words = count_words(text)
+    reference_words = max(50, round(words / 50) * 50)
+    key = (str(profile_path), reference_words)
+    yardstick = cache.get(key) if cache is not None else None
+    if yardstick is None:
+        yardstick = StyleYardstick.build(profile_path, reference_words)
+        if cache is not None:
+            cache[key] = yardstick
+    return yardstick.feedback(text) if yardstick else []
+
+
+def _queue_sample_improvement(text: str) -> None:
+    st.session_state[IMPROVE_TEXT] = text
+    st.session_state["keep:redteam:evasion"] = True
+    st.session_state["keep:redteam:score"] = True
+
+
+def _queue_batch_improvement(path: str) -> None:
+    st.session_state[IMPROVE_BATCH] = path
+    prompt_key = "keep:redteam:prompt"
+    prior = st.session_state.get(prompt_key, "").strip()
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    st.session_state[prompt_key] = (prior + "\n\n" if prior else "") + (
+        f"Adaptive benchmark pass {stamp}: use the current generated blocks as challenge candidates. "
+        "Try to lower this detector's likelihood and improve the measured style-profile match while preserving "
+        "meaning, evidence, point of view, and approximate length. Keep the result labelled as AI-generated test data."
+    )
+    st.session_state["keep:redteam:evasion"] = True
+    st.session_state["keep:redteam:score"] = True
+
+
+def candidate_metrics(text: str, profile: str, style_path: Path | None,
+                      cache: dict | None = None) -> dict:
+    """The detector and style measurements used to choose a robustness candidate."""
+    return {**score_text(text, profile), "style_match": style_match(text, style_path, cache)}
 
 
 # -- settings -------------------------------------------------------------------------
@@ -483,7 +546,8 @@ def _setup(profile: str, conn: Connection) -> Plan:
         st.caption("No style profile yet, so samples use the model's own style. Add one below to write in it.")
     st.file_uploader(
         "Add a style profile", type="json", key="redteam:style_upload", on_change=_add_style_profile,
-        help="A JSON style profile. " + ("It is kept only for this browser session." if public() else
+        help="A JSON style profile for an authorized, controlled challenge condition. "
+             + ("It is kept only for this browser session." if public() else
                                          "It is saved in data/styles/."),
     )
     if style_notice := st.session_state.pop("redteam:style_notice", None):
@@ -493,16 +557,18 @@ def _setup(profile: str, conn: Connection) -> Plan:
                                 "first score loads its models.")
     if not public():  # the packaged app allows labelled robustness samples, but public deploys do not
         evasion = st.toggle(
-            "Detector robustness mode · aim below 5%", key=keep("keep:redteam:evasion", False),
+            "Adaptive challenge mode · detector score + style profile", key=keep("keep:redteam:evasion", False),
             disabled=False,
-            help="For labelled red-team samples, try up to three AI drafts and keep the lowest detector score. "
-                 "Available for single samples and document batches; it does not guarantee a score under 5%.",
+            help="For adversarial evaluation, generate up to three labelled AI candidates and rank them using the "
+                 "detector score and selected style-profile measurement. The detector target is below 5%; the "
+                 "style-profile floor is 35%. Targets and candidate scores are recorded with the evaluation data. "
+                 "This is a test procedure, not an authorship claim.",
         )
         plan.evasion = evasion
         if plan.evasion:
             plan.score = True
     if plan.evasion:
-        st.caption("Every draft is saved as AI-labelled evaluation data; the kept one records the mode and score."
+        st.caption("Every draft is saved as AI-labelled evaluation data; the kept one records the mode and scores. "
                    + (" In a batch, each block is drafted and scored on its own, one at a time." if plan.batch
                       else ""))
     _priorities(plan, conn)
@@ -791,7 +857,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
     ]
     text_name = f"AI_REDTEAM_{tag}_{timestamp}_{source_hash}.txt"
     text_attachment = (
-        "Open Detector | AI-labelled red-team answers\n"
+        "Open Detector | AI-labelled adversarial challenge answers\n"
         f"Source document: {upload.name}\n"
         f"Regenerated blocks: {len(items)} of {len(jobs)}\n\n" + "\n\n".join(answers_text) + "\n"
     )
@@ -807,11 +873,14 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
                 "verdict": document_score["verdict"],
                 "calibrated": document_score["calibrated"],
                 "words": document_score["words"],
+                "style_match": document_score.get("style_match"),
             }
             if document_score
             else None
         ),
         "score_label": "Whole regenerated document",
+        "baseline_score": checkpoint.meta.get("document_baseline_score"),
+        "checkpoint_path": str(checkpoint.path),
         "attachment": text_attachment,
         "filename": text_name,
         "path": _shown(store.exports / text_name),
@@ -819,6 +888,9 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
         "document_filename": document_name,
         "document_path": document_path,
         "batch_summary": (
+            f"Improved {checkpoint.meta['improved_blocks']} low-scoring blocks; retained "
+            f"{len(jobs) - checkpoint.meta['improved_blocks']} stronger blocks"
+            if "improved_blocks" in checkpoint.meta else
             f"{'Regenerated' if plan.rewrite_all_blocks else 'Filled'} {len(items)} of {len(jobs)} {noun}"
             + (" so far" if partial else "")
         ),
@@ -828,6 +900,8 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
                 "text": item["text"],
                 "verdict": (item.get("score") or {}).get("verdict"),
                 "probability": (item.get("score") or {}).get("ai_probability"),
+                "style_match": (item.get("score") or {}).get("style_match"),
+                "baseline_style_match": item.get("baseline_style_match"),
             }
             for item in items
         ],
@@ -936,7 +1010,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
     by_key = {job["key"]: job for job in jobs}
     status = {"model": None, "note": None, "log": [], "released": False,
               "order": _model_order(plan, conn)}
-    # Robustness mode drafts and scores each block on its own. A local server, as the main endpoint,
+    # Adaptive challenge mode drafts and scores each block on its own. A local server, as the main endpoint,
     # answers one request at a time anyway.
     group_size = 1 if plan.evasion else plan.group_size
     workers = 1 if plan.evasion or is_local(conn.base_url) else plan.parallel
@@ -1013,16 +1087,19 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         max_tokens = answer_token_limit(target_words(plan, job))
         if plan.evasion:
             candidates: dict[str, tuple[str, float | None]] = {}
+            style_cache: dict = {}
 
             def draft(candidate_prompt: str) -> str:
                 answer, candidate_model, errors = write(candidate_prompt, max_tokens)
                 candidates[answer] = (candidate_model, errors)
                 return answer
 
-            def score_candidate(answer: str) -> float | None:
+            def score_candidate(answer: str) -> dict:
                 if conn.local_model and candidates[answer][0] == local_model:
                     unload_local_model(conn.local_url, conn.local_model)
-                return score_text(answer, plan.profile).get("ai_probability")
+                metrics = candidate_metrics(answer, plan.profile, plan.style_path, style_cache)
+                metrics["style_feedback"] = style_feedback(answer, plan.style_path, style_cache)
+                return metrics
 
             status["note"] = f"Trying up to three drafts for {job['label']}…"
             result = generate_until_target(draft, score_candidate, f"{prompt}\n\n{PROFILE_INSTRUCTIONS}")
@@ -1062,6 +1139,14 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
             unload_local_model(conn.local_url, conn.local_model)
         status["note"] = f"Loading the {plan.profile} detector…"
         models.get_detector(plan.profile)
+        if plan.evasion and plan.style_path:
+            status["note"] = "Measuring the source blocks against the style profile…"
+            style_cache: dict = {}
+            for job in jobs:
+                checkpoint.blocks.setdefault(job["key"], {})["baseline_style_match"] = style_match(
+                    job["previous"], plan.style_path, style_cache
+                )
+            checkpoint.save()
         status["note"] = None
 
     def score_document() -> None:
@@ -1069,7 +1154,14 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         # also scored as one document: the verdict a reader of the whole file would get.
         whole = "\n\n".join(checkpoint.blocks[key]["text"] for key in checkpoint.generated(keys))
         status["note"] = "Scoring the whole regenerated document…"
-        checkpoint.meta["document_score"] = {**score_text(whole, plan.profile), "words": count_words(whole)}
+        checkpoint.meta["document_score"] = {
+            **candidate_metrics(whole, plan.profile, plan.style_path), "words": count_words(whole)
+        }
+        if plan.evasion:
+            original = "\n\n".join(job["previous"] for job in jobs if job["previous"].strip())
+            checkpoint.meta["document_baseline_score"] = {
+                **candidate_metrics(original, plan.profile, plan.style_path), "words": count_words(original)
+            }
         checkpoint.save()
         status["note"] = None
 
@@ -1089,7 +1181,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
 
     worker = BatchWorker(
         checkpoint, keys, generate_group,
-        score=(lambda text: score_text(text, plan.profile)) if plan.score else None,
+        score=(lambda text: candidate_metrics(text, plan.profile, plan.style_path)) if plan.score else None,
         before_scoring=before_scoring, finish=score_document if plan.score else None, status=status,
         on_end=on_end, group_size=group_size, workers=workers,
     )
@@ -1110,14 +1202,19 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     upload, target_section = plan.upload, plan.target_section
     source_text = "\n\n".join(f"[{section.label}]\n{section.text}" for section in plan.context_sections)
     test_material = plan.prompt.strip()
+    improvement_draft = st.session_state.pop(IMPROVE_TEXT, None)
+    if improvement_draft and not target_section:
+        test_material += ("\n\nCurrent draft to improve in this pass:\n" + improvement_draft +
+                          "\n\nImprove its detector likelihood and style-profile match while preserving its claims, "
+                          "evidence, point of view, and approximate length.")
     if source_text:
         test_material += "\n\nSource document material:\n" if test_material else "Source document material:\n"
         test_material += source_text
     if target_section:
         voice_rule = person_instruction(target_section.text, *(section.text for section in plan.context_sections))
-        test_material += "\n\nPrevious answer in the selected section:\n" + target_section.text
+        test_material += "\n\nPrevious answer in the selected section:\n" + (improvement_draft or target_section.text)
         user_prompt = (
-            "Create a new AI-generated red-team replacement for the selected answer section. "
+            "Create a new AI-generated adversarial challenge for the selected answer section. "
             f"Aim for about {plan.words} words. "
             f"{voice_rule} "
             "Use the fixed question, prompt, other sections, and previous answer as context. "
@@ -1131,7 +1228,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     else:
         voice_rule = person_instruction(*(section.text for section in plan.sections))
         user_prompt = (
-            f"Write an AI-generated red-team sample based on the test material below. Aim for about {plan.words} "
+            f"Write an AI-generated adversarial challenge sample based on the test material below. Aim for about {plan.words} "
             "words. "
             f"{voice_rule} "
             "Return the sample only. This sample will be labelled as AI-generated evaluation data.\n\n"
@@ -1152,14 +1249,25 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         drafts[text] = model
         return text
 
-    def candidate_score(text: str) -> float | None:
+    style_cache: dict = {}
+    candidate_style: dict[str, float | None] = {}
+    baseline_metrics: dict | None = None
+
+    def candidate_score(text: str) -> dict:
+        nonlocal baseline_metrics
         local = bool(conn.local_model) and model == conn.local_model
         if local:
             unload_local_model(conn.local_url, conn.local_model)  # the detector needs the memory it holds
+        if plan.evasion and baseline_metrics is None:
+            starting_text = improvement_draft or (target_section.text if target_section else "")
+            if starting_text:
+                baseline_metrics = candidate_metrics(starting_text, plan.profile, plan.style_path, style_cache)
         reports[text] = report = models.get_detector(plan.profile).analyze(text, sentences=False)
         if local:
             models.release()  # and the local model needs it back for the next draft
-        return report.ai_probability
+        candidate_style[text] = style_match(text, plan.style_path, style_cache)
+        return {"ai_probability": report.ai_probability, "style_match": candidate_style[text],
+                "style_feedback": style_feedback(text, plan.style_path, style_cache)}
 
     def likelihood(text: str) -> float:
         report = reports.get(text)
@@ -1167,7 +1275,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
 
     try:
         if plan.evasion:
-            with st.spinner("Generating and scoring up to 3 red-team drafts…"):
+            with st.spinner("Generating and scoring up to 3 labelled challenge candidates…"):
                 try:
                     essay = generate_until_target(
                         generate, candidate_score, f"{user_prompt}\n\n{PROFILE_INSTRUCTIONS}").text
@@ -1175,7 +1283,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
                     if not drafts:
                         raise
                     essay = min(drafts, key=likelihood)
-                    st.warning(f"Robustness mode stopped after {len(drafts)} draft(s), so the lowest-scoring one "
+                    st.warning(f"Adaptive evaluation stopped after {len(drafts)} candidate(s), so the lowest-scoring one "
                                f"is kept: {exc}")
             model = drafts.get(essay, model)
         else:
@@ -1219,7 +1327,12 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         "verdict": score.verdict if score else None,
         "calibrated": score.calibrated if score else None,
         "detector_profile": plan.profile if score else None,
+        "style_match": candidate_style.get(essay, style_match(essay, plan.style_path, style_cache))
+        if plan.style_path else None,
     }
+    if baseline_metrics is not None:
+        row["baseline_ai_probability"] = baseline_metrics.get("ai_probability")
+        row["baseline_style_match"] = baseline_metrics.get("style_match")
     reached = likelihood(essay) < EVASION_TARGET
     if plan.evasion:
         row |= {"evasion_mode": True, "evasion_profile": PROFILE_ID, "evasion_target": EVASION_TARGET,
@@ -1240,13 +1353,14 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
                     "verdict": report.verdict if report else None,
                     "calibrated": report.calibrated if report else None,
                     "detector_profile": plan.profile if report else None,
+                    "style_match": candidate_style.get(draft),
                     "evasion_reached_target": likelihood(draft) < EVASION_TARGET, "evasion_kept": False,
                 }, ensure_ascii=False) + "\n")
 
     export_name = f"AI_REDTEAM_{mode_tag}_{timestamp}_{prompt_hash}.txt"
     export_path = store.exports / export_name
     attachment = (
-        "Open Detector | AI-labelled red-team sample\n"
+        "Open Detector | AI-labelled adversarial challenge sample\n"
         f"Attack: {attack}\nModel: {model}\nSource: {upload.name if upload else 'prompt'}\n"
         f"Section: {target_section.label if target_section else 'new sample'}\n"
         f"Detector likelihood: {row['ai_probability'] if row['ai_probability'] is not None else 'not available'}\n\n"
@@ -1269,18 +1383,25 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         "detect_text": essay,
         "row": row,
         "note": f"Written by {model} after {len(model_errors)} model(s) failed." if model_errors else None,
-        "evasion_note": (f"Robustness mode wrote {len(drafts)} draft(s) and kept the lowest-scoring one, which "
-                         + ("is under 5%." if reached else "is not under 5%.")) if plan.evasion else None,
+        "evasion_note": (f"Adaptive evaluation generated {len(drafts)} labelled candidate(s) and kept the "
+                         f"best-balanced one, which "
+                         + (("met the detector target" +
+                             (" and style floor." if candidate_style.get(essay) is not None else "."))
+                            if reached and (candidate_style.get(essay) is None or candidate_style[essay] >= STYLE_FLOOR)
+                            else "did not meet the detector target and style floor."))
+                         if plan.evasion else None,
         "score": (
             {
                 "probability": score.ai_probability,
                 "verdict": score.verdict,
                 "calibrated": score.calibrated,
                 "words": score.words,
+                "style_match": row.get("style_match"),
             }
             if score
             else None
         ),
+        "baseline_score": baseline_metrics,
         "attachment": attachment,
         "filename": export_name,
         "path": _shown(export_path),
@@ -1309,7 +1430,7 @@ def _restore_last_result() -> None:
         if not saved_path.exists():
             store.exports.mkdir(parents=True, exist_ok=True)
             saved_path.write_text(
-                "Open Detector | AI-labelled red-team sample\n"
+                "Open Detector | AI-labelled adversarial challenge sample\n"
                 f"Attack: {saved.get('attack', 'red-team')}\n"
                 f"Model: {saved.get('model', 'unknown')}\n"
                 f"Source: {saved.get('source_file') or 'prompt'}\n"
@@ -1354,7 +1475,7 @@ def _show_result(result: dict, profile: str) -> None:
     row = result.get("row") or {}
     with st.container(border=True):
         with st.container(horizontal=True, vertical_alignment="center"):
-            st.markdown("**Latest sample**")
+            st.markdown("**Latest challenge sample**")
             if row.get("model"):
                 st.badge(row["model"], icon=":material/smart_toy:", color="gray")
             if row.get("attack"):
@@ -1365,6 +1486,14 @@ def _show_result(result: dict, profile: str) -> None:
             st.caption(result["evasion_note"])
 
         score = result["score"]
+        baseline = result.get("baseline_score")
+        if baseline:
+            with st.container(horizontal=True, vertical_alignment="center"):
+                st.caption("Before regeneration")
+                if baseline.get("ai_probability") is not None:
+                    st.metric("AI likelihood", f"{baseline['ai_probability']:.1%}", width="content")
+                if baseline.get("style_match") is not None:
+                    st.metric("Style match", f"{baseline['style_match']:.0f}%", width="content")
         if score and score["verdict"] not in ("insufficient_text", "not_prose"):
             with st.container(horizontal=True, vertical_alignment="center"):
                 st.metric(
@@ -1373,23 +1502,42 @@ def _show_result(result: dict, profile: str) -> None:
                          f"{row.get('detector_profile') or profile} build",
                     width="content",
                 )
+                if score.get("style_match") is not None:
+                    st.metric("Style match", f"{score['style_match']:.0f}%", width="content",
+                              help="Percentile against length-matched passages in the selected style profile.")
                 verdict_badge(score["verdict"])
         elif score:
             words = f" ({score['words']} words)" if score.get("words") else ""
             st.caption(f":material/info: The detector abstained: {VERDICTS[score['verdict']][0].lower()}{words}.")
+            if score.get("style_match") is not None:
+                st.metric("Style match", f"{score['style_match']:.0f}%",
+                          help="Percentile against length-matched passages in the selected style profile.")
         else:
             st.caption(":material/info: Not scored.")
 
         if result.get("batch_answers"):
             st.markdown(f"**{result.get('batch_summary') or 'Regenerated blocks'}** in the exported copy.")
             st.dataframe(
-                [{"Block": item["label"], "AI likelihood": item["probability"],
+                [{"Block": item["label"], "Before style": item["baseline_style_match"],
+                  "After style": item["style_match"], "AI likelihood": item["probability"],
                   "Verdict": VERDICTS[item["verdict"]][0] if item["verdict"] in VERDICTS else "Not scored"}
                  for item in result["batch_answers"]],
                 hide_index=True, width="stretch",
                 column_config={"AI likelihood": st.column_config.ProgressColumn(
                     format="percent", min_value=0, max_value=1, color=style.tokens()["accent"])},
             )
+            if not public() and result.get("checkpoint_path"):
+                st.button("Run another adaptive round", icon=":material/refresh:",
+                          help="Use these samples as the next benchmark starting point, then compare up to three "
+                               "labelled candidates per block using detector likelihood and style-profile match.",
+                          on_click=_queue_batch_improvement, args=(result["checkpoint_path"],),
+                          key="redteam:improve_batch_result")
+        elif not public():
+            st.button("Run another adaptive round", icon=":material/refresh:",
+                      help="Use this sample as the next benchmark starting point, then compare up to three labelled "
+                           "candidates by detector likelihood and style-profile match.",
+                      on_click=_queue_sample_improvement, args=(result["essay"],),
+                      key="redteam:improve_sample_result")
 
         st.html(f'<div class="od-text od-sample">{html.escape(result["essay"])}</div>')
         with st.container(horizontal=True):
@@ -1461,7 +1609,7 @@ def _history() -> None:
                                                                       color=style.tokens()["accent"]),
             },
         )
-    st.markdown("**Latest samples**")
+    st.markdown("**Latest challenge samples**")
     latest = []
     for row in reversed(rows[-200:]):
         stamp = re.match(r"local-(\d{8}T\d{6}Z)", row.get("id", ""))
@@ -1484,8 +1632,50 @@ def _history() -> None:
             "Text": st.column_config.TextColumn(width="large"),
         },
     )
-    st.caption("The samples from this browser session, labelled as AI text." if public()
-               else f"All samples are in `{_shown(OUTPUT_PATH)}`, labelled as AI text.")
+    st.caption("Challenge samples from this browser session, labelled as AI text." if public()
+               else f"All challenge samples are in `{_shown(OUTPUT_PATH)}`, labelled as AI text.")
+
+
+def _weak(score: dict, plan: Plan, missing_style_is_weak: bool = True) -> bool:
+    """Whether a score misses the AI-likelihood target or, with a style profile, the style floor."""
+    ai, match = score.get("ai_probability"), score.get("style_match")
+    if ai is not None and ai > EVASION_TARGET:
+        return True
+    if plan.style_path is None:
+        return False
+    return missing_style_is_weak if match is None else match < STYLE_FLOOR
+
+
+def _improve_batch(plan: Plan, jobs: list[dict], previous_path: Path) -> tuple[Path, Checkpoint] | None:
+    """Start a robustness-mode rerun of a finished batch that redoes only its weak blocks.
+
+    Each job gets its previous text to improve on, and blocks that already met the targets carry forward. When
+    every block passed but the whole document didn't, every block is redone.
+    """
+    previous_run = Checkpoint.load(previous_path)
+    if not previous_run or previous_run.meta.get("source_file") != plan.upload.name:
+        return None
+    carry_forward, weak_count = {}, 0
+    for job in jobs:
+        old = previous_run.blocks.get(job["key"], {})
+        if not old.get("text"):
+            continue
+        job["previous"] = old["text"]
+        if _weak(old.get("score") or {}, plan):
+            weak_count += 1
+        else:
+            carry_forward[job["key"]] = old
+    document_score = previous_run.meta.get("document_score") or {}
+    if weak_count == 0 and _weak(document_score, plan, missing_style_is_weak=False):
+        carry_forward.clear()
+        weak_count = len(jobs)
+    plan.evasion = plan.score = True
+    path = _checkpoint_path(plan)
+    checkpoint = Checkpoint.start(path, {"source_file": plan.upload.name, "mode": plan.mode_tag, "blocks": len(jobs)})
+    checkpoint.blocks.update(carry_forward)
+    checkpoint.meta["improved_blocks"] = weak_count
+    checkpoint.save()
+    return path, checkpoint
 
 
 def render() -> None:
@@ -1494,11 +1684,13 @@ def render() -> None:
     conn = _connection()
     _restore_last_result()
 
-    style.hero("Adversarial lab · " + ("public mode" if public() else "local"), "Red team",
-               "Generate labelled AI samples and see how the detector scores them. Everything generated here is "
-               "saved as AI-labelled evaluation data.",
-               ["Your own Gemini key" if public() or packaged() else "Gemini, then a local fallback", "Style profiles",
-                "Batch rewrites", "Scored per block"])
+    style.hero("Adversarial evaluation · " + ("public mode" if public() else "local"), "Challenge Lab",
+               "Generate synthetic, labelled AI challenge samples and measure this detector's response. "
+               "Style-conditioned generation and detector-guided candidate selection are explicit test conditions; "
+               "every output is saved as AI-labelled evaluation data. Results support the next detector update "
+               "and benchmark round.",
+               ["Your own Gemini key" if public() or packaged() else "Gemini, then a local fallback",
+                "Profile-conditioned trials", "Multi-block batches", "Recorded detector feedback"])
     _finish_ended_batches()
     running = [worker for worker in _own_batches().values() if worker.is_alive()]
     if running:
@@ -1510,9 +1702,10 @@ def render() -> None:
         for worker in running:
             _batch_progress(worker)
         return
-    st.caption(":material/shield: For detector evaluation only: don't submit generated work as your own.")
+    st.caption(":material/science: Evaluation use only. Outputs are AI-generated challenge data and should remain "
+               "labelled as such when shared or analyzed.")
 
-    generate_tab, saved_tab = st.tabs(["Generate", "Saved samples"])
+    generate_tab, saved_tab = st.tabs(["Generate challenges", "Challenge results"])
     with generate_tab:
         setup, output = st.columns([1.1, 1], gap="large")
         with setup:
@@ -1520,6 +1713,9 @@ def render() -> None:
             jobs = _batch_jobs(plan) if plan.batch else []
             path = _checkpoint_path(plan) if plan.batch else None
             checkpoint = Checkpoint.load(path) if plan.batch else None
+            improve_path = st.session_state.pop(IMPROVE_BATCH, None)
+            if improve_path and plan.batch and (improved := _improve_batch(plan, jobs, Path(improve_path))):
+                path, checkpoint = improved
             if notice := st.session_state.get(NOTICE):
                 getattr(st, notice[0])(notice[1])
             if checkpoint:
@@ -1527,11 +1723,11 @@ def render() -> None:
                 saved = len(checkpoint.generated([job["key"] for job in jobs]))
                 label, icon = f"Resume · {saved} of {len(jobs)} blocks saved", ":material/play_arrow:"
             elif plan.rewrite_all_blocks:
-                label, icon = f"Rewrite {len(jobs)} blocks", ":material/auto_awesome:"
+                label, icon = f"Generate {len(jobs)} block challenges", ":material/auto_awesome:"
             elif plan.fill_answer_boxes:
-                label, icon = f"Fill {len(jobs)} answer boxes", ":material/auto_awesome:"
+                label, icon = f"Generate {len(jobs)} answer challenges", ":material/auto_awesome:"
             else:
-                label, icon = "Generate sample", ":material/auto_awesome:"
+                label, icon = "Generate challenge sample", ":material/auto_awesome:"
             clicked = st.button(label, type="primary", icon=icon, width="stretch")
             problem = _problem(plan, conn) if clicked else None
             if problem:

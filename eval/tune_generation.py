@@ -1,11 +1,11 @@
-"""Measure red-team generation settings on a document, four measures each, for the Red team page.
+"""Measure adversarial challenge-generation settings on a document for the Adversarial Lab.
 
     python -m eval.tune_generation report.docx                 # measure, then write the table
     python -m eval.tune_generation report.docx --models gemini-3.5-flash-lite --repeats 1
     python -m eval.tune_generation --fit-only                  # rewrite the table from the trials so far
 
 A setting is a model, its thinking level and how many blocks go in one request. Each trial rewrites
-the same run of the document's blocks (at least --words words) the way a Red team batch does, with the
+the same run of the document's blocks (at least --words words) the way a challenge batch does, with the
 same prompts and the style profile as the system prompt, and records:
 
 - detector: the AI likelihood of the rewritten run, from the --profile build of the detector
@@ -31,7 +31,7 @@ from one draw to the next, and the report gives that spread.
 Trials are saved to --out as they finish, so a run that stops (a spent quota, Ctrl-C) resumes where
 it left off, and a model whose quota runs out is skipped for the rest of the run. Every rewrite is
 also logged as labelled AI data to data/essays/tuning_redteam.jsonl. The table goes to --table
-(models/generation_tuning.json), which the Red team page's priorities read, and a report to --report.
+(models/generation_tuning.json), which the Adversarial Lab's priorities read, and a report to --report.
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ from opendetector.segment import count_words
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = ("gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.1-flash-lite",
-          "gemini-3-flash-preview")  # the Red team page's model and fallbacks
+          "gemini-3-flash-preview")  # the Adversarial Lab's model and fallbacks
 LEVELS = ("minimal", "low", "medium", "high")
 GROUPS = (1, 4, 8)
 TOKEN_FIELDS = ("total_tokens", "total_input_tokens", "total_cached_tokens", "total_output_tokens",
@@ -155,6 +155,26 @@ class StyleYardstick:
         further = sum(1.0 if other > distance else 0.5 if other == distance else 0.0 for other in self.passages)
         return round(100 * further / len(self.passages), 1)
 
+    def feedback(self, text: str, limit: int = 3) -> list[str]:
+        """Return the largest measurable style deviations as concrete revision directions."""
+        import update_style_profile as usp
+
+        paragraphs = [part for part in re.split(r"\n\s*\n", text) if part.strip()]
+        summary = usp.summarize(usp.measure(paragraphs, self.banned))
+        if not summary:
+            return []
+        deviations = []
+        for label, _ in _measures():
+            value, target, spread = _value(summary, label), _value(self.target, label), self.spread.get(label)
+            if value is None or target is None or not spread:
+                continue
+            z = (value - target) / spread
+            if abs(z) >= 0.75:
+                direction = "lower" if z > 0 else "higher"
+                deviations.append((abs(z), f"Move {label} {direction}, toward the profile's usual level "
+                                   f"(this draft: {value:g}; profile: {target:g})."))
+        return [instruction for _, instruction in sorted(deviations, reverse=True)[:limit]]
+
 
 def _measures() -> list[tuple[str, tuple[str, ...]]]:
     import update_style_profile as usp
@@ -178,7 +198,7 @@ def _value(summary: dict, label: str) -> float | None:
 
 def sample_jobs(name: str, data: bytes, words: int, min_blocks: int = 1) -> tuple[list[dict], SimpleNamespace]:
     """The run of blocks every trial rewrites, from the first, until it holds `words` words and at
-    least `min_blocks` blocks, and a plan like the Red team page's for the prompts: every block,
+    least `min_blocks` blocks, and a plan like the Adversarial Lab's for the prompts: every block,
     matching each one's length."""
     sections, blocks = extract_document(name, data), rewritable_blocks(name, data)
     kind = "markdown_block" if name.lower().endswith(".md") else "text_block"
@@ -372,7 +392,7 @@ def report(table: dict) -> str:
         f"{table['baseline_model']}.", "",
         f"Free requests a day, from Gemini's quota errors or set by hand: {known}. A model whose limit isn't "
         f"known loses no quota score for it. The picks and scores here are for a {REFERENCE_BLOCKS}-block "
-        "batch; the Red team page scores the document it has.", "",
+        "batch; the Adversarial Lab scores the document it has.", "",
         "| Model | Thinking | Blocks per request | AI likelihood % | Style match % | Seconds per block "
         "| Requests per block | Tokens per block | Trials | Even-points score |",
         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
@@ -403,7 +423,7 @@ def _save_trials(path: Path, trials: list[dict]) -> None:
 
 
 def _log_labelled(trial: dict, document: str, source: str, style: str) -> None:
-    """Every rewrite is labelled AI evaluation data, like the Red team page's."""
+    """Every generated challenge is labelled AI evaluation data, like the Adversarial Lab's."""
     LABELLED.parent.mkdir(parents=True, exist_ok=True)
     row = {"id": f"tuning-{source}-{trial['key'].replace('|', '-')}", "text": trial["text"], "label": 1,
            "dataset": "local_tuning", "domain": "document_combined", "model": trial["model"],
