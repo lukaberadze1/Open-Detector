@@ -193,8 +193,8 @@ To regenerate both shipped combiners after the caches change:
     through `_store()` and `_own_batches()`. New code that writes or lists saved work must go
     through those, never the module-level paths.
   - **The downloadable app** (`OPENDETECTOR_PACKAGED=on`) keeps its user's key and samples like a
-    local run, but also serves strangers: like public mode it offers no detector-guided drafting
-    (robustness mode) and no local text model by default. Keep new drafting aids out of both.
+    local run, and offers no local text model by default. It does offer robustness mode, the owner's
+    choice; public mode does not, so keep drafting aids out of public mode.
 - **What the app writes goes under `DATA_ROOT`,** never `ROOT`: the downloadable app's own bundle is
   signed and must not change, so `PYTHONDONTWRITEBYTECODE` is on there and its code is byte-compiled
   at build time. A module the app newly imports from `eval/` must be added to `APP_FILES`
