@@ -1,0 +1,147 @@
+{
+  "style_profile": {
+    "format": "registers-v2",
+    "how_to_use": "How a generator applies the profile: one register at a time, each habit and slip at its measured rate, scattered.",
+    "registers": {
+      "finalized": {
+        "covers": "The kinds of writing this register describes, and when to use it.",
+        "evidence": "Where its numbers come from: how many words, which sources, which dates.",
+        "rhythm": {
+          "avg_sentence_length_words": 0,
+          "median_sentence_length_words": 0,
+          "min_max_sentence_length": [
+            0,
+            0
+          ],
+          "coefficient_of_variation": 0,
+          "sentence_length_distribution": {
+            "under_6_words_pct": "0%",
+            "6_to_15_words_pct": "0%",
+            "16_to_29_words_pct": "0%",
+            "30_plus_words_pct": "0%"
+          },
+          "pattern": "How long and short sentences alternate, with rates and short real examples."
+        },
+        "voice": {
+          "formality": "Register, tone and the mix of words, with examples.",
+          "person_and_pronouns": "Which person each kind of writing uses, per 1,000 words.",
+          "vocabulary": "Lexical density (MATTR, hapax share, word length) and the words reached for.",
+          "verbs": "Be-verbs, modals, action verbs and passive voice, per 1,000 words."
+        },
+        "structure": {
+          "sentence_patterns": [
+            "A recurring sentence shape, with its rate, its status (established, emerging or once) and an example."
+          ],
+          "openers_and_transitions": "How paragraphs and sentences open and connect, with shares of sentences.",
+          "argument_and_hedging": "How claims are made and doubt is shown."
+        },
+        "punctuation": {
+          "dashes_and_hyphens": "Rates and uses.",
+          "parentheses": "Rates and uses.",
+          "semicolons_and_colons": "Rates and uses.",
+          "questions_and_exclamations": "Rates and uses.",
+          "quotes_and_emphasis": "Quotation marks, citations, bold, italics, slashes.",
+          "spacing": "Spaces before punctuation and double spaces, per 1,000 words."
+        },
+        "slips": {
+          "overall_rate": "The share of words misspelled in this register, and how to scatter the slips.",
+          "recurring_misspellings": [
+            "A misspelling the writer repeats, the word it stands for, and how many times it was seen."
+          ],
+          "one_off_kinds": [
+            "A kind of slip seen in one-off words (doubled letters, swapped letters), with examples. Use the kind, never the same word."
+          ],
+          "casing": "Capitals and lowercase habits, with rates."
+        },
+        "habits": [
+          {
+            "habit": "What the writer does.",
+            "rate": "How often: per 1,000 words, per sentence, or per eligible case.",
+            "status": "established, emerging or once",
+            "seen": "Where and when it was seen.",
+            "example": "A short real example, under 12 words."
+          }
+        ],
+        "golden_rule": "One sentence on how to write in this register."
+      },
+      "notes": {
+        "covers": "The kinds of writing this register describes, and when to use it.",
+        "evidence": "Where its numbers come from: how many words, which sources, which dates.",
+        "rhythm": {
+          "avg_sentence_length_words": 0,
+          "median_sentence_length_words": 0,
+          "min_max_sentence_length": [
+            0,
+            0
+          ],
+          "coefficient_of_variation": 0,
+          "sentence_length_distribution": {
+            "under_6_words_pct": "0%",
+            "6_to_15_words_pct": "0%",
+            "16_to_29_words_pct": "0%",
+            "30_plus_words_pct": "0%"
+          },
+          "pattern": "How long and short sentences alternate, with rates and short real examples."
+        },
+        "voice": {
+          "formality": "Register, tone and the mix of words, with examples.",
+          "person_and_pronouns": "Which person each kind of writing uses, per 1,000 words.",
+          "vocabulary": "Lexical density (MATTR, hapax share, word length) and the words reached for.",
+          "verbs": "Be-verbs, modals, action verbs and passive voice, per 1,000 words."
+        },
+        "structure": {
+          "sentence_patterns": [
+            "A recurring sentence shape, with its rate, its status (established, emerging or once) and an example."
+          ],
+          "openers_and_transitions": "How paragraphs and sentences open and connect, with shares of sentences.",
+          "argument_and_hedging": "How claims are made and doubt is shown."
+        },
+        "punctuation": {
+          "dashes_and_hyphens": "Rates and uses.",
+          "parentheses": "Rates and uses.",
+          "semicolons_and_colons": "Rates and uses.",
+          "questions_and_exclamations": "Rates and uses.",
+          "quotes_and_emphasis": "Quotation marks, citations, bold, italics, slashes.",
+          "spacing": "Spaces before punctuation and double spaces, per 1,000 words."
+        },
+        "slips": {
+          "overall_rate": "The share of words misspelled in this register, and how to scatter the slips.",
+          "recurring_misspellings": [
+            "A misspelling the writer repeats, the word it stands for, and how many times it was seen."
+          ],
+          "one_off_kinds": [
+            "A kind of slip seen in one-off words (doubled letters, swapped letters), with examples. Use the kind, never the same word."
+          ],
+          "casing": "Capitals and lowercase habits, with rates."
+        },
+        "habits": [
+          {
+            "habit": "What the writer does.",
+            "rate": "How often: per 1,000 words, per sentence, or per eligible case.",
+            "status": "established, emerging or once",
+            "seen": "Where and when it was seen.",
+            "example": "A short real example, under 12 words."
+          }
+        ],
+        "golden_rule": "One sentence on how to write in this register."
+      }
+    },
+    "shared": {
+      "always": [
+        "A habit the writer keeps in every register, with its rate and evidence."
+      ],
+      "never": [
+        "A structure the writer never uses in any register, with the evidence."
+      ],
+      "signature_vocabulary": [
+        "A word or phrase the writer reaches for, with the register and the count."
+      ],
+      "banned_ai_cliches": [
+        "A phrase the writer never uses."
+      ],
+      "hedging_elimination_rules": [
+        "How to remove a hedge the writer wouldn't write."
+      ]
+    }
+  }
+}

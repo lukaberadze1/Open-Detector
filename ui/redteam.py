@@ -35,6 +35,7 @@ from eval.generate_essays import (
     GEMINI_API_URL,
     LOCAL_MODEL,
     LOCAL_URL,
+    REGISTER_NAMES,
     THINKING_LEVELS,
     APIError,
     answer_token_limit,
@@ -43,6 +44,7 @@ from eval.generate_essays import (
     is_local,
     load_style_profile,
     local_context_size,
+    profile_registers,
     local_model_problem,
     style_instructions,
     unload_local_model,
@@ -228,6 +230,7 @@ class Plan:
     parallel: int = 2  # a batch's requests at once
     model: str | None = None  # the model to start with, when the priorities picked one
     human_source: bool = False  # the uploaded document is the user's own writing: save it as paired human data
+    register: str | None = None  # with a profile that has registers: finalized (finished work) or notes
     style_path: Path | None = None
     score: bool = True
     evasion: bool = False
@@ -556,6 +559,7 @@ def _setup(profile: str, conn: Connection) -> Plan:
                             help="The profiles you added in this browser session." if public() else
                                  "Every JSON file in data/styles/. Save another profile there and it shows up here.")
         plan.style_path = styles[name] if use_style else None
+        _register(plan)
     else:
         st.caption("No style profile yet, so samples use the model's own style. Add one below to write in it.")
     st.file_uploader(
@@ -587,6 +591,28 @@ def _setup(profile: str, conn: Connection) -> Plan:
                       else ""))
     _priorities(plan, conn)
     return plan
+
+
+def _register(plan: Plan) -> None:
+    """With a profile that keeps finished work and quick notes apart, which of the two to write in.
+    Only that register goes to the model, so note-taking habits can't leak into a finished document."""
+    if plan.style_path is None:
+        return
+    try:
+        registers = profile_registers(load_style_profile(plan.style_path))
+    except (OSError, ValueError):
+        return
+    if not registers:
+        return
+    key = keep("keep:redteam:register", registers[0])
+    if st.session_state[key] not in registers:
+        st.session_state[key] = registers[0]
+    plan.register = st.segmented_control(
+        "Register", registers, key=key, required=True,
+        format_func=lambda name: REGISTER_NAMES.get(name, name).capitalize(),
+        help="Finished work is how the writer writes for others: essays, reports, stories, answers. Quick notes "
+             "is how they write for themselves, faster and looser, with more slips. Only the chosen register is "
+             "sent, with what holds in both.")
 
 
 def _spend(measure: str, change: int) -> None:
@@ -665,7 +691,7 @@ def _readout(plan: Plan, table: dict, setting: generation_settings.Setting, bloc
     context = len(plan.context_text)
     if plan.use_profile:
         with contextlib.suppress(OSError, ValueError):
-            context += len(style_instructions(load_style_profile(plan.style_path)))
+            context += len(style_instructions(load_style_profile(plan.style_path), plan.register))
     estimate = generation_settings.estimate(setting, blocks, table, context)
     heat = f" · temperature {setting.temperature:g}" if setting.temperature is not None else ""
     st.markdown(f":material/auto_awesome: **{setting.model}** · {setting.thinking} thinking{heat}"
@@ -781,6 +807,7 @@ def _settings(plan: Plan) -> dict:
     """How a sample was written, saved with it so the evaluation can tell which settings the detector
     misses. eval/datasets.py keeps only its own columns, so these never become detector features."""
     return {"thinking": plan.thinking, "temperature": plan.temperature, "style_profile": plan.style_name,
+            "register": plan.register,
             "blocks_per_request": (1 if plan.evasion else plan.group_size) if plan.batch else None}
 
 
@@ -1817,7 +1844,7 @@ def render() -> None:
             system = None
             if clicked and not problem and plan.use_profile:
                 try:
-                    system = style_instructions(load_style_profile(plan.style_path))
+                    system = style_instructions(load_style_profile(plan.style_path), plan.register)
                 except (OSError, ValueError) as exc:
                     st.error(f"Could not load the style profile: {exc}")
                     clicked = False

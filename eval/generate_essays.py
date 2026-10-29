@@ -75,6 +75,13 @@ HUMANIZE = ("For this detector-evasion benchmark condition, revise the AI-genera
 STYLE_INTRO = ("Write in the style of the writer profiled below. Follow every rule exactly. The spelling slips, "
                "missing apostrophes, stray capitals and spacing quirks are part of the style: keep them, don't "
                "correct them. The reference section is the measured style the rules come from.")
+# For a profile with registers: one register is sent, so its habits can't leak into another.
+REGISTER_INTRO = ("Write in the style of the writer profiled below, in their {register} register. Every habit, "
+                  "pattern and slip has a rate measured from their own text: use each about that often, scattered "
+                  "unevenly, never clustered and never in every sentence. A habit whose status is 'once' was seen a "
+                  "single time: use it at most once in a long text, or not at all. Keep the slips, missing "
+                  "apostrophes, stray capitals and spacing quirks; don't correct them.")
+REGISTER_NAMES = {"finalized": "finished work", "notes": "quick notes"}
 
 
 def load_style_profile(path: Path) -> dict:
@@ -98,7 +105,8 @@ def _render(value, depth: int) -> list[str]:
     name ("any word in banned_ai_cliches"). A section's plain values and inline lists come
     first, one line each, then a heading per subsection or bulleted list."""
     if isinstance(value, list):
-        return [f"- {json.dumps(x) if isinstance(x, (dict, list)) else x}" for x in value]
+        return [f"- {'; '.join(f'{k}: {v}' for k, v in x.items())}" if isinstance(x, dict)
+                else f"- {json.dumps(x) if isinstance(x, list) else x}" for x in value]
     if not isinstance(value, dict):
         return [str(value)]
     lines, sections = [], []
@@ -112,9 +120,31 @@ def _render(value, depth: int) -> list[str]:
     return lines + sections
 
 
-def style_instructions(profile: dict) -> str:
-    """The system prompt for a style profile: the overall rule, then the hard rules, then the
-    measurements as reference. Profiles without system_prompt_overrides are all reference."""
+def profile_registers(profile: dict) -> list[str]:
+    """The registers a profile describes (finished work, quick notes), first the default; [] for a
+    profile in the older single-register format."""
+    registers = profile.get("registers")
+    return list(registers) if isinstance(registers, dict) else []
+
+
+def style_instructions(profile: dict, register: str | None = None) -> str:
+    """The system prompt for a style profile. With registers: how to use the profile, the chosen
+    register (the first when `register` is None or unknown) with its golden rule first, and what holds
+    in every register; the other register is left out. Otherwise the overall rule, the hard rules,
+    then the measurements as reference; profiles without system_prompt_overrides are all reference."""
+    if registers := profile_registers(profile):
+        name = register if register in registers else registers[0]
+        chosen = dict(profile["registers"][name])
+        golden = chosen.pop("golden_rule", None)
+        lines = [REGISTER_INTRO.format(register=REGISTER_NAMES.get(name, name))]
+        if golden:
+            lines += ["", golden]
+        if profile.get("how_to_use"):
+            lines += ["", "# How to use this profile", profile["how_to_use"]]
+        lines += ["", f"# The {REGISTER_NAMES.get(name, name)} register", *_render(chosen, 2)]
+        if profile.get("shared"):
+            lines += ["", "# In every register", *_render(profile["shared"], 2)]
+        return "\n".join(lines)
     rules = dict(profile.get("system_prompt_overrides") or {})
     golden = rules.pop("golden_transformation_rule", None)
     reference = {k: v for k, v in profile.items() if k != "system_prompt_overrides"}
@@ -511,6 +541,8 @@ def main() -> int:
     parser.add_argument("--style-profile", type=Path,
                         help="JSON style profile to write in, sent as the system prompt; its file name is "
                              "added to the attack label (<style>+<name>)")
+    parser.add_argument("--register", help="with a profile that has registers, the one to write in "
+                                           "(finalized or notes; default: the profile's first)")
     parser.add_argument("--n", type=int, default=100)
     parser.add_argument("--base-url", default=GEMINI_API_URL)
     parser.add_argument("--api-key-env", default="GEMINI_API_KEY", help="environment variable holding the key")
@@ -528,7 +560,7 @@ def main() -> int:
     system, attack = None, args.style
     if args.style_profile:
         try:
-            system = style_instructions(load_style_profile(args.style_profile))
+            system = style_instructions(load_style_profile(args.style_profile), args.register)
         except (OSError, ValueError) as e:  # json.JSONDecodeError is a ValueError
             parser.error(f"could not read the style profile {args.style_profile}: {e}")
         attack = f"{args.style}+{args.style_profile.stem}"

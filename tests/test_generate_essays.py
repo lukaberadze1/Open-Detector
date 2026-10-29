@@ -521,3 +521,31 @@ def test_ollama_gets_the_json_shape_as_its_format():
     finally:
         local.close()
     assert local.requests[0]["body"]["format"] == {"type": "object"}
+
+
+REGISTERED = {
+    "format": "registers-v2",
+    "how_to_use": "Use one register at a time.",
+    "registers": {
+        "finalized": {"covers": "Essays and reports.", "habits": [
+            {"habit": "Start with However.", "rate": "10%", "status": "established", "seen": "essays", "example": "x"}],
+            "golden_rule": "Argue hard and plainly."},
+        "notes": {"covers": "Lesson captures.", "habits": [
+            {"habit": "Russian terms in Latin letters.", "rate": "rare", "status": "once", "seen": "2026-W44",
+             "example": "tavar"}], "golden_rule": "Write fast for yourself."},
+    },
+    "shared": {"never": ["Em-dashes."], "banned_ai_cliches": ["delve"]},
+}
+
+
+def test_a_profile_with_registers_sends_only_the_one_asked_for():
+    finished = generate_essays.style_instructions(REGISTERED, "finalized")
+    assert "finished work register" in finished and "Argue hard and plainly." in finished
+    assert "habit: Start with However.; rate: 10%; status: established" in finished, "a habit reads as one line"
+    assert "Lesson captures" not in finished and "tavar" not in finished, "the notes register stays out"
+    assert "# In every register" in finished and "Em-dashes." in finished and "delve" in finished
+    notes = generate_essays.style_instructions(REGISTERED, "notes")
+    assert "quick notes register" in notes and "tavar" in notes and "Essays and reports" not in notes
+    assert generate_essays.style_instructions(REGISTERED) == finished, "the first register is the default"
+    assert generate_essays.profile_registers(REGISTERED) == ["finalized", "notes"]
+    assert generate_essays.profile_registers({"syntax_and_burstiness": {}}) == []

@@ -267,6 +267,15 @@ file name joins the attack label (`plain+student_profile`), so the report gives 
 .venv/bin/python -m eval.generate_essays --persuade persuade_2.0.csv --n 300 --style-profile data/styles/student_profile.json --out data/essays/gemini_profile.jsonl
 ```
 
+A profile in the format of `style_profile_template.json` keeps two registers apart: **finalized**
+(finished essays, reports, stories, answers) and **notes** (quick notes written for oneself). Each
+habit and slip carries a measured rate and a status: established, emerging, or seen once, which is
+used at most once in a long text. Only the chosen register is sent (`--register`, or **Register** on
+the Red team page), so quick-note slips never leak into finished work, and the prompt is about a
+third shorter. `alexandria_profile` is kept up to date from the writer's Obsidian vault by
+`update_style_profile.py` and the `/style-profile` skill; finished pieces saved in
+`data/styles/alexandria/finalized/` are measured into the finalized register.
+
 The supplied writer profile is saved as `data/styles/pasted_style_profile.json`. To generate
 mirrors in that style, use:
 

@@ -59,6 +59,7 @@ from eval.generate_essays import (
     QuotaExhausted,
     clean_essay,
     load_style_profile,
+    profile_registers,
     style_instructions,
     takes_temperature,
     thinking_level,
@@ -501,6 +502,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("document", nargs="?", help=".md, .docx or .pptx to rewrite")
     parser.add_argument("--style", type=Path, default=ROOT / "data/styles/alexandria_profile.json",
                         help="style profile sent as the system prompt and measured against")
+    parser.add_argument("--register", help="with a profile that has registers, the one to write in (finalized "
+                                           "or notes; default: the profile's first)")
     parser.add_argument("--no-style", action="store_true",
                         help="write without a style profile, still measuring against --style: the control a "
                              "profile's effect is measured against")
@@ -556,9 +559,12 @@ def main(argv: list[str] | None = None) -> int:
         data = path.read_bytes()
         # Two requests or more at the largest group size, so every size measured is one a batch would send.
         jobs, plan = sample_jobs(path.name, data, args.words, min_blocks=2 * max(groups))
-        system = None if args.no_style else style_instructions(load_style_profile(args.style))
+        profile = load_style_profile(args.style)
+        system = None if args.no_style else style_instructions(profile, args.register)
         source = hashlib.sha256(data).hexdigest()[:16]
-        written_in = "plain" if args.no_style else args.style.stem
+        registers = profile_registers(profile)
+        register = (args.register if args.register in registers else registers[0]) if registers else None
+        written_in = "plain" if args.no_style else f"{args.style.stem}:{register}" if register else args.style.stem
         meta = {"document": path.name, "source": source, "style_profile": written_in, "words": args.words,
                 "sample_words": sum(count_words(job["previous"]) for job in jobs), "blocks": len(jobs),
                 "context_chars": len(system or "") + len(plan.context_text), "detector_profile": args.profile,

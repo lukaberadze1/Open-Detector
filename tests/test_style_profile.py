@@ -4,11 +4,13 @@ import pytest
 
 from update_style_profile import (
     FLOOR,
+    banned_patterns,
+    finished_pieces,
     format_errors,
     main,
     measure,
     parse_note,
-    profile_numbers,
+    register_numbers,
     summarize,
     week_weight,
 )
@@ -78,15 +80,50 @@ def test_measure_counts_the_writers_fingerprint():
     assert s["banned_phrases_used"] == {"delve": 1}
 
 
-def test_profile_numbers_blend_the_archive_into_the_starting_profile():
-    alone = profile_numbers({}, 1.0)
-    assert alone["avg_sentence_length_words"] == 18.3 and alone["starting_profile_share_pct"] == 100.0
-    long_sentences = measure([" ".join(["word"] * 40) + "."] * 50, {})
-    blended = profile_numbers(long_sentences, FLOOR)
-    assert 18.3 < blended["avg_sentence_length_words"] < 40
-    assert blended["min_max_sentence_length"] == [2, 106]
-    assert blended["sentence_length_distribution"]["16_plus_words_pct"].startswith(
-        f"{round(float(blended['sentence_length_distribution']['16_plus_words_pct'].split('%')[0]), 1)}%")
+def test_registers_keep_notes_and_finished_work_apart():
+    alone = register_numbers({})
+    assert alone["finalized"]["avg_sentence_length_words"] == 18.3 and "notes" not in alone
+    long_notes = measure([" ".join(["word"] * 40) + "."] * 50, {})
+    numbers = register_numbers(long_notes)
+    assert numbers["notes"]["avg_sentence_length_words"] == 40.0, "notes are measured on their own, not blended"
+    assert numbers["notes"]["sentence_length_distribution"]["30_plus_words_pct"] == "100.0%"
+    assert numbers["finalized"]["avg_sentence_length_words"] == 18.3, "finished work keeps the starting profile"
+    short_pieces = measure(["Short one. And another short one. A third."] * 200, {})
+    blended = register_numbers(long_notes, short_pieces)["finalized"]
+    assert blended["avg_sentence_length_words"] < 18.3, "finished pieces blend into the finalized register"
+
+
+def test_finished_pieces_are_read_from_their_folder(tmp_path):
+    (tmp_path / "essay.md").write_text("# Loneliness\n\nCurleys wife is lonely in a world of men.\n\nShort.\n")
+    (tmp_path / "report.txt").write_text("Carbohydrates are our energy source for every athlete.\n")
+    assert finished_pieces(tmp_path) == ["Curleys wife is lonely in a world of men.",
+                                         "Carbohydrates are our energy source for every athlete."]
+    assert finished_pieces(tmp_path / "missing") == []
+
+
+def test_banned_phrases_are_read_from_either_format():
+    old = {"style_profile": {"vocabulary_and_lexical_density": {"banned_ai_cliches": ["delve", "not just X, but Y"]}}}
+    new = {"style_profile": {"shared": {"banned_ai_cliches": ["thus", "landscape (figurative)"]}}}
+    assert list(banned_patterns(old)) == ["delve"] and list(banned_patterns(new)) == ["thus"]
+
+
+def test_each_habit_keeps_the_templates_fields():
+    template = {"habits": [{"habit": "", "rate": "", "status": ""}]}
+    good = {"habits": [{"habit": "Starts with However", "rate": "10%", "status": "established"}]}
+    assert format_errors(good, template) == []
+    bad = {"habits": [{"habit": "Starts with However", "status": "once"}, "a loose line"]}
+    errors = format_errors(bad, template)
+    assert any("habits[0]: missing keys ['rate']" in e for e in errors)
+    assert any("habits[1]: expected object, found string" in e for e in errors)
+
+
+def test_the_shipped_template_and_profile_format_agree():
+    from pathlib import Path
+
+    template = json.loads(Path("style_profile_template.json").read_text())
+    registers = template["style_profile"]["registers"]
+    assert list(registers) == ["finalized", "notes"] and registers["finalized"] == registers["notes"]
+    assert format_errors(template, template) == []
 
 
 TEMPLATE = {"style_profile": {

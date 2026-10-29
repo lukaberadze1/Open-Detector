@@ -195,7 +195,8 @@ def test_red_team_sample_is_recorded_as_ai_with_its_score(stub_model, tmp_path):
         "model": "stub-model", "attack": "prompt+plain", "group": "ai", "group_key": None, "prompt": None,
         "source_file": None, "target_section": None, "ai_probability": None, "verdict": "likely_ai",
         "calibrated": True, "detector_profile": "slim", "style_match": None,
-        "thinking": "low", "temperature": 0.8, "style_profile": "plain", "blocks_per_request": None,
+        "thinking": "low", "temperature": 0.8, "style_profile": "plain", "register": None,
+        "blocks_per_request": None,
     }
     assert rows[0]["ai_probability"] > 0.9
     assert len(list((tmp_path / "exports").glob("AI_REDTEAM_prompt_*.txt"))) == 1
@@ -280,6 +281,28 @@ def test_robustness_mode_turns_scoring_on(stub_model, tmp_path, monkeypatch):
     assert len(scores) == 1 and scores[0] is not None, "each draft was scored"
     row = json.loads((tmp_path / "local_redteam.jsonl").read_text())
     assert row["evasion_kept"] and row["verdict"] == "likely_ai"
+
+
+def test_a_profile_with_registers_writes_in_the_register_picked(stub_model, tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    registers = {name: {"covers": f"{name} writing", "golden_rule": f"Write as in {name}."}
+                 for name in ("finalized", "notes")}
+    (styles / "alexandria_profile.json").write_text(json.dumps({"style_profile": {
+        "format": "registers-v2", "how_to_use": "One register at a time.", "registers": registers,
+        "shared": {"never": ["Em-dashes."]}}}))
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.run()
+    assert at.segmented_control(key="keep:redteam:register").value == "finalized"
+    at.segmented_control(key="keep:redteam:register").set_value("notes").run()
+    at.text_area(key="keep:redteam:prompt").input("Notes on Roman taxes.")
+    button(at, "Generate challenge sample").click()
+    at.run()
+    assert not at.exception, at.exception
+    assert "Write as in notes." in stub_model.systems[-1] and "finalized writing" not in stub_model.systems[-1]
+    row = json.loads((tmp_path / "local_redteam.jsonl").read_text())
+    assert row["register"] == "notes"
 
 
 def test_red_team_writes_in_the_style_profile_picked(stub_model, tmp_path):

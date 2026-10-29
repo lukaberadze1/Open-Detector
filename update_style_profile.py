@@ -7,8 +7,12 @@ Every paragraph the writer has written is kept in data/styles/alexandria/corpus.
 week it first appeared (on the first run, the week its note was created). Nothing is dropped: a
 paragraph deleted from the vault stays in the corpus, and only a paragraph edited in place gives
 way to its new version. The measurements weight each week by its age (half-life HALF_LIFE weeks,
-never below FLOOR), and the profile the writer started from counts as one more batch of
-BASELINE["words"] words dated to the first run. So recent writing leads and older writing keeps a say.
+never below FLOOR), so recent writing leads and older writing keeps a say.
+
+The profile keeps two registers apart, because quick notes are written differently from finished
+work: the vault's writing is the notes register, and the finalized register is the starting profile
+(BASELINE, measured from about 54,000 words of the writer's finished pieces) with any finished pieces
+saved in the state directory's finalized/ folder blended in. register_numbers gives each its numbers.
 
 Only the writer's own words are measured. Left out: frontmatter, headings, callouts and quotes
 (where the vault keeps review notes and pasted sources), embeds, tables, code, HTML comments,
@@ -41,14 +45,16 @@ from opendetector.segment import split_sentences
 VAULT = Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents/The Alexandria Archive"
 STATE = Path("data/styles/alexandria")
 PROFILE = Path("data/styles/alexandria_profile.json")
-TEMPLATE = Path("data/styles/pasted_style_profile.json")
+TEMPLATE = Path("style_profile_template.json")
 DICTIONARY = Path("/usr/share/dict/words")
 
 HALF_LIFE = 12  # weeks until a week's writing counts half
 FLOOR = 0.25  # the least any week ever counts
-# The measured profile the writer started from: about 54,000 words of essays, fiction, reports and notes.
-BASELINE = {"words": 54000, "mean": 18.3, "min": 2, "max": 106,
+# The measured profile the writer started from: about 54,000 words of essays, fiction, reports and
+# personal writing. It is the finalized register's numbers until finished pieces are added.
+BASELINE = {"words": 54000, "mean": 18.3, "median": 16, "cv": 0.6, "min": 2, "max": 106,
             "pct": {"under_6": 6.9, "6_to_15": 39.3, "16_to_29": 40.9, "30_plus": 13.0}}
+FINALIZED = "finalized"  # a folder in the state directory for the writer's finished pieces (.md, .txt)
 EDIT_SIMILARITY = 0.8  # a new paragraph this close to a vanished one in the same note is an edit of it
 MIN_WORDS, MIN_LIST_WORDS = 4, 6
 SAMPLE_WORDS = 8000  # how much of the new writing goes into new_this_week.md
@@ -290,9 +296,11 @@ def known_word(word: str, words: frozenset[str]) -> bool:
 
 
 def banned_patterns(profile: dict) -> dict[str, re.Pattern]:
-    """A pattern per literal phrase in the profile's banned list (not 'X' templates or glossed entries)."""
-    phrases = (profile.get("style_profile", profile).get("vocabulary_and_lexical_density", {})
-               .get("banned_ai_cliches", []))
+    """A pattern per literal phrase in the profile's banned list (not 'X' templates or glossed entries),
+    from either profile format."""
+    body = profile.get("style_profile", profile)
+    phrases = ((body.get("shared") or {}).get("banned_ai_cliches")
+               or (body.get("vocabulary_and_lexical_density") or {}).get("banned_ai_cliches", []))
     return {p: re.compile(rf"\b{re.escape(p)}\b", re.IGNORECASE) for p in phrases
             if "(" not in p and not re.search(r"\b[XY]\b", p)}
 
@@ -432,34 +440,53 @@ def summarize(c: dict) -> dict | None:
     }
 
 
-def profile_numbers(stacked: dict, baseline_weight: float) -> dict:
-    """The profile's numeric fields: the stacked archive blended with the starting profile, each
-    sentence counting once and the starting profile's sentences weighted by its age."""
-    s = summarize(stacked)
-    if s is None:
-        base, pct = BASELINE, BASELINE["pct"]
-        return {"avg_sentence_length_words": base["mean"], "min_max_sentence_length": [base["min"], base["max"]],
-                "sentence_length_distribution": _distribution(pct), "starting_profile_share_pct": 100.0}
-    nb = BASELINE["words"] / BASELINE["mean"] * baseline_weight
-    na = stacked["sentences"]
-    sl = s["sentence_length"]
-
-    def blend(base: float, archive: float) -> float:
-        return round((base * nb + archive * na) / (nb + na), 1)
-
-    pct = {k: blend(v, sl["distribution_pct"][k]) for k, v in BASELINE["pct"].items()}
-    return {
-        "avg_sentence_length_words": blend(BASELINE["mean"], sl["mean"]),
-        "min_max_sentence_length": [min(BASELINE["min"], sl["min"]), max(BASELINE["max"], sl["max"])],
-        "sentence_length_distribution": _distribution(pct),
-        "starting_profile_share_pct": _pct(nb, nb + na),
-    }
+def _figures(mean: float, median: float, cv: float, low: int, high: int, pct: dict) -> dict:
+    """A register's rhythm numbers, in the profile's fields."""
+    return {"avg_sentence_length_words": mean, "median_sentence_length_words": median,
+            "min_max_sentence_length": [low, high], "coefficient_of_variation": cv,
+            "sentence_length_distribution": {"under_6_words_pct": f"{pct['under_6']}%",
+                                             "6_to_15_words_pct": f"{pct['6_to_15']}%",
+                                             "16_to_29_words_pct": f"{pct['16_to_29']}%",
+                                             "30_plus_words_pct": f"{pct['30_plus']}%"}}
 
 
-def _distribution(pct: dict) -> dict:
-    return {"under_6_words_pct": f"{pct['under_6']}%", "6_to_15_words_pct": f"{pct['6_to_15']}%",
-            "16_plus_words_pct": f"{round(pct['16_to_29'] + pct['30_plus'], 1)}% (16-29 words: {pct['16_to_29']}%, "
-                                 f"30+ words: {pct['30_plus']}%)"}
+def register_numbers(stacked: dict, finalized: dict | None = None) -> dict:
+    """Each register's rhythm numbers, kept apart: quick notes are not written like finished work.
+    Notes are the vault's writing, recent weeks weighted more. Finalized is the starting profile, with
+    any finished pieces from the finalized folder (`finalized`, measure() counts) blended in by sentence."""
+    numbers = {}
+    pieces = summarize(finalized) if finalized else None
+    if pieces:
+        nb, na = BASELINE["words"] / BASELINE["mean"], finalized["sentences"]
+        sl = pieces["sentence_length"]
+
+        def blend(base: float, more: float, digits: int = 1) -> float:
+            return round((base * nb + more * na) / (nb + na), digits)
+
+        numbers["finalized"] = _figures(
+            blend(BASELINE["mean"], sl["mean"]), round(blend(BASELINE["median"], sl["median"])),
+            blend(BASELINE["cv"], sl["coefficient_of_variation"], 2), min(BASELINE["min"], sl["min"]),
+            max(BASELINE["max"], sl["max"]),
+            {k: blend(v, sl["distribution_pct"][k]) for k, v in BASELINE["pct"].items()})
+    else:
+        numbers["finalized"] = _figures(BASELINE["mean"], BASELINE["median"], BASELINE["cv"], BASELINE["min"],
+                                        BASELINE["max"], BASELINE["pct"])
+    if notes := summarize(stacked):
+        sl = notes["sentence_length"]
+        numbers["notes"] = _figures(sl["mean"], sl["median"], sl["coefficient_of_variation"], sl["min"], sl["max"],
+                                    {k: sl["distribution_pct"][k] for k in BASELINE["pct"]})
+    return numbers
+
+
+def finished_pieces(folder: Path) -> list[str]:
+    """The paragraphs of the writer's finished pieces in `folder` (Markdown headings left out)."""
+    paragraphs = []
+    for path in sorted([*folder.glob("*.md"), *folder.glob("*.txt")]) if folder.is_dir() else []:
+        for block in re.split(r"\n\s*\n", path.read_text(encoding="utf-8", errors="ignore")):
+            block = block.strip()
+            if block and not block.startswith("#") and len(WORD_RE.findall(block)) >= MIN_WORDS:
+                paragraphs.append(block)
+    return paragraphs
 
 
 DRIFT = [("mean sentence length", ("sentence_length", "mean")),
@@ -476,7 +503,7 @@ DRIFT = [("mean sentence length", ("sentence_length", "mean")),
 
 
 def measurements(corpus: list[dict], change: dict, week: str, baseline_week: str,
-                 banned: dict[str, re.Pattern]) -> dict:
+                 banned: dict[str, re.Pattern], finished: list[str] | None = None) -> dict:
     by_week = defaultdict(list)
     for e in corpus:
         if "superseded" not in e:
@@ -514,7 +541,9 @@ def measurements(corpus: list[dict], change: dict, week: str, baseline_week: str
                    "first_run": change["seed"], "new_paragraphs": len(change["added"]),
                    "new_words": sum(e["words"] for e in change["added"]), "edited_paragraphs": change["edited"],
                    "kept_after_deletion_from_vault": change["kept_after_deletion"]},
-        "profile_numbers": profile_numbers(stacked, week_weight(baseline_week, week)),
+        "register_numbers": register_numbers(stacked, measure(finished, banned) if finished else None),
+        "finished_pieces": {"paragraphs": len(finished or []),
+                            "words": len(WORD_RE.findall("\n".join(finished or [])))},
         "stacked": stacked_summary,
         "this_week": this_week,
         "drift": drift,
@@ -591,6 +620,11 @@ def format_errors(profile, template, path: str = "") -> list[str]:
                 errors += format_errors(profile[key], template[key], f"{path}.{key}" if path else key)
         return errors
     if isinstance(template, list):
+        if shapes := [x for x in template if isinstance(x, dict)]:
+            errors = []
+            for index, item in enumerate(profile):
+                errors += format_errors(item, shapes[0], f"{where}[{index}]")
+            return errors[:5]
         kinds = {_kind(x) for x in template}
         if kinds == {"number"} and len(profile) != len(template):
             return [f"{where}: expected {len(template)} numbers, found {len(profile)}"]
@@ -634,7 +668,8 @@ def main(argv: list[str] | None = None) -> int:
     meta_path.write_text(json.dumps(meta, indent=2) + "\n")
     snapshot = prepare_profile(args.profile, args.template, args.state / "history", week)
     banned = banned_patterns(json.loads(args.profile.read_text()))
-    report = measurements(corpus, change, week, meta["starting_profile_week"], banned)
+    finished = finished_pieces(args.state / FINALIZED)
+    report = measurements(corpus, change, week, meta["starting_profile_week"], banned, finished)
     report["unreadable_notes"] = unreadable
     report["skipped_as_pasted"] = {"lines": len(pasted), "examples": [line[:120] for line in pasted[:8]]}
     (args.state / "measurements.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
@@ -643,15 +678,17 @@ def main(argv: list[str] | None = None) -> int:
     if not changelog.exists():
         changelog.write_text("# Style profile changelog\n\nNewest week at the bottom.\n")
 
-    c, numbers = report["corpus"], report["profile_numbers"]
+    c, numbers = report["corpus"], report["register_numbers"]
     print(f"{len(notes)} notes read{f', {len(unreadable)} unreadable' if unreadable else ''}. "
           f"Corpus: {c['paragraphs']} paragraphs, {c['words']} words over {c['weeks']} weeks.")
     print(("First run: " if c["first_run"] else f"{week}: ")
           + f"{c['new_paragraphs']} new paragraphs ({c['new_words']} words), {c['edited_paragraphs']} edited, "
             f"{c['kept_after_deletion_from_vault']} kept after deletion from the vault.")
-    print(f"Profile numbers: mean sentence {numbers['avg_sentence_length_words']} words, "
-          f"range {numbers['min_max_sentence_length']}, starting profile {numbers['starting_profile_share_pct']}% "
-          "of the blend.")
+    notes, final = numbers.get("notes") or {}, numbers["finalized"]
+    print(f"Register numbers: notes mean sentence {notes.get('avg_sentence_length_words')} words "
+          f"(range {notes.get('min_max_sentence_length')}); finalized {final['avg_sentence_length_words']} words"
+          + (f", with {report['finished_pieces']['words']} words of finished pieces" if finished else
+             " (the starting profile; add finished pieces to the finalized folder to measure more)") + ".")
     print(f"Wrote {args.state / 'measurements.json'} and {args.state / 'new_this_week.md'}"
           + (f"; snapshot {snapshot}" if snapshot else ""))
     return 0
