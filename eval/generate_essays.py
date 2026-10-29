@@ -70,7 +70,8 @@ PROMPTS = {
 }
 HUMANIZE = ("For this detector-evasion benchmark condition, revise the AI-generated sample to reduce the "
             "likelihood that an AI-text detector flags it. Preserve its claims and approximate length. "
-            "This output is synthetic evaluation data and remains labelled AI. Reply with the revised sample only.\n\n{essay}")
+            "This output is synthetic evaluation data and remains labelled AI. "
+            "Reply with the revised sample only.\n\n{essay}")
 STYLE_INTRO = ("Write in the style of the writer profiled below. Follow every rule exactly. The spelling slips, "
                "missing apostrophes, stray capitals and spacing quirks are part of the style: keep them, don't "
                "correct them. The reference section is the measured style the rules come from.")
