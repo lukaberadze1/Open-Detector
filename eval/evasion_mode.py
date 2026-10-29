@@ -71,7 +71,7 @@ def generate_until_target(
     best_style: float | None = None
     best_rank: tuple[float, ...] | None = None
     current_prompt = prompt
-    for attempt in range(1, max_attempts + 1):
+    for _ in range(max_attempts):
         text = generate(current_prompt)
         measured = score(text)
         if isinstance(measured, dict):
@@ -86,7 +86,8 @@ def generate_until_target(
             best_text = text
         current_prompt = REWRITE_INSTRUCTIONS.format(original_prompt=prompt, draft=text)
         if value is not None or style is not None:
-            current_prompt += (f"\n\nCandidate assessment: detector likelihood {value if value is not None else 'unavailable'}; "
+            current_prompt += (f"\n\nCandidate assessment: detector likelihood "
+                               f"{value if value is not None else 'unavailable'}; "
                                f"style match {style if style is not None else 'unavailable'}%. Improve whichever "
                                "measure is weaker while keeping the same meaning and length.")
         if isinstance(measured, dict) and measured.get("style_feedback"):
@@ -97,7 +98,7 @@ def generate_until_target(
 
 
 def _candidate_rank(ai: float | None, style: float | None, style_floor: float) -> tuple[float, ...]:
-    """Prefer candidates meeting the style floor; then balance both measures on 0–1 scales."""
+    """Prefer candidates meeting the style floor; then balance both measures on 0-1 scales."""
     detector_fit = 0.5 if ai is None else 1.0 - max(0.0, min(1.0, float(ai)))
     style_fit = 0.5 if style is None else max(0.0, min(100.0, float(style))) / 100.0
     meets_floor = style is not None and style >= style_floor
