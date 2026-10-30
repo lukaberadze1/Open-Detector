@@ -72,6 +72,62 @@ the grouped retry.
 - **Asking for each copy on its own cost 4 to 12 times the tokens**, because each request carries the
   profile and the document. Retrying the copies together costs about twice a plain run.
 
+## Both ways of writing, both profiles, 2026-10-30
+
+Standard generation (a new piece from instructions) was measured for the first time with
+`python -m eval.tune_prompts`: 3 prompts of each kind (an essay, a report, a story; a review, a forum
+reply, an explanation) × 3 repeats on gemini-3.5-flash-lite, each sample scored on its own by the slim
+detector, which calls 33-80% *Needs review* and under 33% *Likely human*. "Built-in" is the human
+profile measured from 1,750 writers (`styles/human_default_profile.json`).
+
+| Profile, register | Prompts | Before: AI likelihood % | Likely human | After restyle: AI likelihood % | Likely human | Words | Tokens per sample |
+|---|---|---:|---:|---:|---:|---:|---:|
+| yours, finished work | essay, report, story | 91 ± 12 | 0 of 9 | 42 ± 26 | 4 of 9 | 331 | 23,059 |
+| yours, quick notes | review, reply, explanation | 61 ± 28 | 2 of 9 | 40 ± 33 | 5 of 9 | 316 | 21,327 |
+| built-in, finished work | essay, report, story | 81 ± 18 | 0 of 9 | 43 ± 34 | 4 of 9 | 229 | 12,472 |
+| built-in, quick notes | review, reply, explanation | 92 ± 14 | 0 of 8 | 68 ± 36 | 2 of 9 | 226 | 10,641 |
+
+Document rewrites, 16 blocks, 3 repeats on each of 3.5 and 3.1 Flash-Lite:
+
+| Original | Profile, register | Same structure | Writer's sentences |
+|---|---|---:|---:|
+| the writer's own report | yours, finished work | 3-8 (no profile) | 1 ± 1 / 9 ± 6 |
+| Claude's report (100% AI) | yours, finished work | 53 / 35 | 16 ± 13 / 22 ± 9 |
+| Claude's report | yours, quick notes | 63 / 60 | 63 / 49 |
+| Claude's report | built-in, finished work | 94 / 91 | 68 / 85 |
+| Claude's report | built-in, quick notes | | 90 / 53 |
+
+Why they were weak:
+
+- **Written from instructions, a sample is the model's own plan of what to say**: complete, balanced,
+  each point in order. The detector reads that plan whatever voice the model is told to write it in.
+  Telling the model more about the voice changed nothing: naming it an essay rather than a "challenge
+  sample", or giving it a whole-sample sentence plan, left it at 86-92%.
+- **The page told a sample from instructions not to say "I" or "you"**: its voice rule, written for
+  rewriting a source, said to add no first or second person "if it is absent" from a source there
+  wasn't. People write about 19 "I" and 16 "you" per 1,000 words in informal writing.
+- **A rewrite in place keeps an AI original's skeleton**: two even 20-word sentences per block survive
+  any rewording. Borrowing the writer's sentence shapes breaks that, but only with the writer's voice
+  too: the shapes alone left it at 91-97%.
+- **The built-in profile is everyone's average, and the average of many writers is no one**: clean,
+  neutral, standard prose with the quirks averaged away, which is how the model writes anyway. A
+  writer's own profile is a list of quirks (98% "a" before vowels, no apostrophes in notes, "However"
+  with no comma, spaces before full stops), and that is what it has over the built-in.
+
+What changed:
+
+- A sample from instructions is drafted, then rewritten passage by passage in the writer's voice and
+  borrowed sentence shapes (`restyle`), as the document rewrites that pass are. The draft is asked for
+  a quarter longer and the borrowed plans a third longer, since models write about two thirds of a
+  borrowed plan's words; without that, samples fell under the detector's 150 words. It costs one more
+  request, and about twice the tokens, since the profile goes with both.
+- The voice rule says nothing when there is no source text.
+- Document rewrites borrow the writer's sentences by default; with no shapes to borrow they keep the
+  original's.
+
+The built-in profile is still the weaker one, as a profile of no one should be. Giving each sample one
+measured writer from the 1,750 rather than their average is the next thing to try.
+
 The sections below are kept as they were measured.
 
 ## The first measurement

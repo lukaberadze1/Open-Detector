@@ -36,7 +36,8 @@ text as human work, for evading a school's, employer's or publisher's rules, or 
 person on a score alone.
 
 Try both pages at https://open-detector.streamlit.app. In the Adversarial Lab, paste your own Gemini
-key in the sidebar and add a style profile for a controlled challenge condition; both are kept only
+key in the sidebar. Samples are written in the built-in human style profile, measured from 1,750
+texts by different people, unless you add a profile of your own; your key and profile are kept only
 for your browser session.
 
 ## Download the Mac app
@@ -97,8 +98,9 @@ cp .env.example .env
 Put your Gemini key after `GEMINI_API_KEY=` in `.env` (free at
 [aistudio.google.com/apikey](https://aistudio.google.com/apikey)), or paste it on the app's Guide
 page, which saves it there. Only the Adversarial Lab needs it.
-To test style-conditioned generation, save a JSON style profile in `data/styles/`; the lab lists
-every profile there and records which one was used.
+The lab writes in the built-in human profile (`styles/human_default_profile.json`) by default. To
+write like one writer instead, save their JSON style profile in `data/styles/`; the lab lists every
+profile there and records which one was used.
 Git ignores `.env` and `data/`, so your key and profile stay on your machine.
 
 ```bash

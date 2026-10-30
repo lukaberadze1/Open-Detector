@@ -1,0 +1,248 @@
+{
+  "style_profile": {
+    "format": "registers-v2",
+    "how_to_use": "This is the built-in human profile: no single writer, but how people write, measured from 1,750 human texts by different writers in MAGE (Li et al., 2024) with eval/build_human_profile.py. Finished work comes from news reports, science abstracts, encyclopedia articles and short stories; quick notes from informal writing people type for others online: argument posts, explanations and reviews. Write in the one register the task calls for: finished work for any document, essay, report, answer or story, quick notes for posts, comments, reviews and replies. Each habit carries a rate measured over the sample; where writers differ a lot, the middle half of writers (25th to 75th percentile) is given, so pick one writer's way and keep to it through the text rather than averaging every habit. Status says how widespread a habit is: established (most writers, and in every source), emerging (a minority of writers, or one or two sources). Use each habit about as often as its rate, scattered unevenly, never in every sentence. A text in a writer's own profile, added below this one, reads more like that writer.",
+    "registers": {
+      "finalized": {
+        "covers": "Finished writing meant for readers: news reports, articles, essays, school and science reports, encyclopedia-style explanations and short stories. Use it for any document, essay, report, answer box or story.",
+        "evidence": "1,000 human texts of 150 words or more, 250 from each of four MAGE sources (news, science abstracts, Wikipedia paragraphs, WritingPrompts stories), 353,855 words in all, measured 2026-10-30. Texts whose punctuation was lost (a 'sentence' past 120 words) were left out. Numbers only; no text is kept.",
+        "rhythm": {
+          "avg_sentence_length_words": 16.0,
+          "median_sentence_length_words": 14,
+          "min_max_sentence_length": [
+            1,
+            118
+          ],
+          "coefficient_of_variation": 0.69,
+          "sentence_length_distribution": {
+            "under_6_words_pct": "16.6%",
+            "6_to_15_words_pct": "38.3%",
+            "16_to_29_words_pct": "34.1%",
+            "30_plus_words_pct": "11.0%"
+          },
+          "pattern": "Uneven. Neighbouring sentences differ by 8.7 words on average, and in 27% of neighbouring pairs one is at least 2.5 times as long as the other. One writer's own text varies less than the pooled numbers: the middle half of writers average 16.9 to 25.6 words a sentence (median 21.4) with a coefficient of variation of 0.33 to 0.56 (median 0.43). Reports and abstracts run long and even, 20-30 words with few under 6; stories mix dialogue lines of 1-5 words with long narrative sentences. 30+ word sentences: 5% to 33% of a writer's sentences (median 14%). Never a run of identical medium-length sentences."
+        },
+        "voice": {
+          "formality": "Plain and factual in reports and articles: concrete names, numbers, dates and places, ordinary verbs ('said', 'found', 'used', 'was'), no flourish. Stories are concrete and physical, with dialogue. Neither register reaches for elevated vocabulary.",
+          "person_and_pronouns": "Reports and articles are third person; most finished texts have no 'I' at all (the median writer: 0 per 1,000 words, the top quarter 9.4 or more, nearly all stories). Science writing uses 'we' (8.6 per 1,000 words pooled: 'we propose', 'we show'). 'You' appears in a quarter of texts (4.1 per 1,000 or more), mostly dialogue. He/him/his 14 per 1,000 pooled, from news and stories.",
+          "vocabulary": "MATTR over 100-word windows 0.73 pooled (the middle half of writers 0.68 to 0.75), words 4.7 letters on average (4.4 to 5.3 across writers), 22% of words 7+ letters. Key terms are repeated rather than swapped for synonyms; technical writing repeats its noun phrase exactly.",
+          "verbs": "Be-verbs 34 per 1,000 words, modals 10 per 1,000. The reporting verb is 'said' (3.1 per 1,000 words, against 'says' 0.6, 'according to' 0.2 and 'stated' 0.04). Past tense in news and stories, present tense in abstracts ('we present', 'this paper shows')."
+        },
+        "structure": {
+          "sentence_patterns": [
+            "Subject-first declaratives: 'The' opens 10.8% of sentences, 'He' 3.8%, 'It' 3.0%, 'In' 2.8%. Established.",
+            "News leads with who, what and when in the first sentence, then attributes each claim ('..., police said.'). Established in news.",
+            "'But' opens 1.9% of sentences and 'And' 1.4%, with no comma after either. Established.",
+            "Short dialogue lines and fragments in stories: under 6 words in 16.6% of sentences pooled, almost none in reports. Established in stories.",
+            "Acronyms and abbreviations defined once in parentheses, then used bare ('convolutional neural networks (CNNs)'). Established in science writing."
+          ],
+          "openers_and_transitions": "Paragraphs open on the subject itself, a time ('On Monday', 'In 2015') or a place, never a hook question or a generalization. Transitions are mostly implicit: the next fact, 'and', 'but', 'which' (2.4 per 1,000 words), 'because' (0.8 per 1,000). 'However' opens 0.4 sentences per 1,000 words and takes a comma 97% of the time (137 of 141). No closing summary paragraph that restates the text.",
+          "argument_and_hedging": "Claims are stated and attributed ('the study found', 'officials said') rather than hedged. Hedges are specific ('about', 'nearly', 'more than') instead of 'arguably' or 'it could be argued'. 'I believe' is rare in finished work (0.03 per 1,000 words)."
+        },
+        "punctuation": {
+          "dashes_and_hyphens": "Dashes are rare: none in this sample, which may have lost some in its preparation, so use at most one in a long text, never as a habit. Hyphens in compound modifiers as usual ('long-term', 'well-known').",
+          "parentheses": "3.4 pairs per 1,000 words pooled, for acronyms, figures, years and short asides; half of writers use none, the top quarter 6.5 or more.",
+          "semicolons_and_colons": "Semicolons 0.9 per 1,000 words, most writers none. Colons 2.2 per 1,000, before lists, quotes and times.",
+          "questions_and_exclamations": "Question marks 3.8 and exclamation marks 1.8 per 1,000 words pooled, nearly all in story dialogue; reports and articles have almost none.",
+          "quotes_and_emphasis": "Double quotation marks for speech and quoted sources. No bold, italics, headings or bullet lists inside the prose.",
+          "spacing": "Standard: one space between sentences, none before punctuation (0.4 per 1,000 words)."
+        },
+        "slips": {
+          "overall_rate": "Finished work is mostly clean. Words the spelling check doesn't know run 0.8% to 2.8% across writers (median 1.6%), but most are contractions, names and technical terms; real misspellings are well under 1% of words, about 1 in a 300-word text, and many texts have none.",
+          "recurring_misspellings": [
+            "None for the profile as a whole: each writer's repeated misspellings are their own. Use the one-off kinds below at the overall rate."
+          ],
+          "one_off_kinds": [
+            "A dropped or doubled letter in a longer word ('occured', 'accomodate').",
+            "A homophone or near-homophone (its/it's 14 of 478 cases, then/than).",
+            "A missing comma after a short introductory phrase.",
+            "'a' before a vowel sound in 2.8% of cases (32 of 1,126)."
+          ],
+          "casing": "Standard capitalization; proper nouns capitalized, titles in title case."
+        },
+        "habits": [
+          {
+            "habit": "Keep the key term identical every time instead of varying it.",
+            "rate": "throughout reports and abstracts",
+            "status": "established",
+            "seen": "science abstracts, Wikipedia, news",
+            "example": "the model ... the model ... the model"
+          },
+          {
+            "habit": "Attribute claims to their source with 'said' or 'according to'.",
+            "rate": "most paragraphs of news",
+            "status": "established",
+            "seen": "news (XSum)",
+            "example": "..., a spokesman said."
+          },
+          {
+            "habit": "Use contractions only in dialogue and personal writing.",
+            "rate": "8.2 per 1,000 words pooled; the median writer none, the top quarter 8 or more",
+            "status": "established",
+            "seen": "stories use them, reports and abstracts don't",
+            "example": "\"I don't know,\" she said."
+          },
+          {
+            "habit": "Mix one- to five-word lines with long sentences in narrative.",
+            "rate": "16.6% of sentences under 6 words pooled, mostly stories",
+            "status": "established",
+            "seen": "WritingPrompts stories",
+            "example": "He waited. Nothing."
+          },
+          {
+            "habit": "Give numbers as digits with units, and dates in full.",
+            "rate": "most sentences of news and science writing",
+            "status": "established",
+            "seen": "news, science abstracts",
+            "example": "on 13 January, 25 years later"
+          }
+        ],
+        "golden_rule": "Write like a competent person reporting or telling something for readers: concrete and specific, the key term repeated, sentences of uneven length that each carry one fact or action, no flourishes, no summary at the end."
+      },
+      "notes": {
+        "covers": "Informal writing typed quickly for other people online: forum and comment posts, arguments, explanations to strangers, reviews and replies.",
+        "evidence": "750 human texts of 150 words or more, 250 from each of three MAGE sources (Reddit ChangeMyView posts, ELI5 answers, Yelp reviews), 254,701 words in all, measured 2026-10-30. Numbers only; no text is kept.",
+        "rhythm": {
+          "avg_sentence_length_words": 18.1,
+          "median_sentence_length_words": 16,
+          "min_max_sentence_length": [
+            1,
+            115
+          ],
+          "coefficient_of_variation": 0.7,
+          "sentence_length_distribution": {
+            "under_6_words_pct": "11.3%",
+            "6_to_15_words_pct": "38.0%",
+            "16_to_29_words_pct": "36.1%",
+            "30_plus_words_pct": "14.5%"
+          },
+          "pattern": "Bursty. Neighbouring sentences differ by 11.7 words on average and 31% of neighbouring pairs differ 2.5 times or more. Within one writer: 15.1 to 22.6 words a sentence for the middle half (median 18.5), coefficient of variation 0.48 to 0.68 (median 0.57). Long run-on explanations of 30+ words (13% of a typical writer's sentences, up to a quarter) sit next to short reactions under 6 words (7.8% for the median writer, up to 17%)."
+        },
+        "voice": {
+          "formality": "Conversational. Talks to the reader, gives opinions and reasons, uses everyday intensifiers ('really' 1.7 per 1,000 words, 'a lot of' 0.6, 'even' 1.8, 'pretty', 'obviously' 0.15) and casual phrasing. Explanations use analogies and everyday examples.",
+          "person_and_pronouns": "First person throughout: 'I' 18.6 per 1,000 words pooled (4.9 to 32 across the middle half of writers). 'You' 16.4 per 1,000 (4.2 to 21.7), both the reader and generic 'you'. 'We' 10.3 per 1,000.",
+          "vocabulary": "MATTR 0.72 (0.69 to 0.74 across writers), words 4.4 letters on average, 19% of words 7+ letters: shorter, plainer words than finished work. Repeats words freely.",
+          "verbs": "Be-verbs 43 per 1,000 words and modals 15 per 1,000 ('would', 'could', 'should', 'can'): more than finished work. Present tense for opinions, past for anecdotes."
+        },
+        "structure": {
+          "sentence_patterns": [
+            "'I' opens 9.4% of sentences, 'If' 4.0%, 'This' 3.7%, 'So' 2.1%, 'But' 1.8%, 'It's' 1.4%, 'And' 1.3%. Established.",
+            "Conditional reasoning: 'If you..., then...' and 'because' (2.9 per 1,000 words). Established.",
+            "A short reaction sentence after a long explanation. Established.",
+            "Rhetorical and real questions to the reader (3.3 per 1,000 words). Established.",
+            "Exclamations in reviews and reactions: half of writers use none, a quarter 5.9 per 1,000 words or more. Emerging (reviews)."
+          ],
+          "openers_and_transitions": "Starts straight in with an opinion, a reaction or 'I' ('I think...', 'So...', 'If you...'). Transitions are spoken ones: 'so', 'but', 'and', 'also', 'because', 'that's why'. 'However' takes a comma 76% of the time (87 of 114). No formal conclusion: posts stop when the point is made, sometimes with a short sign-off.",
+          "argument_and_hedging": "Hedges are personal and casual, not academic: 'I think' 0.8, 'pretty' 0.7, 'probably' 0.6, 'basically' 0.4, 'I believe' 0.35 and 'kind of' 0.35 per 1,000 words. Claims are backed by personal experience and examples rather than sources."
+        },
+        "punctuation": {
+          "dashes_and_hyphens": "Dashes are rare: none in this sample, which may have lost some in its preparation. Hyphens as usual, sometimes dropped in compounds.",
+          "parentheses": "5.3 pairs per 1,000 words pooled (the median writer 3.9) for asides and second thoughts.",
+          "semicolons_and_colons": "Semicolons 0.6 per 1,000 words, most writers none. Colons 2.7 per 1,000, before lists and explanations.",
+          "questions_and_exclamations": "Question marks 3.3 per 1,000 words (the median writer 1.4), exclamation marks 3.6 (the median writer none, reviews many).",
+          "quotes_and_emphasis": "Quotation marks for quoting others or scare quotes. Emphasis by capitals ('EVER') now and then, not by bold or italics.",
+          "spacing": "Standard spacing, occasionally a double space or a missing space after a full stop."
+        },
+        "slips": {
+          "overall_rate": "Looser than finished work. Words the spelling check doesn't know run 1.9% to 4.2% across writers (median 2.9%), most of them contractions, slang and names; real slips are about 1% of words, 2-4 in a 300-word post. Apostrophes are dropped from 2% of contractions; 'its' stands for 'it's' in 4% of cases (33 of 845).",
+          "recurring_misspellings": [
+            "None for the profile as a whole: each writer's repeated misspellings are their own. Use the one-off kinds below at the overall rate."
+          ],
+          "one_off_kinds": [
+            "A dropped apostrophe (dont, im, thats).",
+            "its/it's, your/you're, then/than confusions.",
+            "A typo from typing fast: a swapped or missing letter.",
+            "'a' before a vowel sound in 4.7% of cases (38 of 810)."
+          ],
+          "casing": "Mostly standard; lowercase 'i' 0.4 per 1,000 words; a word in capitals for emphasis now and then."
+        },
+        "habits": [
+          {
+            "habit": "Write in first person and talk to the reader as 'you'.",
+            "rate": "'I' 18.6 and 'you' 16.4 per 1,000 words pooled",
+            "status": "established",
+            "seen": "argument posts, explanations, reviews",
+            "example": "I get why you'd think that, but"
+          },
+          {
+            "habit": "Use contractions, with the apostrophe.",
+            "rate": "15.9 per 1,000 words pooled (6.8 to 22 across writers); 2% drop the apostrophe",
+            "status": "established",
+            "seen": "all three sources",
+            "example": "it's, don't, you're, can't"
+          },
+          {
+            "habit": "Explain with an everyday example or analogy.",
+            "rate": "most explanations",
+            "status": "established",
+            "seen": "ELI5 answers, argument posts",
+            "example": "Think of it like a queue at a shop."
+          },
+          {
+            "habit": "Use casual intensifiers.",
+            "rate": "'really' 1.7, 'even' 1.8, 'a lot of' 0.6 per 1,000 words",
+            "status": "established",
+            "seen": "all three sources",
+            "example": "it was really good, even the fries"
+          },
+          {
+            "habit": "End a review or rant with an exclamation or a capitalized word.",
+            "rate": "a quarter of writers, 5.9 exclamation marks per 1,000 words or more",
+            "status": "emerging",
+            "seen": "reviews",
+            "example": "Never again!"
+          }
+        ],
+        "golden_rule": "Write like a person typing a reply for strangers online: first person, talking to the reader, opinions with reasons and everyday examples, contractions, uneven sentences that run on and then stop short, and the odd small slip."
+      }
+    },
+    "shared": {
+      "always": [
+        "Uneven sentence lengths: in both registers about a quarter to a third of neighbouring sentences differ 2.5 times or more in length.",
+        "The key word repeated rather than replaced with synonyms.",
+        "Concrete specifics (names, numbers, places, examples) over abstract summary."
+      ],
+      "never": [
+        "Any word or phrase in banned_ai_cliches.",
+        "A closing summary that restates the text ('In conclusion', 'Overall', 'Ultimately').",
+        "A participial commentary tail after a comma (', highlighting...', ', underscoring...', ', showcasing...').",
+        "'It's not just X, it's Y' or 'Not only X, but also Y' reframes.",
+        "Rule-of-three lists of abstract nouns as decoration.",
+        "Em-dash asides as a habit.",
+        "Signposting meta-sentences ('In this essay I will', 'Let's take a closer look', 'In other words').",
+        "Impersonal hedges ('It could be argued that', 'arguably', 'one might say', 'to some extent')."
+      ],
+      "signature_vocabulary": [
+        "'said' as the reporting verb (finished work)",
+        "'really' (informal 1.7 per 1,000 words, finished 0.6)",
+        "'because' (informal 2.9 per 1,000 words, finished 0.8)",
+        "'even' (informal 1.8 per 1,000 words, finished 1.0)",
+        "'a lot of' (informal 0.6 per 1,000 words, finished 0.2)"
+      ],
+      "banned_ai_cliches": [
+        "delve", "delve into", "dive into", "deep dive", "testament", "a testament to", "crucial", "plays a crucial role",
+        "pivotal", "furthermore", "moreover", "additionally", "in addition to this", "consequently",
+        "it is important to note", "it is worth noting", "it's worth noting", "notably", "importantly", "interestingly",
+        "essentially", "indeed", "thus", "hence", "therein", "underscore", "underscores", "underscoring", "highlight",
+        "highlights", "highlighting", "showcase", "showcases", "showcasing", "illustrates", "emphasizes", "signifies",
+        "encapsulates", "epitomizes", "conveys", "evokes", "embodies", "poignant", "juxtaposition", "nuanced", "nuance",
+        "multifaceted", "intricate", "complex interplay", "interplay", "tapestry", "rich tapestry",
+        "landscape (figurative)", "realm (figurative)", "journey (figurative)", "navigate", "navigating", "foster",
+        "fostering", "leverage", "harness", "elevate", "unlock", "utilize", "facilitate", "encompass", "robust",
+        "seamless", "holistic", "comprehensive", "profound", "paramount", "vital role", "key role", "transformative",
+        "groundbreaking", "game-changer", "ever-evolving", "vibrant", "myriad", "plethora", "a wide array of", "beacon",
+        "resonate", "resonates", "unwavering", "indelible", "enduring legacy", "meticulous", "commendable", "captivating",
+        "stands as", "serves as", "boasts", "in today's world", "in today's fast-paced world", "in an era of",
+        "at its core", "it goes without saying", "needless to say", "in conclusion", "in summary", "to sum up",
+        "all in all", "that being said", "with that in mind", "let's explore", "let's take a closer look",
+        "a powerful reminder", "serves as a reminder", "sheds light on", "paints a picture", "speaks volumes"
+      ],
+      "hedging_elimination_rules": [
+        "Delete impersonal hedges ('It could be argued', 'arguably', 'it may be the case that', 'to some extent', 'in many ways', 'one might say', 'potentially').",
+        "In finished work, replace them with a specific qualifier ('about', 'nearly', 'more than') or an attributed claim ('the study found'); in quick notes, with a personal one ('I think', 'probably').",
+        "Never add balancing disclaimers or 'consult a professional' lines unless the source has a real caveat; then state it in one plain sentence.",
+        "Remove meta-commentary about the text itself ('This essay will', 'As mentioned above')."
+      ]
+    }
+  }
+}

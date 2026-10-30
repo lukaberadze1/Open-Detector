@@ -125,7 +125,8 @@ def stub_model(monkeypatch, tmp_path):
 
     for name, path in (("ROOT", tmp_path), ("DATA_ROOT", tmp_path), ("OUTPUT_PATH", tmp_path / "local_redteam.jsonl"),
                        ("EXPORT_DIR", tmp_path / "exports"), ("BATCH_DIR", tmp_path / "batches"),
-                       ("STYLE_DIR", tmp_path / "styles"), ("VISITOR_DIR", tmp_path / "visitors")):
+                       ("STYLE_DIR", tmp_path / "styles"), ("VISITOR_DIR", tmp_path / "visitors"),
+                       ("BUILTIN_STYLE_DIR", tmp_path / "builtin")):
         monkeypatch.setattr(redteam, name, path)
     monkeypatch.setattr(redteam, "load_env", lambda: None)  # never read the real .env
     monkeypatch.setattr(redteam.generation_settings, "load_table", lambda: None)  # settings by hand, unless a test
@@ -200,7 +201,7 @@ def test_red_team_sample_is_recorded_as_ai_with_its_score(stub_model, tmp_path):
         "source_file": None, "target_section": None, "ai_probability": None, "verdict": "likely_ai",
         "calibrated": True, "detector_profile": "slim", "style_match": None,
         "thinking": "low", "temperature": 0.8, "style_profile": "plain", "register": None, "examples": 0,
-        "structure": None, "blocks_per_request": None,
+        "structure": None, "restyle": False, "blocks_per_request": None,
     }
     assert rows[0]["ai_probability"] > 0.9
     assert len(list((tmp_path / "exports").glob("AI_REDTEAM_prompt_*.txt"))) == 1
@@ -236,7 +237,7 @@ def test_robustness_mode_keeps_the_lowest_draft_and_saves_every_one(stub_model, 
 
     replies = [(AI * 15, "model-a"), (HUMAN * 15, "model-b"), (AI * 20, "model-c")]
     at = robustness_page(monkeypatch, replies, lowest_of_three)
-    assert prompts[0].startswith("Write an AI-generated adversarial challenge sample")
+    assert prompts[0].startswith("Write the piece described below")
 
     rows = [json.loads(line) for line in (tmp_path / "local_redteam.jsonl").read_text().splitlines()]
     assert [(r["model"], r["evasion_kept"], r["label"]) for r in rows] == [
@@ -394,6 +395,27 @@ def word_document_page():
     return at
 
 
+def test_writers_sentences_give_each_block_a_skeleton_from_the_writer(stub_model, tmp_path):
+    styles = tmp_path / "styles"
+    (styles / "alexandria").mkdir(parents=True)
+    (styles / "alexandria_profile.json").write_text(json.dumps({"style_profile": {"format": "registers-v2",
+        "registers": {name: {"golden_rule": name} for name in ("finalized", "notes")}}}))
+    writer = "Alpha beta gamma delta epsilon zeta eta theta iota kappa, lambda."  # 11 words and a comma
+    (styles / "alexandria/corpus.jsonl").write_text(json.dumps({"text": writer, "week": "2026-W40", "id": "1"}) + "\n")
+    at = word_document_page()
+    at.segmented_control(key="keep:redteam:structure").set_value("writer").run()
+    at.segmented_control(key="keep:redteam:register").set_value("notes").run()
+    button(at, "Generate 2 block challenges").click()
+    at.run()
+    run_until_batch_ends(at)
+    (prompt,) = stub_model.prompts
+    assert "In each rewrite, write it in the sentence plan" in prompt
+    assert "Bees need a dry hive and a nearby source of water.\n\nSentence plan:\n1. 11 words, 1 comma" in prompt, (
+        "the 11-word block takes the writer's 11-word sentence, comma and all")
+    assert "They live on nectar and pollen from flowers.\n\nSentence plan:\n1. 8 words\n" in prompt + "\n", (
+        "nothing the writer wrote fits 8 words, so that block keeps its own shape")
+
+
 def test_red_team_rewrites_every_block_of_a_word_document(stub_model, tmp_path):
     at = word_document_page()
     assert not at.exception, at.exception
@@ -410,7 +432,7 @@ def test_red_team_rewrites_every_block_of_a_word_document(stub_model, tmp_path):
     assert prompt.count("Full document context:") == 1
     assert "[B1] A rewrite of the existing text block labelled Paragraph 2. Aim for about 11 words." in prompt
     assert "[B2] A rewrite of the existing text block labelled Paragraph 4" in prompt
-    assert at.segmented_control(key="keep:redteam:structure").value == "same"
+    assert at.segmented_control(key="keep:redteam:structure").value == "writer"
     assert "In each rewrite, follow the original sentence by sentence" in prompt
     assert "1. (11 words) Bees need a dry hive and a nearby source of water." in prompt
     assert stub_model.options[0]["thinking"] == "low" and stub_model.options[0]["json_schema"]
@@ -808,15 +830,51 @@ def test_the_guide_opens_first_once_then_detect_does(monkeypatch, tmp_path):
     assert any(t.key == "keep:detect:text" for t in at.text_area)
 
 
-def test_public_mode_has_no_guide(monkeypatch, tmp_path):
-    from ui import nav, prefs
+def test_a_public_guide_explains_where_the_key_goes_and_saves_nothing(monkeypatch, tmp_path):
+    from ui import guide, prefs
 
     monkeypatch.setattr(prefs, "PATH", tmp_path / "ui_prefs.json")
     monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
-    monkeypatch.setattr(nav, "guide_page", lambda: pytest.fail("a public deploy built the Guide page"))
+    monkeypatch.setattr(guide, "save_env", lambda *args: pytest.fail("a public guide saved a key on the server"))
     at = AppTest.from_file(APP, default_timeout=60).run()
     assert not at.exception, at.exception
-    assert not prefs.PATH.exists(), "a public deploy remembers nothing"
+    assert not prefs.PATH.exists(), "a public deploy remembers nothing, nor opens the Guide first"
+    at = AppTest.from_function(guide_page, default_timeout=60).run()
+    assert not at.exception, at.exception
+    assert len(at.text_input) == 0, "no key box: a visitor's key goes in the Adversarial Lab's sidebar"
+    text = " ".join(block.value for block in at.markdown)
+    assert "never writes it down" in text and "Remember it on this device" in text
+
+
+def test_a_visitor_can_keep_their_key_on_their_own_device_and_forget_it(stub_model, monkeypatch):
+    from ui import device_storage
+
+    browser: dict[str, str] = {}  # this device's browser storage, shared by its visits
+
+    def device_value(name, action="read", value=""):
+        if action == "store":
+            browser[name] = value
+        elif action == "forget":
+            browser.pop(name, None)
+        return browser.get(name, "")
+
+    monkeypatch.setattr(device_storage, "device_value", device_value)
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
+    at = public_page("a")
+    at.text_input(key="keep:redteam:api_key").input("visitor-key").run()
+    assert browser == {}, "only while the tab is open, unless asked"
+    at.toggle(key="keep:redteam:remember_key").set_value(True).run()
+    at.run()
+    assert browser == {"gemini_api_key": "visitor-key"}
+
+    again = public_page("b")  # the same device, another visit
+    again.run()
+    assert again.text_input(key="keep:redteam:api_key").value == "visitor-key"
+    assert again.toggle(key="keep:redteam:remember_key").value
+    button(again, "Forget it on this device").click()
+    again.run()
+    again.run()
+    assert browser == {} and again.text_input(key="keep:redteam:api_key").value == ""
 
 
 def guide_page():
@@ -862,3 +920,34 @@ def test_the_guide_saves_a_key_google_accepts_and_no_other(key_file):
     button(at, "Remove the key").click()
     at.run()
     assert key_file.read_text() == ""
+
+
+def test_the_built_in_human_profile_is_there_first_and_on_a_public_deploy_too(stub_model, monkeypatch, tmp_path):
+    from ui import redteam
+
+    monkeypatch.setattr(redteam, "BUILTIN_STYLE_DIR", Path(redteam.__file__).resolve().parents[1] / "styles")
+    (tmp_path / "styles").mkdir()
+    (tmp_path / "styles" / "mine.json").write_text(json.dumps({"tone": "mine"}))
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.run()
+    picker = at.selectbox(key="keep:redteam:style_name")
+    assert (picker.options, picker.value) == (["Human (built in)", "mine"], "human_default_profile")
+    at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
+    button(at, "Generate challenge sample").click()
+    at.run()
+    assert not at.exception, at.exception
+    assert "how people write" in stub_model.systems[-1] and "Write like a competent person" in stub_model.systems[-1]
+    row = json.loads((tmp_path / "local_redteam.jsonl").read_text())
+    assert row["attack"] == "prompt+human_default_profile" and row["style_match"] is not None, (
+        "measured against the built-in yardstick, with no one's writing shipped")
+    draft, rewrite, *_ = stub_model.prompts  # the stand-in hands back its draft, so the copy is asked for again
+    assert "Write the piece" in draft and "In each rewrite, write it in the sentence plan" in rewrite, (
+        "drafted, then rewritten passage by passage in the writer's sentences")
+    assert stub_model.options[-1]["json_schema"] and row["restyle"] is True
+
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
+    plan = SimpleNamespace(structure="writer", task="blocks", use_profile=True, register="finalized",
+                           style_path=redteam.BUILTIN_STYLE_DIR / "human_default_profile.json")
+    redteam._writer_shapes(plan)
+    assert len(plan.shapes) == 1000, "a built-in profile's sentence shapes go out even on a public deploy"

@@ -400,3 +400,16 @@ def test_the_control_writes_without_the_profile_and_is_still_measured_against_it
     table = json.loads((tmp_path / "table.json").read_text())
     assert table["style_profile"] == "plain+same" and table["rows"][0]["structure_match"] is not None
     assert "| Structure match % |" in (tmp_path / "report.md").read_text()
+
+
+def test_writers_sentences_come_from_the_register_asked_for(tmp_path):
+    profile = corpus_profile(tmp_path)
+    profile.write_text(json.dumps({"style_profile": {"format": "registers-v2", "registers": {
+        "finalized": {"golden_rule": "Finished."}, "notes": {"golden_rule": "Quick."}}}}))
+    notes = tune_generation.writer_shapes(profile, "notes")
+    assert len(notes) == 60 and all(words >= 5 and not marks for paragraph in notes for words, marks in paragraph)
+    assert tune_generation.writer_shapes(profile, "finalized") == notes, "no finished pieces yet: the notes"
+    (tmp_path / "styles/writer/finalized").mkdir()
+    (tmp_path / "styles/writer/finalized/essay.md").write_text(
+        "A finished sentence that runs on for a while, with a comma or two, before it ends.\n")
+    assert tune_generation.writer_shapes(profile, "finalized") == [[(17, "2 commas")]]

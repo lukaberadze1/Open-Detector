@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from itertools import islice
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from opendetector.segment import Sentence, count_words, split_sentences
 
@@ -195,8 +196,13 @@ def worth_rewriting(text: str) -> bool:
 
 
 def person_instruction(*samples: str) -> str:
-    """Infer grammatical person from existing answer prose, ignoring question wording where possible."""
+    """Infer grammatical person from existing answer prose, ignoring question wording where possible.
+    Nothing without any: a sample written from a prompt alone was once told not to add first- or
+    second-person language "if it is absent" from a source it didn't have, which kept every "I" and
+    "you" out of it, and people write both (eval/build_human_profile.py)."""
     text = " ".join(samples).casefold()
+    if not text.strip():
+        return ""
     counts = {
         "first person": len(re.findall(r"\b(?:i|me|my|mine|we|us|our|ours)\b", text)),
         "second person": len(re.findall(r"\b(?:you|your|yours|yourself|yourselves)\b", text)),
@@ -214,9 +220,16 @@ def person_instruction(*samples: str) -> str:
 # -- following the original --------------------------------------------------------------
 
 # How closely a rewritten text block follows the original, whoever wrote it. "same" hides the new text
-# in the original's skeleton: its sentences one for one, their lengths, punctuation and layout.
-STRUCTURES = {"light": "Light edit", "same": "Same structure", "free": "Free rewrite"}
+# in the original's skeleton: its sentences one for one, their lengths, punctuation and layout. That
+# hides it in a human's skeleton but not in an AI's, whose even sentences survive any rewrite in place,
+# so "writer" gives each block a skeleton borrowed from a passage of the style profile's own writer.
+STRUCTURES = {"light": "Light edit", "same": "Same structure", "writer": "Writer's sentences",
+              "free": "Free rewrite"}
 FOLLOW = {
+    "writer": "Write it in the sentence plan given with it, taken from a passage of the writer's own: one "
+              "sentence for each numbered line, in that order, each within a few words of its length and with "
+              "the punctuation listed. Fit the original's meaning into those sentences, merging, splitting or "
+              "reordering its points as the plan needs, in new words. Leave out the numbers.",
     "light": "Edit the original lightly, sentence by sentence: keep every numbered sentence in its order, with "
              "its length, its punctuation and most of its words, and change about one word or phrase in four. "
              "Keep its casing, spacing and spelling as they are.",
@@ -232,15 +245,59 @@ _WORDS = re.compile(r"[^\W\d_]+(?:['\u2019][^\W\d_]+)*")
 _NUMBERED = re.compile(r"^[ \t]*\d+\.[ \t]+(?:\(\d+ words?\)[ \t]*)?", re.M)
 
 
+MARK_NAMES = ((",", "comma"), ("(", "bracket pair"), (";", "semicolon"), (":", "colon"), ("?", "question mark"))
+
+
 def structure(plan) -> str:
-    return getattr(plan, "structure", "free")
+    """How closely the plan's rewrites follow their originals: "writer" without the writer's sentence
+    shapes to borrow (no profile, or a visitor's own on a public deploy) works as "same"."""
+    chosen = getattr(plan, "structure", "free")
+    return "same" if chosen == "writer" and not getattr(plan, "shapes", None) else chosen
+
+
+def sentence_shape(sentence: str) -> tuple[int, str]:
+    """A sentence's length in words and its punctuation, the way a sentence plan lists them."""
+    marks = [f"{count} {name}{'s' if count > 1 else ''}" for mark, name in MARK_NAMES
+             if (count := sentence.count(mark))]
+    return count_words(sentence), ", ".join(marks)
+
+
+def paragraph_shapes(paragraphs: Iterable[str]) -> list[list[tuple[int, str]]]:
+    """Each paragraph's sentences as shapes (sentence_shape), the skeletons "writer" borrows from."""
+    return [[sentence_shape(text[s.start:s.end]) for s in split_sentences(text)] for text in paragraphs]
+
+
+def borrowed_skeleton(shapes: list[list[tuple[int, str]]], words: int, key: str) -> list[tuple[int, str]] | None:
+    """A run of consecutive sentences from one of the writer's paragraphs, `words` long in all to within a
+    quarter, picked by the block's `key` so a block keeps its plan when it is written again. None when
+    nothing the writer wrote fits."""
+    fits = []
+    for paragraph in shapes:
+        for start in range(len(paragraph)):
+            total = 0
+            for end in range(start, len(paragraph)):
+                total += paragraph[end][0]
+                if total > 1.25 * words:
+                    break
+                if total >= 0.75 * words:
+                    fits.append(paragraph[start:end + 1])
+    return fits[int(hashlib.sha256(key.encode()).hexdigest(), 16) % len(fits)] if fits else None
 
 
 def original_text(plan, job: dict) -> str:
     """A text block's original as the prompt shows it. When the rewrite follows it, its sentences are
-    numbered with their lengths, a blank line between paragraphs, so the model can match each one."""
+    numbered with their lengths, a blank line between paragraphs, so the model can match each one. In
+    "writer" it comes as it is, with the sentence plan borrowed from the writer (plan.shapes), or the
+    original's own when the writer has nothing that fits."""
     if structure(plan) == "free" or job["kind"] == "answer_box":
         return job["previous"]
+    if structure(plan) == "writer":
+        words = round(count_words(job["previous"]) * getattr(plan, "stretch", 1.0))
+        skeleton = (borrowed_skeleton(getattr(plan, "shapes", None) or [], words, job.get("key", job["label"]))
+                    or paragraph_shapes([job["previous"]])[0])
+        lines = [f"{number}. {length} word{'s' if length != 1 else ''}" + (f", {marks}" if marks else "")
+                 for number, (length, marks) in enumerate(skeleton, 1)]
+        return job["previous"] + "\n\nSentence plan:\n" + "\n".join(lines)
     sentences, lines = split_sentences(job["previous"]), []
     for number, sentence in enumerate(sentences, 1):
         if number > 1 and sentence.paragraph != sentences[number - 2].paragraph:
@@ -259,7 +316,7 @@ def follow_original(plan, job: dict, text: str) -> str:
     original = job["previous"]
     text = _NUMBERED.sub("", text).strip()
     old, new = split_sentences(original), split_sentences(text)
-    if not old or len(old) != len(new):
+    if structure(plan) == "writer" or not old or len(old) != len(new):  # not in the original's sentences
         return text if "\n" in original else re.sub(r"[ \t]*\n[ \t\n]*", " ", text)
     parts = [original[:old[0].start]]
     for index, (was, now) in enumerate(zip(old, new, strict=True)):
@@ -348,6 +405,103 @@ def copied_row(row: dict) -> bool:
         return row["words_kept"] >= COPIED
     match = re.search(r"Previous text:\n(.*?)\n\nAdditional instructions:", row.get("prompt") or "", re.S)
     return bool(match and match.group(1).strip()) and copied(match.group(1), row.get("text") or "")
+
+
+def borrowed_plan(shapes: list[list[tuple[int, str]]], words: int, key: str) -> list[list[tuple[int, str]]] | None:
+    """A whole piece's sentence plan borrowed from the writer: consecutive paragraphs from one place in
+    their writing, cut at the sentence that brings it to `words` words, picked by `key`. None when the
+    writer has nothing that long."""
+    starts = [index for index in range(len(shapes))
+              if sum(length for paragraph in shapes[index:] for length, _ in paragraph) >= words]
+    if not starts:
+        return None
+    plan, total = [], 0
+    for paragraph in shapes[starts[int(hashlib.sha256(key.encode()).hexdigest(), 16) % len(starts)]:]:
+        plan.append([])
+        for shape in paragraph:
+            plan[-1].append(shape)
+            total += shape[0]
+            if total >= words:
+                return plan
+    return plan
+
+
+# Fitting a draft's points into borrowed sentences, models wrote 50-66% of the draft's words on 2026-10-30
+# (samples fell under the detector's 150 words): a restyled passage borrows a plan this much longer, and
+# a draft to be restyled is asked for this much longer than the sample.
+RESTYLE_STRETCH = 1.35
+DRAFT_STRETCH = 1.25
+
+
+def draft_jobs(text: str, words: int = 80) -> list[dict]:
+    """A draft as text blocks to rewrite: its paragraphs, a long one cut at sentence ends into passages of
+    up to about `words` words, each short enough for a skeleton borrowed from the writer to fit."""
+    jobs = []
+    for paragraph in (part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()):
+        start, count = 0, 0
+        for sentence in split_sentences(paragraph):
+            count += sentence.words
+            if count >= words:
+                jobs.append(paragraph[start:sentence.end].strip())
+                start, count = sentence.end, 0
+        if paragraph[start:].strip():
+            jobs.append(paragraph[start:].strip())
+    return [{"kind": "text_block", "label": f"Passage {number}", "question": "", "previous": passage,
+             "key": f"{number:03d} draft"} for number, passage in enumerate(jobs, 1)]
+
+
+def restyle(draft: str, shapes: list, ask: Callable[[str, list[dict]], str], clean: Callable[[str], str]) -> str:
+    """A draft rewritten passage by passage in the writer's sentences (the "writer" structure), as a
+    document rewrite does, the passages joined back into the draft's paragraphs. Written from a prompt
+    alone, a sample keeps the model's own plan of what to say, which a detector reads whatever voice
+    it is told to write in; rewriting a draft in borrowed skeletons breaks that plan up the way the
+    document rewrites that get past the detector do. A passage the reply leaves out stays as drafted."""
+    jobs = draft_jobs(draft)
+    if not jobs:
+        return draft
+    plan = SimpleNamespace(prompt="", context_text=draft, blocks=[], answer_slots=[], match_existing_lengths=True,
+                           answer_words=100, structure="writer", shapes=shapes, stretch=RESTYLE_STRETCH)
+    written, _ = rewrite_group(plan, jobs, ask, clean)
+    paragraphs, passage = [], 0
+    for part in (part.strip() for part in re.split(r"\n\s*\n", draft) if part.strip()):
+        pieces = []
+        while passage < len(jobs) and jobs[passage]["previous"] in part:
+            pieces.append(written.get(jobs[passage]["key"]) or jobs[passage]["previous"])
+            passage += 1
+        paragraphs.append(" ".join(pieces) or part)
+    return "\n\n".join(paragraphs)
+
+
+# How a standard sample is asked for. "challenge" names it an adversarial challenge sample, as the page
+# first did; "task" asks for the piece itself, as a writer would be asked. Both are saved as AI text.
+FRAMINGS = ("task", "challenge")
+
+
+def sample_prompt(material: str, words: int, voice: str, framing: str = "task",
+                  plan: list[list[tuple[int, str]]] | None = None) -> str:
+    """The prompt for a new sample written from `material` (the instructions and any source text). With
+    a `plan` (borrowed_plan) it is written in those paragraphs and sentence shapes."""
+    voice = f"{voice} " if voice else ""
+    if framing == "challenge":
+        opening = ("Write an AI-generated adversarial challenge sample based on the test material below. "
+                   f"Aim for about {words} words. {voice}Return the sample only. This sample will be labelled "
+                   "as AI-generated evaluation data.")
+    else:
+        opening = (f"Write the piece described below, about {words} words. {voice}Write it the way the writer "
+                   "would on their own: their level of detail, their own points in their own order, not a "
+                   "complete, balanced overview. Return only the text.")
+    if plan:
+        lines, number = [], 0
+        for paragraph in plan:
+            lines.append("")
+            for length, marks in paragraph:
+                number += 1
+                lines.append(f"{number}. {length} word{'s' if length != 1 else ''}" + (f", {marks}" if marks else ""))
+        opening += ("\n\nWrite it in this sentence plan, taken from a passage of the writer's own: one sentence for "
+                    "each numbered line, in that order, each within a few words of its length and with the "
+                    "punctuation listed, a new paragraph at each blank line. Leave out the numbers.\n"
+                    + "\n".join(lines))
+    return f"{opening}\n\nMaterial:\n{material}" if framing == "task" else f"{opening}\n\nTest material:\n{material}"
 
 
 def target_words(plan, job: dict) -> int:
@@ -551,3 +705,6 @@ class BatchWorker(threading.Thread):
         finally:
             if self._on_end:
                 self._on_end()
+            # The writers hold the connection, a public visitor's own API key included, and an ended batch
+            # stays listed until its page comes back: let them go with the batch.
+            self._generate = self._score = self._before_scoring = self._finish = self._on_end = None

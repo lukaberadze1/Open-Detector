@@ -1,5 +1,6 @@
 """Block-by-block checkpoints for the red-team generator app's batches."""
 
+import json
 import threading
 from types import SimpleNamespace
 
@@ -333,3 +334,48 @@ def test_a_rewrite_that_hands_back_the_original_is_a_copy_not_ai_text():
     assert copied_row({"label": 1, "text": "anything", "words_kept": 97.5}), "the benchmark saves words_kept"
     assert not copied_row({"label": 1, "text": "anything", "words_kept": 60.0})
     assert not copied_row({"label": 1, "text": ORIGINAL}), "nothing to compare with"
+
+
+def test_writers_sentences_borrow_a_skeleton_from_the_writers_own_paragraphs():
+    from eval.redteam_batch import borrowed_skeleton, paragraph_shapes, sentence_shape
+
+    shape = sentence_shape("Carbs are our fuel (like a battery), and we burn them fast.")
+    assert shape == (12, "1 comma, 1 bracket pair")
+    shapes = paragraph_shapes(["A long one which runs on and on, and on, until it stops here at last. Short.",
+                               "Nine words in this sentence, and only one comma."])
+    assert shapes == [[(16, "2 commas"), (1, "")], [(9, "1 comma")]]
+    assert borrowed_skeleton(shapes, 15, "B1") in ([(16, "2 commas")], [(16, "2 commas"), (1, "")])
+    assert borrowed_skeleton(shapes, 15, "B1") == borrowed_skeleton(shapes, 15, "B1"), "a block keeps its plan"
+    assert borrowed_skeleton(shapes, 40, "B1") is None, "nothing the writer wrote is that long"
+
+    plan = SimpleNamespace(**{**vars(plan_with("writer")), "shapes": shapes})
+    shown = original_text(plan, {**JOB, "key": "001", "previous": "An even AI sentence of nine words here. "
+                                                                  "Another even AI sentence of six."})
+    assert shown.split("\n\nSentence plan:\n")[1] in ("1. 16 words, 2 commas", "1. 16 words, 2 commas\n2. 1 word")
+    assert original_text(plan_with("writer"), JOB) == original_text(plan_with("same"), JOB), (
+        "with no writer's shapes at all, it works as same structure")
+    no_fit = original_text(SimpleNamespace(**{**vars(plan_with("writer")), "shapes": [[(200, "")]]}), JOB)
+    assert no_fit.endswith("Sentence plan:\n1. 5 words\n2. 6 words\n3. 8 words, 1 comma"), (
+        "when nothing the writer wrote fits, the original's own shapes")
+    assert "In each rewrite, write it in the sentence plan" in group_prompt(plan, [JOB])
+    assert follow_original(plan, JOB, "1. One new sentence.\n2. And a second one.") == (
+        "One new sentence.\nAnd a second one."), "numbers go; the original's layout doesn't apply"
+
+
+def test_a_draft_is_rewritten_passage_by_passage_and_joined_back():
+    from eval.redteam_batch import draft_jobs, person_instruction, restyle
+
+    long = " ".join(f"Sentence {number} of a long paragraph runs on for a while here." for number in range(12))
+    draft = f"A short opening. It has two sentences.\n\n{long}"
+    jobs = draft_jobs(draft)
+    assert [len(job["previous"].split()) for job in jobs] == [7, 84, 60], "long paragraphs cut at sentence ends"
+    asked = []
+
+    def ask(prompt, pending):
+        asked.append(prompt)
+        return json.dumps({"blocks": [{"id": f"B{n}", "text": f"New passage {n}."} for n in range(1, len(pending))]})
+
+    assert restyle(draft, [[(4, "")]], ask, str.strip) == "New passage 1.\n\nNew passage 2. " + jobs[2]["previous"], (
+        "a passage the reply leaves out stays as drafted, in its paragraph")
+    assert "In each rewrite, write it in the sentence plan" in asked[0]
+    assert person_instruction() == "" and person_instruction("   ") == "", "no source, no rule against I and you"

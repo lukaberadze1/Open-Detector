@@ -53,6 +53,7 @@ from eval import generation_settings
 from eval.generation_settings import MAX_POINTS, MEASURES
 from eval.redteam_batch import (
     AGAIN,
+    DRAFT_STRETCH,
     GROUP_SCHEMA,
     STRUCTURES,
     BatchWorker,
@@ -66,7 +67,10 @@ from eval.redteam_batch import (
     group_prompt,
     person_instruction,
     rewrite_group,
+    restyle,
     rewrite_measures,
+    sample_prompt,
+    structure,
     target_words,
     worth_rewriting,
 )
@@ -89,7 +93,11 @@ from .components import VERDICTS, Upload, keep, persistent_upload, priorities_ch
 
 ROOT = Path(__file__).resolve().parents[1]
 STYLE_DIR = DATA_ROOT / "data/styles"
-DEFAULT_STYLE = "alexandria_profile"  # picked first when it's there
+# The built-in profiles, in the code: no one writer's, measured from many (eval/build_human_profile.py).
+BUILTIN_STYLE_DIR = ROOT / "styles"
+DEFAULT_STYLE = "human_default_profile"  # picked first
+BUILTIN_NAMES = {DEFAULT_STYLE: "Human (built in)"}
+UNNAMED_STYLE = "alexandria_profile"  # the one profile batches were saved with before profiles joined the key
 OUTPUT_PATH = DATA_ROOT / "data/essays/local_redteam.jsonl"
 EXPORT_DIR = DATA_ROOT / "data/essays/exports"
 BATCH_DIR = DATA_ROOT / "data/essays/batches"
@@ -237,7 +245,9 @@ class Plan:
     human_source: bool = False  # the uploaded document is the user's own writing: save it as paired human data
     register: str | None = None  # with a profile that has registers: finalized (finished work) or notes
     examples: bool = False  # also send a few of the writer's own passages in the register (never in public mode)
-    structure: str = "same"  # how closely rewritten text blocks follow the original (redteam_batch.STRUCTURES)
+    structure: str = "writer"  # how closely rewritten text blocks follow the original (redteam_batch.STRUCTURES)
+    shapes: list | None = None  # for "writer": the sentence shapes of the profile writer's own paragraphs
+    restyle: bool = False  # a sample from a prompt: rewrite the draft in the writer's sentences (redteam_batch.restyle)
     style_path: Path | None = None
     score: bool = True
     evasion: bool = False
@@ -422,14 +432,51 @@ def _connection() -> Connection:
     return Connection(base_url, model, fallback_models, local_model, local_url, api_key_env, api_key)
 
 
+PUBLIC_KEY, REMEMBER_KEY, DEVICE_ACTION = "keep:redteam:api_key", "keep:redteam:remember_key", "redteam:device_action"
+
+
+def _remember_changed() -> None:
+    st.session_state[DEVICE_ACTION] = "store" if st.session_state[REMEMBER_KEY] else "forget"
+
+
+def _key_changed() -> None:
+    if st.session_state.get(REMEMBER_KEY):
+        st.session_state[DEVICE_ACTION] = "store" if st.session_state[PUBLIC_KEY].strip() else "forget"
+
+
+def _forget_key() -> None:
+    st.session_state[DEVICE_ACTION] = "forget"
+    st.session_state[REMEMBER_KEY] = False
+    st.session_state[PUBLIC_KEY] = ""
+
+
 def _public_connection() -> Connection:
-    """The sidebar on a public deploy: Gemini only, with the visitor's own key. The key stays in this
-    browser session's memory; it is never saved, and the host's own keys are never used."""
+    """The sidebar on a public deploy: Gemini only, with the visitor's own key, the host's own keys never
+    used. The key lives in this browser session's memory and is gone when the tab closes, unless the
+    visitor asks this browser to keep it on their device (ui/device_storage.py). The server never writes it
+    anywhere."""
+    from .device_storage import device_value
+
+    action = st.session_state.pop(DEVICE_ACTION, "read")
+    stored = device_value("gemini_api_key", action, st.session_state.get(PUBLIC_KEY, "").strip())
+    if stored and not st.session_state.get(PUBLIC_KEY) and not st.session_state.get("redteam:key_restored"):
+        st.session_state[PUBLIC_KEY] = stored  # back on a device that keeps it
+        st.session_state[REMEMBER_KEY] = st.session_state["redteam:key_restored"] = True
     api_key = st.text_input(
-        "Your Gemini API key", type="password", key=keep("keep:redteam:api_key", ""),
-        help="Free at aistudio.google.com/apikey. It is used only for your requests, held only while this "
-             "browser session lasts and never saved.",
+        "Your Gemini API key", type="password", key=keep(PUBLIC_KEY, ""), on_change=_key_changed,
+        help="Free at aistudio.google.com/apikey. It is used only for your own requests, sent to Google in each "
+             "request from this site's server, and never written down there.",
     ).strip()
+    remember = st.toggle(
+        "Remember it on this device", key=keep(REMEMBER_KEY, False), on_change=_remember_changed,
+        help="Off: the key lasts only while this tab is open; closing or reloading it forgets the key. On: this "
+             "browser keeps it for this site, on this device only, and fills it in next time. Leave it off on a "
+             "shared computer.")
+    if stored:
+        st.button("Forget it on this device", icon=":material/key_off:", on_click=_forget_key, type="tertiary")
+    elif remember and api_key and stored == "" and action != "store":
+        st.caption(":orange[This browser isn't keeping it, so it lasts only while this tab is open (a private "
+                   "window, or site data turned off).]")
     with st.expander("Models", icon=":material/settings:"):
         model = st.text_input("Model", key=keep("keep:redteam:model", DEFAULT_MODEL))
         fallback_text = st.text_area(
@@ -532,12 +579,15 @@ def _setup(profile: str, conn: Connection) -> Plan:
                 st.markdown(f"**{block.label}**")
                 st.text(block.text if len(block.text) <= 300 else block.text[:300] + "…")
         plan.structure = st.segmented_control(
-            "How closely to follow the original", list(STRUCTURES), key=keep("keep:redteam:structure", "same"),
+            "How closely to follow the original", list(STRUCTURES), key=keep("keep:redteam:structure", "writer"),
             required=True, format_func=STRUCTURES.get,
             help="Same structure writes each of the original's sentences anew, one for one, at its length and with "
                  "its punctuation, then puts back the original's paragraph breaks and spacing: the AI text takes on "
-                 "the shape of whoever wrote the original, a person or another model. A light edit also keeps most "
-                 "of the original's words. A free rewrite keeps only the meaning and length of each block.")
+                 "the shape of whoever wrote the original. That hides it well in a person's writing, not in an "
+                 "AI's. Writer's sentences instead fits each block into the sentence lengths and punctuation of a "
+                 "passage of the style profile's writer, for an original that is AI-written or someone else's "
+                 "(it needs a style profile with the writer's writing beside it). A light edit also keeps most of "
+                 "the original's words. A free rewrite keeps only the meaning and length of each block.")
     if plan.task in ("section", "answers", "blocks"):
         plan.human_source = st.toggle(
             "This document is my own writing", key=keep("keep:redteam:human_source", False),
@@ -558,7 +608,7 @@ def _setup(profile: str, conn: Connection) -> Plan:
     else:
         plan.words = st.slider("Approximate length", min_value=150, max_value=1500, step=50,
                                key=keep("keep:redteam:words", 350), format="%d words")
-    styles = {path.stem: path for path in sorted(_store().styles.glob("*.json"))}
+    styles = _styles()
     use_style = st.toggle(
         "Write in a style profile", key=keep("keep:redteam:style", True), disabled=not styles,
         help="Sends a style profile as the system prompt. A style profile imitates writing patterns; it can't "
@@ -569,18 +619,22 @@ def _setup(profile: str, conn: Connection) -> Plan:
         if st.session_state[style_key] not in styles:
             st.session_state[style_key] = DEFAULT_STYLE if DEFAULT_STYLE in styles else next(iter(styles))
         name = st.selectbox("Style profile", list(styles), key=style_key, disabled=not use_style,
-                            help="The profiles you added in this browser session." if public() else
-                                 "Every JSON file in data/styles/. Save another profile there and it shows up here.")
+                            format_func=lambda stem: BUILTIN_NAMES.get(stem, stem),
+                            help="Human (built in) is how people write, measured from 1,750 texts by different "
+                                 "writers. A profile of one writer, added below, reads more like that writer. "
+                                 + ("Yours are kept for this browser session." if public() else
+                                    "Yours are the JSON files in data/styles/."))
         plan.style_path = styles[name] if use_style else None
         _register(plan)
         _examples(plan)
+        _writer_shapes(plan)
     else:
         st.caption("No style profile yet, so samples use the model's own style. Add one below to write in it.")
     st.file_uploader(
-        "Add a style profile", type="json", key="redteam:style_upload", on_change=_add_style_profile,
-        help="A JSON style profile for an authorized, controlled challenge condition. "
-             + ("It is kept only for this browser session." if public() else
-                                         "It is saved in data/styles/."),
+        "Add your own style profile", type="json", key="redteam:style_upload", on_change=_add_style_profile,
+        help="A JSON style profile of one writer, in the format of style_profile_template.json, for samples "
+             "that read like that writer rather than people in general. "
+             + ("It is kept only for this browser session." if public() else "It is saved in data/styles/."),
     )
     if style_notice := st.session_state.pop("redteam:style_notice", None):
         getattr(st, style_notice[0])(style_notice[1])
@@ -637,19 +691,50 @@ def _samples_for(path: str, register: str | None, stamp: tuple) -> tuple[list[st
     return style_examples(Path(path), register)
 
 
+def _writing_stamp(profile_path: Path) -> tuple:
+    """Changes whenever the profile or the writing kept beside it does, for the caches below."""
+    from eval.tune_generation import corpus_folder
+
+    folder = corpus_folder(profile_path)
+    files = (profile_path, folder / "corpus.jsonl", folder / "measurements.json", folder / "finalized")
+    return tuple(path.stat().st_mtime if path.exists() else 0.0 for path in files)
+
+
 def _available_samples(plan: Plan) -> tuple[list[str], list[str]]:
     """The writer's own passages in the plan's register and their measured counts, from the writing kept
     beside the profile. None on a public deploy: that writing is the owner's, never a visitor's."""
     if public() or not plan.use_profile:
         return [], []
-    from eval.tune_generation import corpus_folder
-
-    folder = corpus_folder(plan.style_path)
-    files = (plan.style_path, folder / "corpus.jsonl", folder / "measurements.json", folder / "finalized")
     with contextlib.suppress(OSError, ValueError):
-        return _samples_for(str(plan.style_path), plan.register,
-                            tuple(path.stat().st_mtime if path.exists() else 0.0 for path in files))
+        return _samples_for(str(plan.style_path), plan.register, _writing_stamp(plan.style_path))
     return [], []
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _shapes_for(path: str, register: str | None, stamp: tuple) -> list:
+    """The sentence shapes of the writer's paragraphs in a register; `stamp` changes with the files."""
+    from eval.tune_generation import writer_shapes
+
+    return writer_shapes(Path(path), register)
+
+
+def _writer_shapes(plan: Plan) -> None:
+    """The skeletons a "writer" rewrite borrows, from the writing kept beside the profile, and for a sample
+    from a prompt whether its draft is rewritten in them. None on a public deploy, where that writing is
+    the owner's, unless the profile is built in: each block then keeps its original's own sentence shapes."""
+    sample = plan.task == "sample"
+    if (plan.structure != "writer" and not sample) or not plan.use_profile or (
+            public() and not _builtin(plan.style_path)):
+        return
+    with contextlib.suppress(OSError, ValueError):
+        plan.shapes = _shapes_for(str(plan.style_path), plan.register, _writing_stamp(plan.style_path))
+    if sample and plan.shapes:
+        plan.restyle = st.toggle(
+            "Rewrite the draft in the writer's sentences", key=keep("keep:redteam:restyle", True),
+            help="Writes the piece, then rewrites it passage by passage in the profile's voice and in sentence "
+                 "shapes borrowed from its writer, as a document rewrite does. Written from instructions alone, "
+                 "a sample keeps the model's own plan of what to say, which the detector reads whatever voice it "
+                 "is told to use. One more request.")
 
 
 def writer_samples(plan: Plan) -> tuple[list[str], list[str]]:
@@ -767,6 +852,21 @@ def _readout(plan: Plan, table: dict, setting: generation_settings.Setting, bloc
                   if any(scores) else ""))
 
 
+def _styles() -> dict[str, Path]:
+    """The profiles to pick from: the built-in ones first, then the user's own (data/styles/, or this
+    browser session's on a public deploy)."""
+    styles = {path.stem: path for path in sorted(BUILTIN_STYLE_DIR.glob("*_profile.json"))}
+    for path in sorted(_store().styles.glob("*.json")):
+        styles.setdefault(path.stem, path)
+    return styles
+
+
+def _builtin(profile_path: Path | None) -> bool:
+    """A built-in profile holds numbers measured from many writers, no one's writing, so even a public
+    deploy may send its sentence shapes."""
+    return profile_path is not None and profile_path.parent == BUILTIN_STYLE_DIR
+
+
 def _add_style_profile() -> None:
     """Save an uploaded style profile to the store and pick it. Runs before the page redraws, so it
     can set the picker's value."""
@@ -784,6 +884,10 @@ def _add_style_profile() -> None:
         st.session_state["redteam:style_notice"] = ("error", f"{upload.name} isn't a style profile: {exc}.")
         return
     path = _store().styles / f"{name}.json"
+    if name in BUILTIN_NAMES:
+        st.session_state["redteam:style_notice"] = (
+            "error", f"{name} is the built-in profile's name. Rename the file and add it again.")
+        return
     if path.is_file() and path.read_bytes() != data:
         st.session_state["redteam:style_notice"] = (
             "error", f"There is already a different profile named {name}. Rename the file and add it again.")
@@ -867,7 +971,8 @@ def _settings(plan: Plan) -> dict:
     misses. eval/datasets.py keeps only its own columns, so these never become detector features."""
     return {"thinking": plan.thinking, "temperature": plan.temperature, "style_profile": plan.style_name,
             "register": plan.register, "examples": len(writer_samples(plan)[0]),
-            "structure": plan.structure if plan.rewrite_all_blocks else None,
+            "structure": structure(plan) if plan.rewrite_all_blocks else None,
+            "restyle": plan.restyle if plan.task == "sample" else None,
             "blocks_per_request": (1 if plan.evasion else plan.group_size) if plan.batch else None}
 
 
@@ -890,11 +995,11 @@ def _human_rows(plan: Plan, originals: list[tuple[str, str, str]], group_key: st
 
 
 def _checkpoint_path(plan: Plan) -> Path:
-    # Batches saved before a profile could be chosen all used the default one, so only another
-    # profile adds its name to the key, and those batches still resume; so with free rewrites, which
-    # every batch was before rewrites could follow the original.
-    style = [plan.style_name] if plan.use_profile and plan.style_name != DEFAULT_STYLE else []
-    follow = [plan.structure] if plan.rewrite_all_blocks and plan.structure != "free" else []
+    # Batches saved before a profile could be chosen all used alexandria_profile (UNNAMED_STYLE), so
+    # only another profile adds its name to the key, and those batches still resume; so with free
+    # rewrites, which every batch was before rewrites could follow the original.
+    style = [plan.style_name] if plan.use_profile and plan.style_name != UNNAMED_STYLE else []
+    follow = [structure(plan)] if plan.rewrite_all_blocks and structure(plan) != "free" else []
     return _store().batches / (
         batch_key(plan.source_hash, plan.fill_answer_boxes, plan.rewrite_all_blocks, plan.prompt.strip(),
                   plan.use_profile, plan.answer_words, plan.match_existing_lengths, *style, *follow) + ".json"
@@ -1416,13 +1521,8 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         )
     else:
         voice_rule = person_instruction(*(section.text for section in plan.sections))
-        user_prompt = (
-            "Write an AI-generated adversarial challenge sample based on the test material below. "
-            f"Aim for about {plan.words} words. "
-            f"{voice_rule} "
-            "Return the sample only. This sample will be labelled as AI-generated evaluation data.\n\n"
-            f"Test material:\n{test_material}"
-        )
+        words = round(plan.words * DRAFT_STRETCH) if plan.restyle and plan.shapes else plan.words
+        user_prompt = sample_prompt(test_material, words, voice_rule)
     model, model_errors = conn.model, []
     drafts: dict[str, str] = {}  # every draft written, with the model that wrote it
     reports: dict = {}  # the detector's report on each draft robustness mode scored
@@ -1437,6 +1537,14 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         text = clean_essay(reply)
         drafts[text] = model
         return text
+
+    def restyle_ask(prompt: str, jobs: list[dict]) -> str:
+        nonlocal model, model_errors
+        reply, model, model_errors = generate_with_fallback(
+            conn.base_url, conn.api_key, _model_order(plan, conn), prompt, plan.temperature, system, conn.local_url,
+            conn.local_model, answer_token_limit(sum(count_words(job["previous"]) for job in jobs)),
+            thinking=plan.thinking, json_schema=GROUP_SCHEMA, timeout=60 + 15 * len(jobs))
+        return reply
 
     style_cache: dict = {}
     candidate_style: dict[str, float | None] = {}
@@ -1479,6 +1587,10 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         else:
             with st.spinner(f"Generating with {conn.model}…"):
                 essay = generate(user_prompt)
+            if plan.restyle and plan.shapes and not target_section:
+                with st.spinner("Rewriting it in the writer's sentences…"):
+                    essay = restyle(essay, plan.shapes, restyle_ask, clean_essay)
+                drafts[essay] = model
     except APIError as exc:
         st.error(str(exc), icon=":material/error:")
         return

@@ -1,0 +1,887 @@
+{
+  "finalized": {
+    "sources": [
+      "xsum",
+      "sci_gen",
+      "squad",
+      "wp"
+    ],
+    "texts": 1000,
+    "whole": {
+      "words": 353855,
+      "sentences": 22091,
+      "paragraphs": 1000,
+      "sentence_length": {
+        "mean": 16.0,
+        "median": 14,
+        "std": 11.1,
+        "coefficient_of_variation": 0.69,
+        "min": 1,
+        "max": 118,
+        "adjacent_mean_difference": 8.7,
+        "adjacent_pairs_2_5x_pct": 26.7,
+        "distribution_pct": {
+          "under_6": 16.6,
+          "6_to_15": 38.3,
+          "16_to_29": 34.1,
+          "30_plus": 11.0,
+          "45_plus": 1.8
+        }
+      },
+      "commas_per_sentence": 0.85,
+      "vocabulary": {
+        "mattr_100": 0.728,
+        "hapax_pct_of_types": 43.4,
+        "mean_word_length": 4.66,
+        "words_7_plus_letters_pct": 22.4
+      },
+      "per_1000_words": {
+        "em_dash": 0.0,
+        "en_dash": 0.0,
+        "parenthesis": 3.44,
+        "semicolon": 0.89,
+        "colon": 2.18,
+        "question_mark": 3.83,
+        "exclamation_mark": 1.8,
+        "space_before_punctuation": 0.41,
+        "double_space": 0.0,
+        "slash_pair": 0.0,
+        "however_initial": 0.4,
+        "however_comma": 0.39,
+        "yet_initial": 0.04,
+        "yet_comma": 0.03,
+        "a_before_vowel": 0.09,
+        "an_before_vowel": 3.09,
+        "whether": 0.22,
+        "wether": 0.01,
+        "its_for_it_is": 0.04,
+        "it_s": 1.31,
+        "contraction_without_apostrophe": 0.11,
+        "contraction_with_apostrophe": 8.15,
+        "then_for_than": 0.01,
+        "lowercase_i": 0.16,
+        "clearly": 0.06,
+        "evident": 0.01,
+        "this_shows": 0.02,
+        "this_is_why": 0.01,
+        "we_can": 0.19,
+        "simply": 0.13,
+        "really": 0.6,
+        "in_order_to": 0.1,
+        "a_lot_of": 0.18,
+        "no_matter": 0.03,
+        "even": 0.96,
+        "obviously": 0.05,
+        "i_believe": 0.03,
+        "referred_to_as": 0.03,
+        "which": 2.43,
+        "and": 25.77,
+        "because": 0.82,
+        "pronoun_I": 16.31,
+        "we_us_our": 8.64,
+        "you_your": 7.57,
+        "he_him_his": 14.15,
+        "they_them_their": 7.88,
+        "be_verbs": 33.87,
+        "modals": 10.31
+      },
+      "sentence_openers_pct": {
+        "the": 10.3,
+        "I": 9.4,
+        "he": 3.5,
+        "it": 3.1,
+        "we": 2.8,
+        "in": 2.6,
+        "a": 1.9,
+        "but": 1.8,
+        "this": 1.6,
+        "she": 1.5,
+        "they": 1.3,
+        "and": 1.3,
+        "you": 1.2,
+        "there": 1.0,
+        "as": 1.0
+      },
+      "mechanics": {
+        "however_followed_by_comma": "137 of 141",
+        "yet_followed_by_comma": "9 of 13",
+        "a_before_vowel_sound_pct": 2.8,
+        "a_vs_an": "32 a, 1094 an",
+        "wether_vs_whether": "2 wether, 78 whether",
+        "its_for_it_is_vs_it_s": "14 its, 464 it's",
+        "contractions_without_apostrophe_pct": 1.3
+      },
+      "spelling": {
+        "unknown_lowercase_word_pct": 2.1,
+        "note": "words not in the system dictionary after stripping common endings; includes real slips and rare or modern words, so read the list rather than trusting the rate",
+        "most_common_unknown": [
+          [
+            "don't",
+            293
+          ],
+          [
+            "didn't",
+            243
+          ],
+          [
+            "can't",
+            133
+          ],
+          [
+            "couldn't",
+            120
+          ],
+          [
+            "wasn't",
+            109
+          ],
+          [
+            "you're",
+            98
+          ],
+          [
+            "dataset",
+            81
+          ],
+          [
+            "datasets",
+            67
+          ],
+          [
+            "doesn't",
+            58
+          ],
+          [
+            "wouldn't",
+            56
+          ],
+          [
+            "earlier",
+            50
+          ],
+          [
+            "paid",
+            50
+          ],
+          [
+            "multi",
+            49
+          ],
+          [
+            "we're",
+            47
+          ],
+          [
+            "won't",
+            47
+          ],
+          [
+            "isn't",
+            45
+          ],
+          [
+            "box",
+            39
+          ],
+          [
+            "hadn't",
+            39
+          ],
+          [
+            "pre",
+            38
+          ],
+          [
+            "fuck",
+            37
+          ],
+          [
+            "okay",
+            37
+          ],
+          [
+            "haven't",
+            35
+          ],
+          [
+            "online",
+            34
+          ],
+          [
+            "programme",
+            34
+          ],
+          [
+            "shit",
+            34
+          ],
+          [
+            "we've",
+            31
+          ],
+          [
+            "internet",
+            30
+          ],
+          [
+            "they're",
+            29
+          ],
+          [
+            "he'd",
+            28
+          ],
+          [
+            "aren't",
+            28
+          ],
+          [
+            "anymore",
+            28
+          ],
+          [
+            "you've",
+            26
+          ],
+          [
+            "largest",
+            26
+          ],
+          [
+            "they've",
+            25
+          ],
+          [
+            "weren't",
+            24
+          ],
+          [
+            "fucking",
+            21
+          ],
+          [
+            "email",
+            20
+          ],
+          [
+            "euros",
+            20
+          ],
+          [
+            "you'll",
+            19
+          ],
+          [
+            "benchmark",
+            18
+          ]
+        ]
+      },
+      "banned_phrases_used": {
+        "thus": 55,
+        "robust": 43,
+        "moreover": 28,
+        "crucial": 27,
+        "furthermore": 26,
+        "indeed": 25,
+        "hence": 18,
+        "additionally": 11,
+        "leverage": 10,
+        "notably": 9,
+        "highlight": 9,
+        "navigate": 7,
+        "utilize": 7,
+        "facilitate": 7,
+        "importantly": 6,
+        "essentially": 6,
+        "profound": 6,
+        "intricate": 5,
+        "comprehensive": 5,
+        "foster": 4,
+        "pivotal": 3,
+        "consequently": 3,
+        "highlights": 3,
+        "showcase": 3,
+        "illustrates": 3,
+        "navigating": 3,
+        "key role": 3,
+        "myriad": 3,
+        "testament": 2,
+        "interestingly": 2,
+        "therein": 2,
+        "signifies": 2,
+        "embodies": 2,
+        "nuanced": 2,
+        "unlock": 2,
+        "paramount": 2,
+        "vibrant": 2,
+        "serves as": 2,
+        "that being said": 2,
+        "dive into": 1,
+        "plays a crucial role": 1,
+        "underscore": 1,
+        "highlighting": 1,
+        "showcases": 1,
+        "showcasing": 1,
+        "emphasizes": 1,
+        "interplay": 1,
+        "encompass": 1,
+        "seamless": 1,
+        "holistic": 1,
+        "vital role": 1,
+        "plethora": 1,
+        "a wide array of": 1,
+        "beacon": 1,
+        "resonate": 1,
+        "unwavering": 1,
+        "indelible": 1,
+        "meticulous": 1,
+        "boasts": 1,
+        "needless to say": 1,
+        "in summary": 1,
+        "all in all": 1,
+        "let's explore": 1
+      }
+    },
+    "across_writers": {
+      "mean sentence length": [
+        16.9,
+        21.4,
+        25.6
+      ],
+      "coefficient of variation": [
+        0.33,
+        0.43,
+        0.56
+      ],
+      "sentences under 6 words %": [
+        0.0,
+        0.0,
+        8.7
+      ],
+      "sentences 30+ words %": [
+        5.0,
+        14.3,
+        33.07
+      ],
+      "commas per sentence": [
+        0.67,
+        1.0,
+        1.43
+      ],
+      "MATTR-100": [
+        0.68,
+        0.72,
+        0.75
+      ],
+      "mean word length": [
+        4.41,
+        4.86,
+        5.29
+      ],
+      "unknown words %": [
+        0.8,
+        1.55,
+        2.7
+      ],
+      "contractions without apostrophe %": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "em_dash per 1000": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "en_dash per 1000": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "parenthesis per 1000": [
+        0.0,
+        0.0,
+        6.48
+      ],
+      "semicolon per 1000": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "colon per 1000": [
+        0.0,
+        0.0,
+        3.37
+      ],
+      "question_mark per 1000": [
+        0.0,
+        0.0,
+        1.06
+      ],
+      "exclamation_mark per 1000": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "however_initial per 1000": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pronoun_I per 1000": [
+        0.0,
+        0.0,
+        9.42
+      ],
+      "we_us_our per 1000": [
+        0.0,
+        4.3,
+        16.36
+      ],
+      "you_your per 1000": [
+        0.0,
+        0.0,
+        4.12
+      ],
+      "contraction_with_apostrophe per 1000": [
+        0.0,
+        0.0,
+        8.15
+      ]
+    }
+  },
+  "notes": {
+    "sources": [
+      "cmv",
+      "eli5",
+      "yelp"
+    ],
+    "texts": 750,
+    "whole": {
+      "words": 254701,
+      "sentences": 14063,
+      "paragraphs": 750,
+      "sentence_length": {
+        "mean": 18.1,
+        "median": 16,
+        "std": 12.8,
+        "coefficient_of_variation": 0.7,
+        "min": 1,
+        "max": 115,
+        "adjacent_mean_difference": 11.7,
+        "adjacent_pairs_2_5x_pct": 31.3,
+        "distribution_pct": {
+          "under_6": 11.3,
+          "6_to_15": 38.0,
+          "16_to_29": 36.1,
+          "30_plus": 14.5,
+          "45_plus": 4.0
+        }
+      },
+      "commas_per_sentence": 0.85,
+      "vocabulary": {
+        "mattr_100": 0.721,
+        "hapax_pct_of_types": 43.7,
+        "mean_word_length": 4.44,
+        "words_7_plus_letters_pct": 18.7
+      },
+      "per_1000_words": {
+        "em_dash": 0.0,
+        "en_dash": 0.0,
+        "parenthesis": 5.25,
+        "semicolon": 0.62,
+        "colon": 2.68,
+        "question_mark": 3.25,
+        "exclamation_mark": 3.63,
+        "space_before_punctuation": 0.04,
+        "double_space": 0.0,
+        "slash_pair": 0.0,
+        "however_initial": 0.45,
+        "however_comma": 0.34,
+        "yet_initial": 0.05,
+        "yet_comma": 0.0,
+        "a_before_vowel": 0.15,
+        "an_before_vowel": 3.03,
+        "whether": 0.23,
+        "wether": 0.0,
+        "its_for_it_is": 0.13,
+        "it_s": 3.19,
+        "contraction_without_apostrophe": 0.32,
+        "contraction_with_apostrophe": 15.85,
+        "then_for_than": 0.04,
+        "lowercase_i": 0.38,
+        "clearly": 0.1,
+        "evident": 0.0,
+        "this_shows": 0.03,
+        "this_is_why": 0.07,
+        "we_can": 0.23,
+        "simply": 0.38,
+        "really": 1.68,
+        "in_order_to": 0.17,
+        "a_lot_of": 0.6,
+        "no_matter": 0.05,
+        "even": 1.81,
+        "obviously": 0.15,
+        "i_believe": 0.35,
+        "referred_to_as": 0.0,
+        "which": 2.7,
+        "and": 24.66,
+        "because": 2.86,
+        "pronoun_I": 18.56,
+        "we_us_our": 10.29,
+        "you_your": 16.4,
+        "he_him_his": 3.23,
+        "they_them_their": 12.77,
+        "be_verbs": 42.93,
+        "modals": 14.86
+      },
+      "sentence_openers_pct": {
+        "I": 9.5,
+        "the": 8.3,
+        "if": 4.1,
+        "this": 3.5,
+        "it": 2.8,
+        "so": 2.1,
+        "they": 2.0,
+        "but": 1.9,
+        "it's": 1.8,
+        "you": 1.8,
+        "we": 1.8,
+        "in": 1.5,
+        "and": 1.3,
+        "there": 1.3,
+        "when": 1.2
+      },
+      "mechanics": {
+        "however_followed_by_comma": "87 of 114",
+        "yet_followed_by_comma": "1 of 12",
+        "a_before_vowel_sound_pct": 4.7,
+        "a_vs_an": "38 a, 772 an",
+        "wether_vs_whether": "0 wether, 58 whether",
+        "its_for_it_is_vs_it_s": "33 its, 812 it's",
+        "contractions_without_apostrophe_pct": 2.0
+      },
+      "spelling": {
+        "unknown_lowercase_word_pct": 3.1,
+        "note": "words not in the system dictionary after stripping common endings; includes real slips and rare or modern words, so read the list rather than trusting the rate",
+        "most_common_unknown": [
+          [
+            "don't",
+            680
+          ],
+          [
+            "can't",
+            204
+          ],
+          [
+            "you're",
+            197
+          ],
+          [
+            "didn't",
+            195
+          ],
+          [
+            "doesn't",
+            195
+          ],
+          [
+            "isn't",
+            169
+          ],
+          [
+            "wiki",
+            112
+          ],
+          [
+            "downvote",
+            110
+          ],
+          [
+            "downvotes",
+            108
+          ],
+          [
+            "they're",
+            92
+          ],
+          [
+            "aren't",
+            84
+          ],
+          [
+            "wasn't",
+            80
+          ],
+          [
+            "wouldn't",
+            72
+          ],
+          [
+            "won't",
+            72
+          ],
+          [
+            "couldn't",
+            56
+          ],
+          [
+            "paid",
+            51
+          ],
+          [
+            "internet",
+            46
+          ],
+          [
+            "we're",
+            44
+          ],
+          [
+            "you'll",
+            38
+          ],
+          [
+            "shouldn't",
+            35
+          ],
+          [
+            "haven't",
+            32
+          ],
+          [
+            "online",
+            30
+          ],
+          [
+            "shit",
+            30
+          ],
+          [
+            "you've",
+            27
+          ],
+          [
+            "reddit",
+            26
+          ],
+          [
+            "okay",
+            26
+          ],
+          [
+            "tacos",
+            26
+          ],
+          [
+            "sushi",
+            25
+          ],
+          [
+            "we've",
+            22
+          ],
+          [
+            "anymore",
+            22
+          ],
+          [
+            "you'd",
+            19
+          ],
+          [
+            "andor",
+            19
+          ],
+          [
+            "kinda",
+            19
+          ],
+          [
+            "weren't",
+            18
+          ],
+          [
+            "box",
+            18
+          ],
+          [
+            "subreddit",
+            16
+          ],
+          [
+            "pre",
+            16
+          ],
+          [
+            "fuck",
+            15
+          ],
+          [
+            "burgers",
+            15
+          ],
+          [
+            "earlier",
+            15
+          ]
+        ]
+      },
+      "banned_phrases_used": {
+        "thus": 48,
+        "essentially": 44,
+        "indeed": 11,
+        "hence": 9,
+        "all in all": 9,
+        "that being said": 9,
+        "furthermore": 8,
+        "additionally": 6,
+        "utilize": 5,
+        "needless to say": 5,
+        "importantly": 3,
+        "highlight": 3,
+        "navigate": 3,
+        "comprehensive": 3,
+        "crucial": 2,
+        "it is important to note": 2,
+        "it's worth noting": 2,
+        "interestingly": 2,
+        "highlights": 2,
+        "robust": 2,
+        "vibrant": 2,
+        "plethora": 2,
+        "testament": 1,
+        "consequently": 1,
+        "notably": 1,
+        "showcase": 1,
+        "emphasizes": 1,
+        "conveys": 1,
+        "evokes": 1,
+        "juxtaposition": 1,
+        "nuanced": 1,
+        "multifaceted": 1,
+        "foster": 1,
+        "fostering": 1,
+        "harness": 1,
+        "elevate": 1,
+        "facilitate": 1,
+        "seamless": 1,
+        "profound": 1,
+        "indelible": 1,
+        "enduring legacy": 1,
+        "meticulous": 1,
+        "serves as": 1,
+        "at its core": 1,
+        "it goes without saying": 1
+      }
+    },
+    "across_writers": {
+      "mean sentence length": [
+        15.1,
+        18.5,
+        22.6
+      ],
+      "coefficient of variation": [
+        0.48,
+        0.57,
+        0.68
+      ],
+      "sentences under 6 words %": [
+        0.0,
+        7.75,
+        16.7
+      ],
+      "sentences 30+ words %": [
+        6.5,
+        13.3,
+        25.0
+      ],
+      "commas per sentence": [
+        0.55,
+        0.82,
+        1.17
+      ],
+      "MATTR-100": [
+        0.69,
+        0.71,
+        0.74
+      ],
+      "mean word length": [
+        4.21,
+        4.41,
+        4.59
+      ],
+      "unknown words %": [
+        1.8,
+        2.8,
+        4.1
+      ],
+      "contractions without apostrophe %": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "em_dash per 1000": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "en_dash per 1000": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "parenthesis per 1000": [
+        0.0,
+        4.01,
+        7.28
+      ],
+      "semicolon per 1000": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "colon per 1000": [
+        0.0,
+        0.0,
+        4.21
+      ],
+      "question_mark per 1000": [
+        0.0,
+        0.0,
+        4.76
+      ],
+      "exclamation_mark per 1000": [
+        0.0,
+        0.0,
+        5.91
+      ],
+      "however_initial per 1000": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pronoun_I per 1000": [
+        4.92,
+        16.45,
+        32.06
+      ],
+      "we_us_our per 1000": [
+        0.0,
+        5.48,
+        16.3
+      ],
+      "you_your per 1000": [
+        4.15,
+        11.07,
+        21.68
+      ],
+      "contraction_with_apostrophe per 1000": [
+        6.79,
+        13.4,
+        21.98
+      ]
+    }
+  }
+}

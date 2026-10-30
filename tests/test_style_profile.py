@@ -279,3 +279,11 @@ def test_the_vault_ladder_counts_gold_and_silver_notes_toward_finished_work(tmp_
     counts, sources = finished_counts([("essay.docx", 1.0, [sentence])], live, ladders, {})
     assert counts["sentences"] == pytest.approx(1 + LADDER["Gold"] + LADDER["Silver"])
     assert sources["files"][0]["file"] == "essay.docx" and set(sources["vault_notes"]) == {"Gold", "Silver"}
+
+
+def test_the_built_in_human_profile_keeps_the_template_format():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    profile = json.loads((root / "styles/human_default_profile.json").read_text())
+    assert format_errors(profile, json.loads((root / "style_profile_template.json").read_text())) == []

@@ -85,6 +85,7 @@ from eval.redteam_batch import (
     copied,
     follow_original,
     group_by_words,
+    paragraph_shapes,
     rewrite_group,
     rewrite_measures,
     worth_rewriting,
@@ -137,6 +138,8 @@ class StyleYardstick:
 
         folder = corpus_folder(profile_path)
         corpus, finished = folder / "corpus.jsonl", folder / usp.FINALIZED
+        if not corpus.exists() and (folder / "yardstick.json").exists():
+            return cls.measured(profile_path, words, register)
         if not corpus.exists() and not (register == usp.FINALIZED and finished.is_dir()):
             return None
         banned = usp.banned_patterns(json.loads(profile_path.read_text(encoding="utf-8")))
@@ -151,6 +154,23 @@ class StyleYardstick:
         except (OSError, ValueError, KeyError):
             target = None
         return cls.from_paragraphs(paragraphs, words, banned, target)
+
+    @classmethod
+    def measured(cls, profile_path: Path, words: int, register: str | None = None) -> StyleYardstick | None:
+        """A built-in profile's yardstick, measured in advance (eval/build_human_profile.py) from writing it
+        doesn't ship: the register's target and, at the passage size nearest `words`, the spread and the
+        passages' distances."""
+        import update_style_profile as usp
+
+        sizes = json.loads((corpus_folder(profile_path) / "yardstick.json").read_text(encoding="utf-8"))
+        registers = profile_registers(load_style_profile(profile_path))
+        measured = sizes.get(register if register in sizes else (registers or [*sizes])[0])
+        lengths = [int(size) for size in measured or {} if size.isdigit()]
+        if not lengths:
+            return None
+        nearest = measured[str(min(lengths, key=lambda size: abs(size - words)))]
+        banned = usp.banned_patterns(json.loads(profile_path.read_text(encoding="utf-8")))
+        return cls(measured["target"], nearest["spread"], nearest["passages"], banned)
 
     @classmethod
     def from_paragraphs(cls, paragraphs: list[str], words: int, banned: dict,
@@ -274,6 +294,25 @@ def style_examples(profile_path: Path, register: str | None = None, count: int =
     if yardstick is None:
         return [], []
     return yardstick.typical(count, most_words=2 * words), yardstick.checklist()
+
+
+def writer_shapes(profile_path: Path, register: str | None = None) -> list[list[tuple[int, str]]]:
+    """The sentence shapes of the writer's own paragraphs in `register` (resolved as style_examples does),
+    the skeletons a "writer" rewrite borrows: finished pieces for finished work, the notes otherwise or
+    when there are none. Only lengths and punctuation, never the writer's words."""
+    import update_style_profile as usp
+
+    registers = profile_registers(load_style_profile(profile_path))
+    if registers and register not in registers:
+        register = registers[0]
+    folder = corpus_folder(profile_path)
+    if (folder / "shapes.json").exists():  # a built-in profile ships its writers' shapes, not their writing
+        shapes = json.loads((folder / "shapes.json").read_text(encoding="utf-8"))
+        return [[tuple(shape) for shape in paragraph] for paragraph in shapes.get(register) or []]
+    paragraphs = usp.finished_pieces(folder / usp.FINALIZED) if register == usp.FINALIZED else []
+    if not paragraphs:
+        paragraphs = [entry["text"] for entry in usp.load_corpus(folder / "corpus.jsonl") if "superseded" not in entry]
+    return paragraph_shapes(paragraphs)
 
 
 def _measures() -> list[tuple[str, tuple[str, ...]]]:
@@ -598,9 +637,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--examples", type=int, default=0,
                         help="also send this many of the writer's own passages in the register, with their "
                              "measured counts, as the Adversarial Lab's switch does")
-    parser.add_argument("--structure", choices=list(STRUCTURES), default="same",
+    parser.add_argument("--structure", choices=list(STRUCTURES), default="writer",
                         help="how closely each rewrite follows the original block: a light edit, the same "
-                             "sentences in new words (the Adversarial Lab's default), or a free rewrite")
+                             "sentences in new words, the sentence shapes of a passage of the --style profile's "
+                             "writer (the default, as on the Adversarial Lab), or a free rewrite")
     parser.add_argument("--models", default=",".join(MODELS))
     parser.add_argument("--thinking", default=",".join(LEVELS))
     parser.add_argument("--groups", default=",".join(map(str, GROUPS)), help="blocks per request to try")
@@ -653,6 +693,8 @@ def main(argv: list[str] | None = None) -> int:
         data = path.read_bytes()
         # Two requests or more at the largest group size, so every size measured is one a batch would send.
         jobs, plan = sample_jobs(path.name, data, args.words, min_blocks=2 * max(groups), structure=args.structure)
+        if args.structure == "writer":  # skeletons from the profile's writer, with or without the profile itself
+            plan.shapes = writer_shapes(args.style, args.register)
         profile = load_style_profile(args.style)
         examples, checklist = ([], []) if args.no_style or not args.examples else \
             style_examples(args.style, args.register, args.examples)

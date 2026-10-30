@@ -36,8 +36,7 @@ for key in [key for key in st.session_state if isinstance(key, str) and key.star
 pages = [nav.detect_page()]
 if nav.redteam_enabled():
     pages.append(nav.redteam_page())
-if not style.public():
-    pages.append(nav.guide_page())
+pages.append(nav.guide_page())
 page = st.navigation(pages, position="top" if len(pages) > 1 else "hidden")
 if not style.public() and not prefs.load().get("welcomed"):
     prefs.update(welcomed=True)  # the Guide opens first once per computer, then stays a tab away

@@ -47,7 +47,8 @@ APP_FILES = ("app.py", "LICENSE", ".streamlit/config.toml", "models/combiner.jso
              "models/generation_tuning.json",
              "deploy/macos/launcher.py", "eval/__init__.py", "eval/generate_essays.py", "eval/redteam_batch.py",
              "eval/evasion_mode.py", "eval/generation_settings.py", "eval/tune_generation.py",
-             "update_style_profile.py")
+             "update_style_profile.py", "styles/human_default_profile.json", "styles/human_default/shapes.json",
+             "styles/human_default/yardstick.json")
 APP_PACKAGES = ("opendetector", "ui")
 MACHO_MAGICS = {b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}
 

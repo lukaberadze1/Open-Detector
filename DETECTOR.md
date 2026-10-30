@@ -95,15 +95,31 @@ and write a few groups at the same time (**Requests at once**, 2 by default). Th
 one entry per block; a block it leaves out is generated again on its own.
 
 **How closely to follow the original** decides what a document rewrite keeps of whoever wrote the
-original, a person or another model. *Same structure*, the default, shows the model each of the
-block's sentences numbered with its length and asks for one new sentence per sentence, at about its
-length and with its punctuation, then puts the original's paragraph breaks and spacing (double spaces
-included) back around the new sentences. *Light edit* also keeps most of the original's words. *Free
+original, a person or another model. *Writer's sentences*, the default, gives each block a sentence
+plan borrowed from a passage of the style profile's writer about as long as the block (its sentence
+lengths and punctuation, never its words), and the model fits the original's meaning into those
+sentences in the profile's voice. *Same structure* shows the model each of the block's sentences
+numbered with its length and asks for one new sentence per sentence, at about its length and with its
+punctuation, then puts the original's paragraph breaks and spacing (double spaces included) back around
+the new sentences. That hides AI text in a person's writing, but not in an AI's: an AI original's even
+sentences survive any rewrite done in place. Writer's sentences needs a profile with sentence shapes
+(the built-in one, or one with the writer's writing beside it, which a public deploy doesn't send);
+without them it works as same structure. *Light edit* also keeps most of the original's words. *Free
 rewrite* keeps only each block's meaning and length. Each saved block records its **structure match**
 (how closely it keeps the original's sentence lengths, punctuation and paragraphs, 0 to 100) and
 **words kept** (the share of the original's words it still has). A block that keeps 90% or more of
 its original's words is the original handed back, not AI text: it is asked for once more in new
 words, and if it still comes back as the original it is left out of the AI-labelled data.
+
+**Rewrite the draft in the writer's sentences**, on by default for a sample written from instructions
+in a style profile with sentence shapes, writes the piece and then rewrites it passage by passage in
+the profile's voice and in sentence shapes borrowed from its writer, the way a document rewrite does.
+Written from instructions alone, a sample keeps the model's own plan of what to say: complete, balanced
+and in order, which the detector reads whatever voice the model is told to use. Measured on
+2026-10-30 with `python -m eval.tune_prompts`, the restyle took samples from 81-92% AI likelihood
+(0-1 of 9 read as human) to the figures in `eval/reports/style_profile_ab.md`. It costs one more
+request per sample, and the draft is asked for a quarter longer, since a model fitting points into
+borrowed sentences writes short.
 
 **This document is my own writing** also saves each original block, and the whole original, as
 human-labelled data (label 0) beside its generated version, under the same `group_key`, so a split
@@ -191,11 +207,17 @@ falls back to a local Ollama model (`gemma3:4b` by default), and the sidebar say
 run. `OPENDETECTOR_REDTEAM=off` leaves the page out, as the Hugging Face deploy does.
 
 On the public Streamlit site the page runs in **public mode** (`OPENDETECTOR_PUBLIC=on`). Each
-visitor pastes their own Gemini key in the sidebar and adds their own style profile with **Add a
-style profile**. Both are kept only for that browser session and never saved; the host's own
-keys and `data/styles/` profiles are never used. Each visitor sees only their own samples and
-batches, and reloading the page starts afresh, so download what you want to keep. Public mode
-always writes with Gemini: the API address can't be changed and there is no local fallback.
+visitor pastes their own Gemini key in the sidebar. The server sends it to Google in each request's
+header and never writes it anywhere, and a batch lets go of it when it ends. By default it lasts only
+while the tab is open; **Remember it on this device** asks the visitor's own browser to keep it for
+this site (`ui/device_storage.py`, a small component that answers only the app on its own origin),
+so it fills in again on that device and no other, and **Forget it on this device** removes it. Samples
+are written in the built-in human profile unless the visitor adds their own with **Add your own style
+profile**, kept only for that browser session; the host's own keys and `data/styles/` profiles are
+never used. Each visitor sees only their own samples and batches, and reloading the page starts
+afresh, so download what you want to keep. Public mode always writes with Gemini: the API address
+can't be changed and there is no local fallback. The Guide is there too, saving nothing: it explains
+where a visitor's key goes.
 
 ```bash
 .venv/bin/python -m opendetector essay.txt
@@ -282,6 +304,15 @@ file name joins the attack label (`plain+student_profile`), so the report gives 
 ```bash
 .venv/bin/python -m eval.generate_essays --persuade persuade_2.0.csv --n 300 --style-profile data/styles/student_profile.json --out data/essays/gemini_profile.jsonl
 ```
+
+One profile ships with the code: `styles/human_default_profile.json`, the Adversarial Lab's default
+("Human (built in)"). It describes no one writer but how people write, measured from 1,750 human texts
+by different writers (finished work from news, science abstracts, Wikipedia and stories; quick notes
+from argument posts, explanations and reviews) with `python -m eval.build_human_profile`, which keeps
+numbers only: the measurements its prose is written from, the sentence shapes Writer's sentences
+borrows, and the yardstick its style match ranks against. A profile of one writer, added on the page or
+saved in `data/styles/`, reads more like that writer; the built-in one is the control it is compared
+with.
 
 A profile in the format of `style_profile_template.json` keeps two registers apart: **finalized**
 (finished essays, reports, stories, answers) and **notes** (quick notes written for oneself). Each

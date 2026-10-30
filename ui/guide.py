@@ -1,6 +1,7 @@
 """The Guide page: how to use the app, written for someone who has never set up anything like it, and
 a place to save the Gemini API key the Adversarial Lab uses. app.py opens it first the first time
-the app runs on a computer. A public deploy leaves it out: visitors there paste their key in the sidebar."""
+the app runs on a computer. On a public deploy it saves nothing: it explains where a visitor's key goes
+instead, since they paste it in the Adversarial Lab's sidebar (ui/redteam.py, ui/device_storage.py)."""
 
 from __future__ import annotations
 
@@ -90,11 +91,35 @@ def _key_panel() -> None:
                    "instructions to Google to write each sample; checking a text sends nothing anywhere.")
 
 
+def _public_key_panel() -> None:
+    with st.container(key="od-panel-guide-key"):
+        st.subheader("Your Gemini key, for the Adversarial Lab")
+        st.markdown(
+            "**Checking texts needs no key.** The Adversarial Lab uses Google's Gemini to generate labelled AI "
+            "challenge samples for detector evaluation, with your own free key:\n\n"
+            f"1. Open [aistudio.google.com/apikey]({KEY_PAGE}) and sign in with a Google account.\n"
+            "2. Press **Create API key**, then copy the key it shows.\n"
+            "3. Open **Adversarial Lab** and paste it in the sidebar, under **Text model**.\n\n"
+            "**Where your key goes.** It is used only for your own requests: this site's server sends it to "
+            "Google in each request, never in a link, and never writes it down, in a file or a log. No other "
+            "visitor can see it. You choose how long it lasts:\n\n"
+            "- **While the tab is open**, the default. Closing or reloading the tab forgets it, and you paste it "
+            "again next time.\n"
+            "- **Remember it on this device.** Your browser keeps it for this site, on this device only, and "
+            "fills it in next time. **Forget it on this device** removes it. Don't turn it on on a shared or "
+            "public computer."
+        )
+        st.page_link(nav.redteam_page(), label="Open the Adversarial Lab", icon=":material/science:")
+
+
 def render() -> None:
+    public = style.public()
     style.hero("Welcome", "How Open Detector works",
-               "Check whether a text was written by AI. The detector runs on this computer, so the texts you "
-               "check never leave it.",
-               ["Free and open source", "Works offline after the first check", "Word, PowerPoint, Markdown"])
+               "Check whether a text was written by AI. "
+               + ("The detector runs on this site's server, which doesn't keep the texts you check."
+                  if public else "The detector runs on this computer, so the texts you check never leave it."),
+               ["Free and open source", "Works in any browser" if public else "Works offline after the first check",
+                "Word, PowerPoint, Markdown"])
 
     first, second = st.columns(2)
     with first, st.container(key="od-panel-guide-check"):
@@ -103,9 +128,12 @@ def render() -> None:
             "1. Open **Detect** at the top of the window.\n"
             "2. Paste at least 150 words, or choose **Upload a file** for a Word, PowerPoint or Markdown file.\n"
             "3. Press **Analyze**.\n\n"
-            f"The very first check downloads the detector, about {models.download_gb(models.active_profile()):.1f} "
-            "GB. That takes a few minutes on a slow connection, and it happens only once. After that, checks run "
-            "without the internet in a few seconds."
+            + ("The first check after the site has been asleep takes a minute or two while the detector loads; "
+               "after that a check takes a few seconds." if public else
+               f"The very first check downloads the detector, about "
+               f"{models.download_gb(models.active_profile()):.1f} GB. That takes a few minutes on a slow "
+               "connection, and it happens only once. After that, checks run without the internet in a few "
+               "seconds.")
         )
     with second, st.container(key="od-panel-guide-read"):
         st.subheader("2 · Read the result")
@@ -118,17 +146,20 @@ def render() -> None:
         )
 
     if nav.redteam_enabled():
-        _key_panel()
+        _public_key_panel() if public else _key_panel()
 
     with st.container(key="od-panel-guide-more"):
         st.subheader("Good to know")
         st.markdown(
-            "- **Look:** Glass or Instrument, under **Settings** at the bottom of the sidebar. For light or dark, "
+            "- **Look:** Glass or Instrument, under **Settings** at the bottom of the sidebar"
+            + (" (this site doesn't remember it between visits)" if public else "") + ". For light or dark, "
             "use the **⋮** menu at the top right, then **Settings**.\n"
-            "- **Slim or Full:** Slim, the strongest single engine, scores as well as Full on the project's tests "
-            f"and needs about 1.5 GB of memory. Full adds two more engines, needs about 3.5 GB and downloads "
-            f"about {models.download_gb('full') - models.download_gb('slim'):.1f} GB more.\n"
-            "- **This guide** stays under **Guide** at the top of the window."
+            + ("- **This site runs Slim,** the strongest single engine, which scores as well as Full on the "
+               "project's tests. The Mac app can run Full too.\n" if public else
+               "- **Slim or Full:** Slim, the strongest single engine, scores as well as Full on the project's "
+               "tests and needs about 1.5 GB of memory. Full adds two more engines, needs about 3.5 GB and "
+               f"downloads about {models.download_gb('full') - models.download_gb('slim'):.1f} GB more.\n")
+            + "- **This guide** stays under **Guide** at the top of the window."
         )
 
     if st.button("Start checking texts", type="primary", icon=":material/arrow_forward:"):
