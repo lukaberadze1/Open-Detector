@@ -125,8 +125,24 @@ What changed:
 - Document rewrites borrow the writer's sentences by default; with no shapes to borrow they keep the
   original's.
 
-The built-in profile is still the weaker one, as a profile of no one should be. Giving each sample one
-measured writer from the 1,750 rather than their average is the next thing to try.
+The built-in profile is still the weaker one, as a profile of no one should be.
+
+### One measured writer instead of the average: worse
+
+Tried the same day: each sample, or each document, written as one of the 1,750 writers the built-in
+profile was measured from, the model told how that writer differs from most (their sentence length,
+commas, contractions, "I", brackets, slips) and given their own sentence shapes. On
+gemini-3.1-flash-lite, the model with quota left that day:
+
+| Built-in profile, finished work | One writer | Their average |
+|---|---:|---:|
+| Samples from instructions, restyled (9 each) | 93 ± 8, 0 of 9 human | 52 ± 29, 3 of 9 human |
+| Claude's report, Writer's sentences (3 trials) | 94 ± 5 | 85 ± 14 |
+
+A finished-work writer drawn at random is as often a science-abstract or news writer as anyone (34
+words a sentence, 1.6 commas, long words), and told those numbers the model wrote stiff, formal prose,
+the kind the detector is surest about. The average's plain, uneven, concrete prose was the better
+instruction, so the built-in profile stays the average.
 
 The sections below are kept as they were measured.
 
