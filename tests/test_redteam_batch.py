@@ -1,6 +1,7 @@
 """Block-by-block checkpoints for the red-team generator app's batches."""
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,8 +9,14 @@ from eval.redteam_batch import (
     BatchWorker,
     Checkpoint,
     batch_key,
+    copied,
+    copied_row,
+    follow_original,
     generate_missing,
+    group_prompt,
+    original_text,
     parse_group_reply,
+    rewrite_measures,
     score_missing,
 )
 
@@ -269,3 +276,60 @@ def test_short_blocks_share_a_request_and_a_long_one_takes_the_room_of_several()
         "6-word blocks take a quarter place, a 150-word one five places on its own, 30-word ones a place each")
     assert group_by_words(list(words), 1, words.get) == [[key] for key in words], "one block per request"
     assert group_by_words(list(words), 4) == [["a", "b", "c", "d"], ["e", "f"]], "without lengths, by count"
+
+
+# A human original with its quirks: a space before a full stop, a double space, a paragraph break.
+ORIGINAL = "Bees need water nearby .  They drink a lot in summer.\n\nA dry hive keeps them healthy, and calm."
+JOB = {"kind": "text_block", "label": "Paragraph 2", "question": "", "previous": ORIGINAL}
+
+
+def plan_with(structure):
+    return SimpleNamespace(structure=structure, prompt="", context_text="Keeping bees", blocks=[], answer_slots=[],
+                           match_existing_lengths=True, answer_words=100)
+
+
+def test_a_rewrite_that_follows_the_original_is_shown_its_numbered_sentences():
+    assert original_text(plan_with("same"), JOB) == (
+        "1. (5 words) Bees need water nearby .\n2. (6 words) They drink a lot in summer.\n\n"
+        "3. (8 words) A dry hive keeps them healthy, and calm.")
+    assert original_text(plan_with("free"), JOB) == ORIGINAL
+    assert original_text(SimpleNamespace(), JOB) == ORIGINAL, "a plan without the setting rewrites freely"
+    prompt = group_prompt(plan_with("same"), [JOB])
+    assert "In each rewrite, follow the original sentence by sentence" in prompt and "1. (5 words)" in prompt
+    assert "sentence by sentence" not in group_prompt(plan_with("free"), [JOB])
+
+
+def test_the_rewrite_takes_on_the_originals_layout():
+    reply = "1. (4 words) Bees want water close.\n2. (6 words) Summer makes them drink plenty.\n" \
+            "3. (8 words) Keep the hive dry, and they stay well."
+    assert follow_original(plan_with("same"), JOB, reply) == (
+        "Bees want water close.  Summer makes them drink plenty.\n\nKeep the hive dry, and they stay well.")
+    uneven = "Bees want water.\nThey drink.\nKeep it dry.\nThey stay well."
+    assert follow_original(plan_with("same"), JOB, uneven) == uneven, "a different count keeps its own lines"
+    one_line = {**JOB, "previous": "Bees need water. They drink a lot."}
+    assert follow_original(plan_with("same"), one_line, "Bees want water.\nThey drink.\nA lot.") == (
+        "Bees want water. They drink. A lot."), "an original on one line stays on one line"
+    assert follow_original(plan_with("free"), JOB, reply) == reply
+    assert follow_original(plan_with("same"), {**JOB, "kind": "answer_box"}, reply) == reply
+
+
+def test_rewrite_measures_say_how_closely_the_original_was_followed():
+    assert rewrite_measures(ORIGINAL, ORIGINAL) == {"structure_match": 100.0, "words_kept": 100.0}
+    same_shape = "Hives want water close .  Summers make them drink often.\n\nA damp hive makes them sick, and cross."
+    loose = "Water matters to bees, who drink heavily through the hot months and suffer in damp hives."
+    shaped, free = rewrite_measures(ORIGINAL, same_shape), rewrite_measures(ORIGINAL, loose)
+    assert shaped["structure_match"] > 90 > free["structure_match"]
+    assert shaped["words_kept"] < 50 and free["words_kept"] < 30
+    assert rewrite_measures("", loose) == {}
+
+
+def test_a_rewrite_that_hands_back_the_original_is_a_copy_not_ai_text():
+    assert copied(ORIGINAL, ORIGINAL) and copied(ORIGINAL, ORIGINAL + " And they like shade.")
+    assert not copied(ORIGINAL, "Hives want water close .  Summers make them drink often.\n\nA damp hive harms them.")
+    prompt = f"Target: Paragraph 2\nPrevious text:\n{ORIGINAL}\n\nAdditional instructions:\n\n\nDocument context:\nx"
+    assert copied_row({"label": 1, "text": ORIGINAL, "prompt": prompt})
+    assert not copied_row({"label": 1, "text": "Hives want water close.", "prompt": prompt})
+    assert not copied_row({"label": 0, "text": ORIGINAL, "prompt": prompt}), "a human original is meant to match"
+    assert copied_row({"label": 1, "text": "anything", "words_kept": 97.5}), "the benchmark saves words_kept"
+    assert not copied_row({"label": 1, "text": "anything", "words_kept": 60.0})
+    assert not copied_row({"label": 1, "text": ORIGINAL}), "nothing to compare with"

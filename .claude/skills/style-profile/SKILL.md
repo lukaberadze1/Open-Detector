@@ -17,14 +17,22 @@ The writer writes differently when they finish a piece for someone else and when
 for themselves. The profile keeps the two apart, and the generator sends only one of them:
 
 - **finalized**: essays, reports, stories, answers and reflections. Its numbers come from the starting
-  profile (about 54,000 words of finished pieces), plus any finished pieces saved as `.md` or `.txt` in
-  `data/styles/alexandria/finalized/`.
+  profile (about 54,000 words of finished pieces), blended with:
+  - the finished pieces in `data/styles/alexandria/finalized/`: `.md`, `.txt`, `.docx`, `.pptx` or
+    `.pdf`, each counted in full unless `finalized/weights.json` gives it less (`{"report.pdf": 0.9}`).
+    Only the writer's own prose counts: long quotations, verse, equations, tables and the questions of
+    a question/answer table are left out, and so is any text a blank template saved in
+    `finalized/templates/` also has. A paragraph repeated across files counts once.
+  - the vault's notes by the rung the writer gave them in their tags: **Gold** (finished) at 0.5,
+    **Silver** (drafted) at 0.2, Bronze and fleeting captures not at all (`LADDER`). A finished note is
+    still a note, so it never counts as fully finished work.
 - **notes**: the vault. Everything the script reads from Obsidian is notes, however polished it
-  looks. Lesson captures typed while listening are the fastest, loosest kind of notes.
+  looks, Gold notes included. Lesson captures typed while listening are the fastest, loosest kind.
 
 **A habit seen in notes never goes into finalized** unless finished pieces show it too. Quick-note
 slips, lowercase lines, run-ons and terms written down as heard are how the writer writes fast, not
-how they write finished work.
+how they write finished work. Silver and Gold notes move the finalized numbers a little, but a habit
+needs a finished piece to show it before it goes into the finalized prose.
 
 ## 1. Measure
 
@@ -45,7 +53,10 @@ edit), and writes:
   - `this_week`: the new writing alone, and `drift`, which compares the two.
   - `all_time_unweighted`: raw counts, including `most_common_unknown` (the misspelling counts).
   - `weeks`: one row per week, with its weight.
-  - `finished_pieces`: how much finished writing was found in the `finalized/` folder.
+  - `finished_pieces`: what went into the finalized numbers: each file with its weight and words, and
+    the Silver and Gold notes with theirs.
+  - `finalized_own`: those finished pieces and rated notes measured like `stacked`, at their weights:
+    the figures for the finalized prose.
   - `skipped_as_pasted`: lines left out as pasted or vault-generated.
 - `data/styles/alexandria/new_this_week.md`: the new paragraphs themselves.
 
@@ -103,7 +114,8 @@ count with the words it came from ("13 in 37,867 words").
   `registers.finalized.rhythm`.
 - Update the figures inside the notes prose (pronouns, vocabulary, verbs, punctuation per 1,000 words)
   from `stacked`, with the word count and date range they cover. Update finalized figures only when
-  finished pieces were added.
+  finished pieces were added, from `finalized_own`, and say which pieces they come from. Its examples
+  must come from the finished pieces themselves, never from notes.
 
 ### Stacking: how patterns live and die
 - **Keep.** Never delete a pattern, example, signature word, banned phrase or rule because it was

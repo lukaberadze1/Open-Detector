@@ -187,7 +187,11 @@ def load_local(path: str, dataset: str | None = None) -> pd.DataFrame:
     optional: id, domain, model, attack, group, group_key."""
     p = Path(path)
     if p.suffix == ".jsonl":
-        df = pd.DataFrame([json.loads(line) for line in p.read_text().splitlines() if line.strip()])
+        from eval.redteam_batch import copied_row
+
+        # A red-team "rewrite" that hands back its original is the writer's text, not AI text.
+        rows = [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+        df = pd.DataFrame([row for row in rows if not copied_row(row)])
     else:
         df = pd.read_csv(p)
     if "text" not in df or "label" not in df:

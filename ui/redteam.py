@@ -52,16 +52,21 @@ from eval.generate_essays import (
 from eval import generation_settings
 from eval.generation_settings import MAX_POINTS, MEASURES
 from eval.redteam_batch import (
+    AGAIN,
     GROUP_SCHEMA,
+    STRUCTURES,
     BatchWorker,
     Checkpoint,
     StopRequested,
     batch_key,
     block_prompt,
+    copied,
+    follow_original,
     group_by_words,
     group_prompt,
-    parse_group_reply,
     person_instruction,
+    rewrite_group,
+    rewrite_measures,
     target_words,
     worth_rewriting,
 )
@@ -231,6 +236,8 @@ class Plan:
     model: str | None = None  # the model to start with, when the priorities picked one
     human_source: bool = False  # the uploaded document is the user's own writing: save it as paired human data
     register: str | None = None  # with a profile that has registers: finalized (finished work) or notes
+    examples: bool = False  # also send a few of the writer's own passages in the register (never in public mode)
+    structure: str = "same"  # how closely rewritten text blocks follow the original (redteam_batch.STRUCTURES)
     style_path: Path | None = None
     score: bool = True
     evasion: bool = False
@@ -308,37 +315,36 @@ def score_text(text: str, profile: str) -> dict:
     return {**result, "detector_profile": profile}
 
 
-def style_match(text: str, profile_path: Path | None, cache: dict | None = None) -> float | None:
-    """Compare text with a length-matched sample from the selected profile corpus."""
-    if profile_path is None or not text.strip():
-        return None
-    words = count_words(text)
-    reference_words = max(50, round(words / 50) * 50)
-    key = (str(profile_path), reference_words)
+def _yardstick(text: str, profile_path: Path, cache: dict | None, register: str | None):
+    """The style yardstick for `text`: the profile's writing in the register, cut to its length."""
+    from eval.tune_generation import StyleYardstick
+
+    reference_words = max(50, round(count_words(text) / 50) * 50)
+    key = (str(profile_path), reference_words, register)
     yardstick = cache.get(key) if cache is not None else None
     if yardstick is None:
-        from eval.tune_generation import StyleYardstick
-
-        yardstick = StyleYardstick.build(profile_path, reference_words)
+        yardstick = StyleYardstick.build(profile_path, reference_words, register)
         if cache is not None:
             cache[key] = yardstick
+    return yardstick
+
+
+def style_match(text: str, profile_path: Path | None, cache: dict | None = None,
+                register: str | None = None) -> float | None:
+    """Compare text with length-matched passages of the profile's writing: finished pieces for the
+    finalized register when there are enough, the writer's notes otherwise."""
+    if profile_path is None or not text.strip():
+        return None
+    yardstick = _yardstick(text, profile_path, cache, register)
     return yardstick.match(text) if yardstick else None
 
 
-def style_feedback(text: str, profile_path: Path | None, cache: dict | None = None) -> list[str]:
+def style_feedback(text: str, profile_path: Path | None, cache: dict | None = None,
+                   register: str | None = None) -> list[str]:
     """Explain the largest measurable gaps between a draft and its selected style profile."""
     if profile_path is None or not text.strip():
         return []
-    from eval.tune_generation import StyleYardstick
-
-    words = count_words(text)
-    reference_words = max(50, round(words / 50) * 50)
-    key = (str(profile_path), reference_words)
-    yardstick = cache.get(key) if cache is not None else None
-    if yardstick is None:
-        yardstick = StyleYardstick.build(profile_path, reference_words)
-        if cache is not None:
-            cache[key] = yardstick
+    yardstick = _yardstick(text, profile_path, cache, register)
     return yardstick.feedback(text) if yardstick else []
 
 
@@ -363,9 +369,9 @@ def _queue_batch_improvement(path: str) -> None:
 
 
 def candidate_metrics(text: str, profile: str, style_path: Path | None,
-                      cache: dict | None = None) -> dict:
+                      cache: dict | None = None, register: str | None = None) -> dict:
     """The detector and style measurements used to choose a robustness candidate."""
-    return {**score_text(text, profile), "style_match": style_match(text, style_path, cache)}
+    return {**score_text(text, profile), "style_match": style_match(text, style_path, cache, register)}
 
 
 # -- settings -------------------------------------------------------------------------
@@ -525,6 +531,13 @@ def _setup(profile: str, conn: Connection) -> Plan:
             for block in prose:
                 st.markdown(f"**{block.label}**")
                 st.text(block.text if len(block.text) <= 300 else block.text[:300] + "…")
+        plan.structure = st.segmented_control(
+            "How closely to follow the original", list(STRUCTURES), key=keep("keep:redteam:structure", "same"),
+            required=True, format_func=STRUCTURES.get,
+            help="Same structure writes each of the original's sentences anew, one for one, at its length and with "
+                 "its punctuation, then puts back the original's paragraph breaks and spacing: the AI text takes on "
+                 "the shape of whoever wrote the original, a person or another model. A light edit also keeps most "
+                 "of the original's words. A free rewrite keeps only the meaning and length of each block.")
     if plan.task in ("section", "answers", "blocks"):
         plan.human_source = st.toggle(
             "This document is my own writing", key=keep("keep:redteam:human_source", False),
@@ -560,6 +573,7 @@ def _setup(profile: str, conn: Connection) -> Plan:
                                  "Every JSON file in data/styles/. Save another profile there and it shows up here.")
         plan.style_path = styles[name] if use_style else None
         _register(plan)
+        _examples(plan)
     else:
         st.caption("No style profile yet, so samples use the model's own style. Add one below to write in it.")
     st.file_uploader(
@@ -613,6 +627,50 @@ def _register(plan: Plan) -> None:
         help="Finished work is how the writer writes for others: essays, reports, stories, answers. Quick notes "
              "is how they write for themselves, faster and looser, with more slips. Only the chosen register is "
              "sent, with what holds in both.")
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _samples_for(path: str, register: str | None, stamp: tuple) -> tuple[list[str], list[str]]:
+    """The writer's passages and counts for a profile's register; `stamp` changes with the files."""
+    from eval.tune_generation import style_examples
+
+    return style_examples(Path(path), register)
+
+
+def _available_samples(plan: Plan) -> tuple[list[str], list[str]]:
+    """The writer's own passages in the plan's register and their measured counts, from the writing kept
+    beside the profile. None on a public deploy: that writing is the owner's, never a visitor's."""
+    if public() or not plan.use_profile:
+        return [], []
+    from eval.tune_generation import corpus_folder
+
+    folder = corpus_folder(plan.style_path)
+    files = (plan.style_path, folder / "corpus.jsonl", folder / "measurements.json", folder / "finalized")
+    with contextlib.suppress(OSError, ValueError):
+        return _samples_for(str(plan.style_path), plan.register,
+                            tuple(path.stat().st_mtime if path.exists() else 0.0 for path in files))
+    return [], []
+
+
+def writer_samples(plan: Plan) -> tuple[list[str], list[str]]:
+    """What the style prompt carries besides the profile: passages and counts, when switched on."""
+    return _available_samples(plan) if plan.examples else ([], [])
+
+
+def _examples(plan: Plan) -> None:
+    """Whether the model also sees a few of the writer's own passages in the chosen register, with their
+    measured counts. Told only the profile, models write more commas, more varied words and fewer short
+    sentences than the writer; passages show what a description can't."""
+    passages, _ = _available_samples(plan)
+    if not passages:
+        return
+    register = f"{REGISTER_NAMES[plan.register]} " if plan.register in REGISTER_NAMES else ""
+    plan.examples = st.toggle(
+        "Show the model the writer's own passages", key=keep("keep:redteam:examples", False),
+        help=f"Sends {len(passages)} short passages of the writer's own {register}writing with the profile, "
+             "picked from the most typical, and their measured counts (sentences, "
+             f"commas, short and long sentences): about {sum(map(count_words, passages)):,} words more per "
+             "request. The model is told to copy how they read, never what they say.")
 
 
 def _spend(measure: str, change: int) -> None:
@@ -691,7 +749,8 @@ def _readout(plan: Plan, table: dict, setting: generation_settings.Setting, bloc
     context = len(plan.context_text)
     if plan.use_profile:
         with contextlib.suppress(OSError, ValueError):
-            context += len(style_instructions(load_style_profile(plan.style_path), plan.register))
+            context += len(style_instructions(load_style_profile(plan.style_path), plan.register,
+                                              *writer_samples(plan)))
     estimate = generation_settings.estimate(setting, blocks, table, context)
     heat = f" · temperature {setting.temperature:g}" if setting.temperature is not None else ""
     st.markdown(f":material/auto_awesome: **{setting.model}** · {setting.thinking} thinking{heat}"
@@ -807,7 +866,8 @@ def _settings(plan: Plan) -> dict:
     """How a sample was written, saved with it so the evaluation can tell which settings the detector
     misses. eval/datasets.py keeps only its own columns, so these never become detector features."""
     return {"thinking": plan.thinking, "temperature": plan.temperature, "style_profile": plan.style_name,
-            "register": plan.register,
+            "register": plan.register, "examples": len(writer_samples(plan)[0]),
+            "structure": plan.structure if plan.rewrite_all_blocks else None,
             "blocks_per_request": (1 if plan.evasion else plan.group_size) if plan.batch else None}
 
 
@@ -831,11 +891,13 @@ def _human_rows(plan: Plan, originals: list[tuple[str, str, str]], group_key: st
 
 def _checkpoint_path(plan: Plan) -> Path:
     # Batches saved before a profile could be chosen all used the default one, so only another
-    # profile adds its name to the key, and those batches still resume.
+    # profile adds its name to the key, and those batches still resume; so with free rewrites, which
+    # every batch was before rewrites could follow the original.
     style = [plan.style_name] if plan.use_profile and plan.style_name != DEFAULT_STYLE else []
+    follow = [plan.structure] if plan.rewrite_all_blocks and plan.structure != "free" else []
     return _store().batches / (
         batch_key(plan.source_hash, plan.fill_answer_boxes, plan.rewrite_all_blocks, plan.prompt.strip(),
-                  plan.use_profile, plan.answer_words, plan.match_existing_lengths, *style) + ".json"
+                  plan.use_profile, plan.answer_words, plan.match_existing_lengths, *style, *follow) + ".json"
     )
 
 
@@ -867,8 +929,10 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
 
     attack = f"{mode_tag}+{plan.style_name}"
     rows = []
+    # A block handed back as the uploaded original is the writer's text, not AI text: never saved as AI.
+    copies = {item["key"] for item in items if copied(item["target"].text, item["text"])}
     for item in items:
-        if item.get("recorded") or (plan.score and "score" not in item):
+        if item.get("recorded") or (plan.score and "score" not in item) or item["key"] in copies:
             continue
         question_material = f"Target: {item['label']}\n"
         if item["question"]:
@@ -895,12 +959,14 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
             "detector_profile": None,
             **_settings(plan),
             **(item.get("score") or {}),
+            **_followed([item]),
         })
         checkpoint.blocks[item["key"]]["recorded"] = True
     # The whole regenerated text is a sample of its own: unlike most single blocks, it is long enough
     # for the detector and for the evaluation, which drops texts under 150 words.
     document_score = None if partial else checkpoint.meta.get("document_score")
-    if document_score and not checkpoint.meta.get("document_recorded"):
+    # The whole document was scored with every block in it, so with a copy among them it is partly the writer's.
+    if document_score and not checkpoint.meta.get("document_recorded") and not copies:
         models_used = {item["model"] for item in items}
         model_tag = models_used.pop() if len(models_used) == 1 else "mixed"
         rows.append({
@@ -918,6 +984,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
             "target_section": None,
             **_settings(plan),
             **{key: value for key, value in document_score.items() if key != "words"},
+            **_followed(items),
         })
         checkpoint.meta["document_recorded"] = True
     if plan.human_source and rows:
@@ -964,6 +1031,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
             else None
         ),
         "score_label": "Whole regenerated document",
+        "followed": _followed(items),
         "baseline_score": checkpoint.meta.get("document_baseline_score"),
         "checkpoint_path": str(checkpoint.path),
         "attachment": text_attachment,
@@ -978,6 +1046,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
             if "improved_blocks" in checkpoint.meta else
             f"{'Regenerated' if plan.rewrite_all_blocks else 'Filled'} {len(items)} of {len(jobs)} {noun}"
             + (" so far" if partial else "")
+            + (f"; {len(copies)} came back as the original and weren't saved as AI text" if copies else "")
         ),
         "batch_answers": [
             {
@@ -987,10 +1056,22 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
                 "probability": (item.get("score") or {}).get("ai_probability"),
                 "style_match": (item.get("score") or {}).get("style_match"),
                 "baseline_style_match": item.get("baseline_style_match"),
+                "structure_match": _followed([item]).get("structure_match"),
             }
             for item in items
         ],
     }
+
+
+def _followed(items: list[dict]) -> dict:
+    """How the rewritten text blocks among `items` sit on the uploaded originals, taken together:
+    structure match and words kept (redteam_batch.rewrite_measures). Empty for answer boxes, whose
+    previous answer is replaced rather than rewritten."""
+    blocks = [item for item in items if item["kind"] != "answer_box"]
+    if not blocks:
+        return {}
+    return rewrite_measures("\n\n".join(item["target"].text for item in blocks),
+                            "\n\n".join(item["text"] for item in blocks))
 
 
 @st.fragment(run_every=2)
@@ -1195,8 +1276,8 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
             def score_candidate(answer: str) -> dict:
                 if conn.local_model and candidates[answer][0] == local_model:
                     unload_local_model(conn.local_url, conn.local_model)
-                metrics = candidate_metrics(answer, plan.profile, plan.style_path, style_cache)
-                metrics["style_feedback"] = style_feedback(answer, plan.style_path, style_cache)
+                metrics = candidate_metrics(answer, plan.profile, plan.style_path, style_cache, register=plan.register)
+                metrics["style_feedback"] = style_feedback(answer, plan.style_path, style_cache, register=plan.register)
                 return metrics
 
             status["note"] = f"Trying up to three drafts for {job['label']}…"
@@ -1206,27 +1287,34 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
             status["note"] = None
         else:
             answer, used_model, model_errors = write(prompt, max_tokens)
+            if copied(job["previous"], follow_original(plan, job, clean_essay(answer))):
+                wrote_with(used_model, model_errors)  # handed back the original: once more, in new words
+                answer, used_model, model_errors = write(f"{prompt}\n\n{AGAIN}", max_tokens)
         wrote_with(used_model, model_errors)
-        return clean_essay(answer), used_model
+        return follow_original(plan, job, clean_essay(answer)), used_model
 
     def generate_group(group: list[str]) -> Iterator[tuple[str, str, str]]:
-        """Write a group of blocks in one request, then any block its reply leaves out or garbles on its own."""
+        """Write a group of blocks in one request, and any it hands back as the original once more together
+        (rewrite_group), then any block a reply leaves out or garbles on its own."""
         group_jobs = [by_key[key] for key in group]
         if len(group_jobs) > 1:
-            reply, used_model, model_errors = write(group_prompt(plan, group_jobs), group_tokens(group_jobs),
-                                                    json_schema=GROUP_SCHEMA, timeout=60 + 15 * len(group_jobs))
-            wrote_with(used_model, model_errors)
-            texts = parse_group_reply(reply, [f"B{number}" for number in range(1, len(group_jobs) + 1)])
-            again = []
-            for number, job in enumerate(group_jobs, 1):
-                if text := clean_essay(texts.get(f"B{number}", "")):
-                    yield job["key"], text, used_model
-                else:
-                    again.append(job)
+            models: dict[str, str] = {}
+
+            def ask(prompt: str, jobs: list[dict]) -> str:
+                reply, used_model, model_errors = write(prompt, group_tokens(jobs), json_schema=GROUP_SCHEMA,
+                                                        timeout=60 + 15 * len(jobs))
+                wrote_with(used_model, model_errors)
+                models.update(dict.fromkeys((job["key"] for job in jobs), used_model))
+                return reply
+
+            written, again = rewrite_group(plan, group_jobs, ask, clean_essay)
+            for job in group_jobs:
+                if job["key"] in written:
+                    yield job["key"], written[job["key"]], models[job["key"]]
             if again:
                 with shared:
-                    status["log"].append(f"{used_model} left out {len(again)} of {len(group_jobs)} blocks in a "
-                                         "group; writing them one at a time.")
+                    status["log"].append(f"A reply left out {len(again)} of {len(group_jobs)} blocks in a group; "
+                                         "writing them one at a time.")
             group_jobs = again
         for job in group_jobs:
             yield job["key"], *generate_block(job)
@@ -1242,7 +1330,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
             style_cache: dict = {}
             for job in jobs:
                 checkpoint.blocks.setdefault(job["key"], {})["baseline_style_match"] = style_match(
-                    job["previous"], plan.style_path, style_cache
+                    job["previous"], plan.style_path, style_cache, register=plan.register
                 )
             checkpoint.save()
         status["note"] = None
@@ -1253,12 +1341,14 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         whole = "\n\n".join(checkpoint.blocks[key]["text"] for key in checkpoint.generated(keys))
         status["note"] = "Scoring the whole regenerated document…"
         checkpoint.meta["document_score"] = {
-            **candidate_metrics(whole, plan.profile, plan.style_path), "words": count_words(whole)
+            **candidate_metrics(whole, plan.profile, plan.style_path, register=plan.register),
+            "words": count_words(whole),
         }
         if plan.evasion:
             original = "\n\n".join(job["previous"] for job in jobs if job["previous"].strip())
             checkpoint.meta["document_baseline_score"] = {
-                **candidate_metrics(original, plan.profile, plan.style_path), "words": count_words(original)
+                **candidate_metrics(original, plan.profile, plan.style_path, register=plan.register),
+                "words": count_words(original),
             }
         checkpoint.save()
         status["note"] = None
@@ -1279,7 +1369,8 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
 
     worker = BatchWorker(
         checkpoint, keys, generate_group,
-        score=(lambda text: candidate_metrics(text, plan.profile, plan.style_path)) if plan.score else None,
+        score=(lambda text: candidate_metrics(text, plan.profile, plan.style_path, register=plan.register))
+        if plan.score else None,
         before_scoring=before_scoring, finish=score_document if plan.score else None, status=status,
         on_end=on_end, group_size=group_size, workers=workers, words=words,
     )
@@ -1359,13 +1450,14 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         if plan.evasion and baseline_metrics is None:
             starting_text = improvement_draft or (target_section.text if target_section else "")
             if starting_text:
-                baseline_metrics = candidate_metrics(starting_text, plan.profile, plan.style_path, style_cache)
+                baseline_metrics = candidate_metrics(starting_text, plan.profile, plan.style_path, style_cache,
+                                                     register=plan.register)
         reports[text] = report = models.get_detector(plan.profile).analyze(text, sentences=False)
         if local:
             models.release()  # and the local model needs it back for the next draft
-        candidate_style[text] = style_match(text, plan.style_path, style_cache)
+        candidate_style[text] = style_match(text, plan.style_path, style_cache, register=plan.register)
         return {"ai_probability": report.ai_probability, "style_match": candidate_style[text],
-                "style_feedback": style_feedback(text, plan.style_path, style_cache)}
+                "style_feedback": style_feedback(text, plan.style_path, style_cache, register=plan.register)}
 
     def likelihood(text: str) -> float:
         report = reports.get(text)
@@ -1425,7 +1517,8 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         "verdict": score.verdict if score else None,
         "calibrated": score.calibrated if score else None,
         "detector_profile": plan.profile if score else None,
-        "style_match": candidate_style.get(essay, style_match(essay, plan.style_path, style_cache))
+        "style_match": candidate_style.get(
+            essay, style_match(essay, plan.style_path, style_cache, register=plan.register))
         if plan.style_path else None,
         **_settings(plan),
     }
@@ -1610,6 +1703,11 @@ def _show_result(result: dict, profile: str) -> None:
                 if score.get("style_match") is not None:
                     st.metric("Style match", f"{score['style_match']:.0f}%", width="content",
                               help="Percentile against length-matched passages in the selected style profile.")
+                if (followed := result.get("followed")) and followed.get("structure_match") is not None:
+                    st.metric("Structure match", f"{followed['structure_match']:.0f}%", width="content",
+                              help="How closely the rewrites keep the original's sentences: their lengths, their "
+                                   f"punctuation and their paragraphs. They keep {followed['words_kept']:.0f}% of "
+                                   "its words.")
                 verdict_badge(score["verdict"])
         elif score:
             words = f" ({score['words']} words)" if score.get("words") else ""
@@ -1624,7 +1722,8 @@ def _show_result(result: dict, profile: str) -> None:
             st.markdown(f"**{result.get('batch_summary') or 'Regenerated blocks'}** in the exported copy.")
             st.dataframe(
                 [{"Block": item["label"], "Before style": item["baseline_style_match"],
-                  "After style": item["style_match"], "AI likelihood": item["probability"],
+                  "After style": item["style_match"], "Structure": item.get("structure_match"),
+                  "AI likelihood": item["probability"],
                   "Verdict": VERDICTS[item["verdict"]][0] if item["verdict"] in VERDICTS else "Not scored"}
                  for item in result["batch_answers"]],
                 hide_index=True, width="stretch",
@@ -1844,7 +1943,8 @@ def render() -> None:
             system = None
             if clicked and not problem and plan.use_profile:
                 try:
-                    system = style_instructions(load_style_profile(plan.style_path), plan.register)
+                    system = style_instructions(load_style_profile(plan.style_path), plan.register,
+                                                *writer_samples(plan))
                 except (OSError, ValueError) as exc:
                     st.error(f"Could not load the style profile: {exc}")
                     clicked = False

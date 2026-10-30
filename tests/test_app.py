@@ -14,6 +14,8 @@ import pytest
 from docx import Document
 from streamlit.testing.v1 import AppTest
 
+from eval.redteam_batch import AGAIN, AGAIN_ALL
+
 APP = str(Path(__file__).resolve().parent.parent / "app.py")
 HUMAN = "My grandmother kept bees behind the shed, and every summer we got stung at least once. "
 AI = "Furthermore, it is important to delve into the multifaceted tapestry of this topic. "
@@ -131,7 +133,8 @@ def stub_model(monkeypatch, tmp_path):
     monkeypatch.setattr(redteam, "local_fallback_problem", lambda url, model: None)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     stub = SimpleNamespace(prompts=[], systems=[], keys=[], urls=[], orders=[], local_models=[], options=[],
-                           temperatures=[], notifications=[], failures=[], drop=set(), gate=threading.Event())
+                           temperatures=[], notifications=[], failures=[], drop=set(), gate=threading.Event(),
+                           echo={}, echo_alone=[])  # replies that hand back an original: by block id, then alone
     stub.gate.set()
 
     def write(base_url, api_key, models, prompt, temperature, system, local_url="", local_model="", *args,
@@ -155,9 +158,10 @@ def stub_model(monkeypatch, tmp_path):
             raise redteam.APIError(f"Every configured text model failed: {failure}")
         if options.get("json_schema"):
             ids = re.findall(r"^\[(B\d+)\]", prompt, re.MULTILINE)
-            reply = {"blocks": [{"id": block_id, "text": AI * 15} for block_id in ids if block_id not in stub.drop]}
+            reply = {"blocks": [{"id": block_id, "text": stub.echo.get(block_id, AI * 15)} for block_id in ids
+                                if block_id not in stub.drop]}
             return json.dumps(reply), "stub-model", []
-        return AI * 15, "stub-model", []
+        return (stub.echo_alone.pop(0) if stub.echo_alone else AI * 15), "stub-model", []
 
     monkeypatch.setattr(redteam, "generate_with_fallback", write)
     monkeypatch.setattr(redteam, "_notify", stub.notifications.append)
@@ -195,8 +199,8 @@ def test_red_team_sample_is_recorded_as_ai_with_its_score(stub_model, tmp_path):
         "model": "stub-model", "attack": "prompt+plain", "group": "ai", "group_key": None, "prompt": None,
         "source_file": None, "target_section": None, "ai_probability": None, "verdict": "likely_ai",
         "calibrated": True, "detector_profile": "slim", "style_match": None,
-        "thinking": "low", "temperature": 0.8, "style_profile": "plain", "register": None,
-        "blocks_per_request": None,
+        "thinking": "low", "temperature": 0.8, "style_profile": "plain", "register": None, "examples": 0,
+        "structure": None, "blocks_per_request": None,
     }
     assert rows[0]["ai_probability"] > 0.9
     assert len(list((tmp_path / "exports").glob("AI_REDTEAM_prompt_*.txt"))) == 1
@@ -305,6 +309,48 @@ def test_a_profile_with_registers_writes_in_the_register_picked(stub_model, tmp_
     assert row["register"] == "notes"
 
 
+def test_the_model_sees_the_writers_own_passages_unless_switched_off(stub_model, tmp_path, monkeypatch):
+    styles = tmp_path / "styles"
+    (styles / "alexandria").mkdir(parents=True)
+    registers = {name: {"golden_rule": f"Write as in {name}."} for name in ("finalized", "notes")}
+    (styles / "alexandria_profile.json").write_text(json.dumps({"style_profile": {
+        "format": "registers-v2", "registers": registers}}))
+    words = ["the", "hive", "bees", "water", "shade", "honey", "frame", "comb", "queen", "smoke", "field", "flower"]
+    paragraphs = [" ".join(" ".join(words[(n + i * 5 + j) % len(words)] for j in range(6 + (n + i) % 7)).capitalize()
+                           + "." for i in range(4)) for n in range(60)]
+    (styles / "alexandria/corpus.jsonl").write_text("".join(
+        json.dumps({"text": text, "week": "2026-W40", "id": str(n)}) + "\n" for n, text in enumerate(paragraphs)))
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.run()
+    assert "keep:redteam:examples" not in [toggle.key for toggle in at.get("toggle")], (
+        "finished work has no finished pieces to show")
+    at.segmented_control(key="keep:redteam:register").set_value("notes").run()
+    assert not at.toggle(key="keep:redteam:examples").value, "offered when the writing is there, off by default"
+    at.toggle(key="keep:redteam:examples").set_value(True).run()
+    at.text_area(key="keep:redteam:prompt").input("Notes on Roman taxes.")
+    button(at, "Generate challenge sample").click()
+    at.run()
+    assert not at.exception, at.exception
+    system = stub_model.systems[-1]
+    assert "# The writer's own passages" in system and "Passage 3:" in system and "# Counts to check" in system
+    assert system.index("Write as in notes.") < system.index("Passage 1:")
+    assert json.loads((tmp_path / "local_redteam.jsonl").read_text().splitlines()[-1])["examples"] == 3
+
+    at.toggle(key="keep:redteam:examples").set_value(False).run()
+    button(at, "Generate challenge sample").click()
+    at.run()
+    assert "Passage 1:" not in stub_model.systems[-1]
+    assert json.loads((tmp_path / "local_redteam.jsonl").read_text().splitlines()[-1])["examples"] == 0
+
+    from ui import redteam
+
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
+    plan = SimpleNamespace(use_profile=True, style_path=styles / "alexandria_profile.json", register="notes",
+                           examples=True)
+    assert redteam.writer_samples(plan) == ([], []), "a public deploy never sends the owner's writing"
+
+
 def test_red_team_writes_in_the_style_profile_picked(stub_model, tmp_path):
     styles = tmp_path / "styles"
     styles.mkdir()
@@ -364,6 +410,9 @@ def test_red_team_rewrites_every_block_of_a_word_document(stub_model, tmp_path):
     assert prompt.count("Full document context:") == 1
     assert "[B1] A rewrite of the existing text block labelled Paragraph 2. Aim for about 11 words." in prompt
     assert "[B2] A rewrite of the existing text block labelled Paragraph 4" in prompt
+    assert at.segmented_control(key="keep:redteam:structure").value == "same"
+    assert "In each rewrite, follow the original sentence by sentence" in prompt
+    assert "1. (11 words) Bees need a dry hive and a nearby source of water." in prompt
     assert stub_model.options[0]["thinking"] == "low" and stub_model.options[0]["json_schema"]
     (exported,) = (tmp_path / "exports").glob("AI_REDTEAM_full_document_*.docx")
     assert [p.text for p in Document(exported).paragraphs] == [
@@ -376,6 +425,8 @@ def test_red_team_rewrites_every_block_of_a_word_document(stub_model, tmp_path):
         ("document_combined", "full_document+plain", 1),
     ]
     assert all(row["verdict"] == "likely_ai" for row in rows)
+    assert all(row["structure"] == "same" and 0 <= row["structure_match"] <= 100 and "words_kept" in row
+               for row in rows), "how closely each rewrite followed its original is saved with it"
     assert not list((tmp_path / "batches").glob("*.json")), "a finished batch's checkpoint is discarded"
 
 
@@ -515,6 +566,37 @@ def test_an_added_style_profile_is_kept_for_the_visitor_and_picked(monkeypatch, 
         redteam._add_style_profile()
         assert state["redteam:style_notice"][0] == "error", name
     assert saved.read_text() == '{"tone": "breezy"}', "a different profile of the same name isn't overwritten"
+
+
+def test_a_block_handed_back_as_the_original_is_asked_again_and_never_saved_as_ai(stub_model, tmp_path):
+    original = "Bees need a dry hive and a nearby source of water."
+    stub_model.echo = {"B1": original}  # every grouped reply hands back the first block
+    at = word_document_page()
+    button(at, "Generate 2 block challenges").click()
+    at.run()
+    run_until_batch_ends(at)
+    group, again = stub_model.prompts
+    assert "labelled Paragraph 4" in group and again.endswith(AGAIN_ALL) and "labelled Paragraph 4" not in again, (
+        "only the copy is asked for again, in the same kind of request")
+    rows = [json.loads(line) for line in (tmp_path / "local_redteam.jsonl").read_text().splitlines()]
+    assert [row["target_section"] for row in rows] == ["Paragraph 4"], (
+        "only the real rewrite is AI data: not the copy, nor a whole document that holds it")
+    assert "1 came back as the original and weren't saved as AI text" in at.session_state[
+        "last_generated_result"]["batch_summary"]
+
+
+def test_a_block_written_alone_that_comes_back_as_the_original_is_asked_once_more(stub_model, tmp_path):
+    original = "Bees need a dry hive and a nearby source of water."
+    stub_model.drop = {"B1"}  # the grouped reply leaves the first block out, so it is written alone
+    stub_model.echo_alone = [original]  # and handed back as the original the first time
+    at = word_document_page()
+    button(at, "Generate 2 block challenges").click()
+    at.run()
+    run_until_batch_ends(at)
+    _, alone, again = stub_model.prompts
+    assert "Paragraph 2" in alone and again == f"{alone}\n\n{AGAIN}"
+    rows = [json.loads(line) for line in (tmp_path / "local_redteam.jsonl").read_text().splitlines()]
+    assert {row["target_section"] for row in rows} == {"Paragraph 2", "Paragraph 4", None}, "the second try counts"
 
 
 def test_block_prompts_start_with_the_same_document():

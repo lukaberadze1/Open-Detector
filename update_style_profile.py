@@ -11,8 +11,9 @@ never below FLOOR), so recent writing leads and older writing keeps a say.
 
 The profile keeps two registers apart, because quick notes are written differently from finished
 work: the vault's writing is the notes register, and the finalized register is the starting profile
-(BASELINE, measured from about 54,000 words of the writer's finished pieces) with any finished pieces
-saved in the state directory's finalized/ folder blended in. register_numbers gives each its numbers.
+(BASELINE, measured from about 54,000 words of the writer's finished pieces) with the finished pieces
+saved in the state directory's finalized/ folder (Markdown, text, Word, PowerPoint or PDF) and the
+vault notes the writer rated Gold or Silver (LADDER) blended in. register_numbers gives each its numbers.
 
 Only the writer's own words are measured. Left out: frontmatter, headings, callouts and quotes
 (where the vault keeps review notes and pasted sources), embeds, tables, code, HTML comments,
@@ -34,11 +35,14 @@ import re
 import shutil
 import sys
 from collections import Counter, defaultdict
+from contextlib import suppress
 from datetime import date
 from difflib import SequenceMatcher
 from functools import lru_cache
+from io import BytesIO
 from itertools import pairwise
 from pathlib import Path
+from zipfile import BadZipFile
 
 from opendetector.segment import split_sentences
 
@@ -54,7 +58,14 @@ FLOOR = 0.25  # the least any week ever counts
 # personal writing. It is the finalized register's numbers until finished pieces are added.
 BASELINE = {"words": 54000, "mean": 18.3, "median": 16, "cv": 0.6, "min": 2, "max": 106,
             "pct": {"under_6": 6.9, "6_to_15": 39.3, "16_to_29": 40.9, "30_plus": 13.0}}
-FINALIZED = "finalized"  # a folder in the state directory for the writer's finished pieces (.md, .txt)
+FINALIZED = "finalized"  # a folder in the state directory for the writer's finished pieces
+FINISHED_TYPES = (".md", ".txt", ".docx", ".pptx", ".pdf")
+# How far a vault note counts as finished work, by the rung the writer gave it in its tags: Bronze is
+# raw, Silver drafted, Gold finished. A finished note is still a note, so even Gold counts for half.
+# Fleeting captures (zk: fleeting) never count.
+LADDER = {"Gold": 0.5, "Silver": 0.2}
+# A finished piece that can't be read (damaged, or not downloaded from iCloud yet) is skipped.
+UNREADABLE = (OSError, ValueError, KeyError, IndexError, BadZipFile)
 EDIT_SIMILARITY = 0.8  # a new paragraph this close to a vanished one in the same note is an edit of it
 MIN_WORDS, MIN_LIST_WORDS = 4, 6
 SAMPLE_WORDS = 8000  # how much of the new writing goes into new_this_week.md
@@ -478,15 +489,127 @@ def register_numbers(stacked: dict, finalized: dict | None = None) -> dict:
     return numbers
 
 
-def finished_pieces(folder: Path) -> list[str]:
-    """The paragraphs of the writer's finished pieces in `folder` (Markdown headings left out)."""
+# A quotation on one line; at six words or more it is someone else's words quoted at length.
+QUOTED = re.compile(r"[\"“][^\"”\n]*[\"”]")
+LONG_QUOTE_WORDS = 6
+SENTENCE_END = re.compile(r"\w[.!?]")
+TAGS = re.compile(r"^tags:(.*(?:\n[ \t]+-.*)*)", re.M)
+ZK = re.compile(r"^zk:\s*(\w+)", re.M)
+
+
+def own_prose(block: str) -> str | None:
+    """A paragraph of a finished piece as the writer's own prose: long quotations cut to “…”, and None
+    for a heading, verse or a list (short lines one after another), or an equation or a table (mostly
+    numbers and symbols)."""
+    block = QUOTED.sub(lambda quote: "“…”" if len(quote.group().split()) >= LONG_QUOTE_WORDS else quote.group(),
+                       block).strip()
+    words = WORD_RE.findall(block)
+    if block.startswith("#") or len(words) < MIN_WORDS or not SENTENCE_END.search(block):
+        return None
+    if len(words) < 0.75 * len(block.split()):
+        return None
+    lines = [line for line in block.splitlines() if line.strip()]
+    return None if len(lines) >= 3 and len(words) / len(lines) < 9 else block
+
+
+def _pdf_paragraphs(data: bytes) -> list[str]:
+    """A PDF's text, its lines run back into paragraphs until a blank line, a short heading ending in a
+    colon, or the end of a page."""
+    try:
+        from pypdf import PdfReader
+    except ImportError:  # in the development requirements, not the app's
+        return []
     paragraphs = []
-    for path in sorted([*folder.glob("*.md"), *folder.glob("*.txt")]) if folder.is_dir() else []:
-        for block in re.split(r"\n\s*\n", path.read_text(encoding="utf-8", errors="ignore")):
-            block = block.strip()
-            if block and not block.startswith("#") and len(WORD_RE.findall(block)) >= MIN_WORDS:
-                paragraphs.append(block)
+    for page in PdfReader(BytesIO(data)).pages:
+        current = []
+        for line in [*(page.extract_text() or "").splitlines(), ""]:
+            line = line.strip()
+            if line and not (line.endswith(":") and len(line.split()) <= 6):
+                current.append(line)
+            elif current:
+                paragraphs.append(" ".join(current))
+                current = []
     return paragraphs
+
+
+def _document_blocks(path: Path) -> list[str]:
+    """A finished piece's blocks of text. Word and PowerPoint give their prose blocks and the answers in
+    their question/answer tables, never the questions (opendetector.documents)."""
+    suffix = path.suffix.lower()
+    if suffix in (".md", ".txt"):
+        return re.split(r"\n\s*\n", path.read_text(encoding="utf-8", errors="ignore"))
+    data = path.read_bytes()
+    if suffix == ".pdf":
+        return _pdf_paragraphs(data)
+    from opendetector.documents import extract_answer_slots, rewritable_blocks
+
+    return [block.text for block in rewritable_blocks(path.name, data)] + [
+        slot.previous_answer for slot in extract_answer_slots(path.name, data) if slot.previous_answer]
+
+
+def _finished_files(folder: Path) -> list[Path]:
+    if not folder.is_dir():
+        return []
+    return sorted(path for path in folder.iterdir() if path.is_file() and path.suffix.lower() in FINISHED_TYPES
+                  and not path.name.startswith(("~$", ".")))  # Word's lock files, hidden files
+
+
+def finished_sources(folder: Path) -> list[tuple[str, float, list[str]]]:
+    """(file name, weight, paragraphs) for each of the writer's finished pieces in `folder`, keeping only
+    their own prose (own_prose). Text a blank template saved in folder/templates/ also has is the
+    template's, and a paragraph counts once however many files repeat it. A weights.json in the folder
+    can count a file for less than a whole one: {"report.pdf": 0.9}."""
+    try:
+        weights = json.loads((folder / "weights.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        weights = {}
+    seen, sources = set(), []
+    for path in _finished_files(folder / "templates"):
+        with suppress(*UNREADABLE):
+            seen.update(paragraph_id(block) for block in _document_blocks(path))
+    for path in _finished_files(folder):
+        paragraphs = []
+        with suppress(*UNREADABLE):
+            for block in _document_blocks(path):
+                if paragraph_id(block) not in seen and (own := own_prose(block)):
+                    seen.add(paragraph_id(block))
+                    paragraphs.append(own)
+        if paragraphs:
+            sources.append((path.name, float(weights.get(path.name, 1.0)), paragraphs))
+    return sources
+
+
+def finished_pieces(folder: Path) -> list[str]:
+    """Every paragraph of the writer's finished pieces in `folder` (finished_sources), file by file."""
+    return [paragraph for _, _, paragraphs in finished_sources(folder) for paragraph in paragraphs]
+
+
+def note_ladder(markdown: str) -> str | None:
+    """The rung of a note's frontmatter: Gold, Silver or Bronze from its tags, "fleeting" for a capture,
+    None without either."""
+    match = FRONTMATTER.match(markdown)
+    if not match:
+        return None
+    if (zk := ZK.search(match.group(1))) and zk.group(1) == "fleeting":
+        return "fleeting"
+    tags = TAGS.search(match.group(1))
+    return next((rung for rung in ("Gold", "Silver", "Bronze") if tags and re.search(rf"\b{rung}\b", tags.group(1))),
+                None)
+
+
+def note_ladders(vault: Path) -> dict[str, str]:
+    """Each note's rung (note_ladder), by its path in the vault as the corpus keeps it."""
+    ladders = {}
+    for path in vault.rglob("*.md"):
+        if any(part.startswith(".") for part in path.relative_to(vault).parts):
+            continue  # the vault's trash and settings
+        try:
+            rung = note_ladder(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:  # not downloaded from iCloud yet
+            continue
+        if rung:
+            ladders[path.relative_to(vault).as_posix()] = rung
+    return ladders
 
 
 DRIFT = [("mean sentence length", ("sentence_length", "mean")),
@@ -502,8 +625,28 @@ DRIFT = [("mean sentence length", ("sentence_length", "mean")),
          ("'which' per 1000", ("per_1000_words", "which"))]
 
 
+def finished_counts(finished: list[tuple[str, float, list[str]]], live: list[dict], ladders: dict[str, str],
+                    banned: dict[str, re.Pattern]) -> tuple[dict | None, dict]:
+    """The finalized register's own writing as weighted counts, and what went into them: the finished
+    pieces (finished_sources) at their weights, and the vault's paragraphs from notes rated Gold or
+    Silver at LADDER's."""
+    parts = [(measure(paragraphs, banned), weight) for _, weight, paragraphs in finished]
+    rungs = defaultdict(list)
+    for e in live:
+        if (rung := ladders.get(e["note"])) in LADDER:
+            rungs[rung].append(e["text"])
+    parts += [(measure(texts, banned), LADDER[rung]) for rung, texts in rungs.items()]
+    def size(paragraphs: list[str], weight: float) -> dict:
+        return {"weight": weight, "paragraphs": len(paragraphs), "words": len(WORD_RE.findall("\n".join(paragraphs)))}
+
+    sources = {"files": [{"file": name, **size(paragraphs, weight)} for name, weight, paragraphs in finished],
+               "vault_notes": {rung: size(texts, LADDER[rung]) for rung, texts in rungs.items()}}
+    return (combine(parts) if parts else None), sources
+
+
 def measurements(corpus: list[dict], change: dict, week: str, baseline_week: str,
-                 banned: dict[str, re.Pattern], finished: list[str] | None = None) -> dict:
+                 banned: dict[str, re.Pattern], finished: list[tuple[str, float, list[str]]] | None = None,
+                 ladders: dict[str, str] | None = None) -> dict:
     by_week = defaultdict(list)
     for e in corpus:
         if "superseded" not in e:
@@ -533,6 +676,7 @@ def measurements(corpus: list[dict], change: dict, week: str, baseline_week: str
                       "mean_sentence_length": s and s["sentence_length"]["mean"],
                       "coefficient_of_variation": s and s["sentence_length"]["coefficient_of_variation"]})
     live = [e for e in corpus if "superseded" not in e]
+    finalized, sources = finished_counts(finished or [], live, ladders or {}, banned)
     return {
         "updated": date.today().isoformat(), "week": week,
         "settings": {"half_life_weeks": HALF_LIFE, "floor": FLOOR, "starting_profile_words": BASELINE["words"],
@@ -541,9 +685,9 @@ def measurements(corpus: list[dict], change: dict, week: str, baseline_week: str
                    "first_run": change["seed"], "new_paragraphs": len(change["added"]),
                    "new_words": sum(e["words"] for e in change["added"]), "edited_paragraphs": change["edited"],
                    "kept_after_deletion_from_vault": change["kept_after_deletion"]},
-        "register_numbers": register_numbers(stacked, measure(finished, banned) if finished else None),
-        "finished_pieces": {"paragraphs": len(finished or []),
-                            "words": len(WORD_RE.findall("\n".join(finished or [])))},
+        "register_numbers": register_numbers(stacked, finalized),
+        "finished_pieces": sources,
+        "finalized_own": summarize(finalized) if finalized else None,  # measured like stacked, for the prose
         "stacked": stacked_summary,
         "this_week": this_week,
         "drift": drift,
@@ -668,8 +812,9 @@ def main(argv: list[str] | None = None) -> int:
     meta_path.write_text(json.dumps(meta, indent=2) + "\n")
     snapshot = prepare_profile(args.profile, args.template, args.state / "history", week)
     banned = banned_patterns(json.loads(args.profile.read_text()))
-    finished = finished_pieces(args.state / FINALIZED)
-    report = measurements(corpus, change, week, meta["starting_profile_week"], banned, finished)
+    finished = finished_sources(args.state / FINALIZED)
+    report = measurements(corpus, change, week, meta["starting_profile_week"], banned, finished,
+                          note_ladders(args.vault))
     report["unreadable_notes"] = unreadable
     report["skipped_as_pasted"] = {"lines": len(pasted), "examples": [line[:120] for line in pasted[:8]]}
     (args.state / "measurements.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
@@ -684,10 +829,13 @@ def main(argv: list[str] | None = None) -> int:
     print(("First run: " if c["first_run"] else f"{week}: ")
           + f"{c['new_paragraphs']} new paragraphs ({c['new_words']} words), {c['edited_paragraphs']} edited, "
             f"{c['kept_after_deletion_from_vault']} kept after deletion from the vault.")
-    notes, final = numbers.get("notes") or {}, numbers["finalized"]
+    notes, final, own = numbers.get("notes") or {}, numbers["finalized"], report["finished_pieces"]
+    added = [f"{entry['words']:,} words of {entry['file']} (x{entry['weight']:g})" for entry in own["files"]]
+    added += [f"{entry['words']:,} words of {rung} notes (x{entry['weight']:g})"
+              for rung, entry in own["vault_notes"].items()]
     print(f"Register numbers: notes mean sentence {notes.get('avg_sentence_length_words')} words "
           f"(range {notes.get('min_max_sentence_length')}); finalized {final['avg_sentence_length_words']} words"
-          + (f", with {report['finished_pieces']['words']} words of finished pieces" if finished else
+          + (f", the starting profile with {', '.join(added)}" if added else
              " (the starting profile; add finished pieces to the finalized folder to measure more)") + ".")
     print(f"Wrote {args.state / 'measurements.json'} and {args.state / 'new_this_week.md'}"
           + (f"; snapshot {snapshot}" if snapshot else ""))

@@ -222,3 +222,60 @@ def test_check_reports_format_problems(setup, capsys):
     profile.write_text(json.dumps({"style_profile": {}}))
     assert main([*args, "--check"]) == 1
     assert "missing keys" in capsys.readouterr().err
+
+
+def test_finished_pieces_keep_only_the_writers_own_prose_from_any_format(tmp_path):
+    from docx import Document
+
+    from update_style_profile import finished_sources, own_prose
+
+    essay = Document()
+    essay.add_paragraph("Both poems use vivid imagery, and the contrast gives the scene its meaning here.")
+    essay.add_paragraph('Gary writes "With two oranges in my jacket and frost cracking beneath my steps" in winter.')
+    essay.add_paragraph("Frost cracking\nbeneath my steps\nmy breath before me\nthen gone")  # a poem's lines
+    essay.add_paragraph("Fill in your reflection below in full sentences, using evidence.")  # the template's
+    essay.save(tmp_path / "finished work.docx")
+    template = Document()
+    template.add_paragraph("Fill in your reflection below in full sentences, using evidence.")
+    (tmp_path / "templates").mkdir()
+    template.save(tmp_path / "templates" / "blank.docx")
+    (tmp_path / "notes.md").write_text(
+        "Both poems use vivid imagery, and the contrast gives the scene its meaning here.\n\n"
+        "Carbohydrates are our energy source, like a battery for every athlete.\n")
+    (tmp_path / "~$finished work.docx").write_bytes(b"Word's lock file")
+    (tmp_path / "weights.json").write_text('{"notes.md": 0.9}')
+
+    assert finished_sources(tmp_path) == [
+        ("finished work.docx", 1.0, ["Both poems use vivid imagery, and the contrast gives the scene its meaning here.",
+                                     "Gary writes “…” in winter."]),
+        ("notes.md", 0.9, ["Carbohydrates are our energy source, like a battery for every athlete."]),
+    ], "quotes cut, verse and template text left out, a repeated paragraph counted once, weights read"
+    assert own_prose("y = −0.0075(82.5)2 + 1.2375(82.5) = 51.02 and so on.") is None, "an equation isn't prose"
+
+
+def test_pdf_lines_run_back_into_paragraphs(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from update_style_profile import _pdf_paragraphs
+
+    page = SimpleNamespace(extract_text=lambda: "  2 \nIntroduction: \nThis project models a bridge using \n"
+                                                "quadratic functions. \n \nVertex: \n(82.5,52) \n")
+    monkeypatch.setitem(sys.modules, "pypdf", SimpleNamespace(PdfReader=lambda data: SimpleNamespace(pages=[page])))
+    assert _pdf_paragraphs(b"%PDF") == ["2", "This project models a bridge using quadratic functions.", "(82.5,52)"]
+
+
+def test_the_vault_ladder_counts_gold_and_silver_notes_toward_finished_work(tmp_path):
+    from update_style_profile import LADDER, finished_counts, note_ladder
+
+    assert note_ladder('---\ntags: ["Gold"]\nzk: permanent\n---\nText') == "Gold"
+    assert note_ladder("---\ntags:\n  - Silver\n---\nText") == "Silver"
+    assert note_ladder('---\ntags: ["Gold"]\nzk: fleeting\n---\nText') == "fleeting", "a capture never counts"
+    assert note_ladder("No frontmatter") is None
+    sentence = "The polis needed one government strong enough to protect the whole state."
+    live = [{"note": "gold.md", "text": sentence}, {"note": "bronze.md", "text": sentence},
+            {"note": "silver.md", "text": sentence}]
+    ladders = {"gold.md": "Gold", "bronze.md": "Bronze", "silver.md": "Silver"}
+    counts, sources = finished_counts([("essay.docx", 1.0, [sentence])], live, ladders, {})
+    assert counts["sentences"] == pytest.approx(1 + LADDER["Gold"] + LADDER["Silver"])
+    assert sources["files"][0]["file"] == "essay.docx" and set(sources["vault_notes"]) == {"Gold", "Silver"}

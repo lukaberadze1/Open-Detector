@@ -46,6 +46,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -82,6 +83,11 @@ REGISTER_INTRO = ("Write in the style of the writer profiled below, in their {re
                   "single time: use it at most once in a long text, or not at all. Keep the slips, missing "
                   "apostrophes, stray capitals and spacing quirks; don't correct them.")
 REGISTER_NAMES = {"finalized": "finished work", "notes": "quick notes"}
+# Real passages show what a description can't; without the warning a model borrows their content.
+EXAMPLES_INTRO = ("Real passages the writer wrote, unedited. Write like them: their sentence lengths, their few "
+                  "commas, the plain words they use again and again, their slips. Never reuse their facts, names, "
+                  "topics or wording.")
+CHECKLIST_INTRO = "The writer's measured counts. Check the draft against them before answering:"
 
 
 def load_style_profile(path: Path) -> dict:
@@ -127,11 +133,14 @@ def profile_registers(profile: dict) -> list[str]:
     return list(registers) if isinstance(registers, dict) else []
 
 
-def style_instructions(profile: dict, register: str | None = None) -> str:
+def style_instructions(profile: dict, register: str | None = None, examples: Sequence[str] = (),
+                       checklist: Sequence[str] = ()) -> str:
     """The system prompt for a style profile. With registers: how to use the profile, the chosen
     register (the first when `register` is None or unknown) with its golden rule first, and what holds
     in every register; the other register is left out. Otherwise the overall rule, the hard rules,
-    then the measurements as reference; profiles without system_prompt_overrides are all reference."""
+    then the measurements as reference; profiles without system_prompt_overrides are all reference.
+    `examples` (the writer's own passages) and `checklist` (their measured counts) come last, from
+    eval.tune_generation.style_examples."""
     if registers := profile_registers(profile):
         name = register if register in registers else registers[0]
         chosen = dict(profile["registers"][name])
@@ -144,17 +153,23 @@ def style_instructions(profile: dict, register: str | None = None) -> str:
         lines += ["", f"# The {REGISTER_NAMES.get(name, name)} register", *_render(chosen, 2)]
         if profile.get("shared"):
             lines += ["", "# In every register", *_render(profile["shared"], 2)]
-        return "\n".join(lines)
-    rules = dict(profile.get("system_prompt_overrides") or {})
-    golden = rules.pop("golden_transformation_rule", None)
-    reference = {k: v for k, v in profile.items() if k != "system_prompt_overrides"}
-    lines = [STYLE_INTRO]
-    if golden:
-        lines += ["", golden]
-    if rules:
-        lines += ["", "# Rules", *_render(rules, 2)]
-    if reference:
-        lines += ["", "# Reference", *_render(reference, 2)]
+    else:
+        rules = dict(profile.get("system_prompt_overrides") or {})
+        golden = rules.pop("golden_transformation_rule", None)
+        reference = {k: v for k, v in profile.items() if k != "system_prompt_overrides"}
+        lines = [STYLE_INTRO]
+        if golden:
+            lines += ["", golden]
+        if rules:
+            lines += ["", "# Rules", *_render(rules, 2)]
+        if reference:
+            lines += ["", "# Reference", *_render(reference, 2)]
+    if examples:
+        lines += ["", "# The writer's own passages", EXAMPLES_INTRO]
+        for number, passage in enumerate(examples, 1):
+            lines += ["", f"Passage {number}:", passage.strip()]
+    if checklist:
+        lines += ["", "# Counts to check", CHECKLIST_INTRO, *(f"- {line}" for line in checklist)]
     return "\n".join(lines)
 
 
@@ -543,6 +558,9 @@ def main() -> int:
                              "added to the attack label (<style>+<name>)")
     parser.add_argument("--register", help="with a profile that has registers, the one to write in "
                                            "(finalized or notes; default: the profile's first)")
+    parser.add_argument("--examples", type=int, default=0,
+                        help="also send this many of the writer's own passages in the register, with their "
+                             "measured counts (needs the profile's corpus beside it)")
     parser.add_argument("--n", type=int, default=100)
     parser.add_argument("--base-url", default=GEMINI_API_URL)
     parser.add_argument("--api-key-env", default="GEMINI_API_KEY", help="environment variable holding the key")
@@ -559,11 +577,16 @@ def main() -> int:
                      "--api-key-env at the variable that holds it, or use a local --base-url.")
     system, attack = None, args.style
     if args.style_profile:
+        examples, checklist = [], []
         try:
-            system = style_instructions(load_style_profile(args.style_profile), args.register)
+            if args.examples:
+                from eval.tune_generation import style_examples
+
+                examples, checklist = style_examples(args.style_profile, args.register, args.examples)
+            system = style_instructions(load_style_profile(args.style_profile), args.register, examples, checklist)
         except (OSError, ValueError) as e:  # json.JSONDecodeError is a ValueError
             parser.error(f"could not read the style profile {args.style_profile}: {e}")
-        attack = f"{args.style}+{args.style_profile.stem}"
+        attack = f"{args.style}+{args.style_profile.stem}" + ("+examples" if examples else "")
 
     df = pd.read_csv(args.persuade)
     text_col = next((c for c in ("full_text", "text") if c in df), None)

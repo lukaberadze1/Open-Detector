@@ -14,7 +14,8 @@ groups are written at the same time. `parse_group_reply` reads a group's JSON re
 
 The prompts are here too, so the Red team page and the settings benchmark (eval/tune_generation.py)
 send the same ones. They take the page's plan: anything with `prompt`, `context_text`, `blocks`,
-`answer_slots`, `match_existing_lengths` and `answer_words`.
+`answer_slots`, `match_existing_lengths` and `answer_words`, and optionally `structure`: how closely
+a rewritten text block follows the original (STRUCTURES; free when absent).
 
 A BatchWorker runs both passes on its own thread. Run inside a Streamlit script instead, a batch
 ends whenever the script reruns: when a widget is touched, or when a background browser tab
@@ -29,6 +30,7 @@ import os
 import re
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -36,7 +38,7 @@ from itertools import islice
 from datetime import UTC, datetime
 from pathlib import Path
 
-from opendetector.segment import count_words
+from opendetector.segment import Sentence, count_words, split_sentences
 
 
 def batch_key(*parts) -> str:
@@ -209,6 +211,145 @@ def person_instruction(*samples: str) -> str:
     return f"Write in {person}, matching the source text. Keep that grammatical person consistent throughout."
 
 
+# -- following the original --------------------------------------------------------------
+
+# How closely a rewritten text block follows the original, whoever wrote it. "same" hides the new text
+# in the original's skeleton: its sentences one for one, their lengths, punctuation and layout.
+STRUCTURES = {"light": "Light edit", "same": "Same structure", "free": "Free rewrite"}
+FOLLOW = {
+    "light": "Edit the original lightly, sentence by sentence: keep every numbered sentence in its order, with "
+             "its length, its punctuation and most of its words, and change about one word or phrase in four. "
+             "Keep its casing, spacing and spelling as they are.",
+    "same": "Follow the original sentence by sentence: write one new sentence for each numbered sentence, in the "
+            "same order, within a few words of its length and with the same punctuation (its commas, brackets, "
+            "dashes and questions). Say the same thing in new words. Keep the original's casing, spacing and "
+            "spelling habits. Leave out the numbers and word counts.",
+    # Told to write like the writer of an original, a model otherwise hands much of it back unchanged.
+    "free": "Say the same thing in new words: never hand back the original's sentences.",
+}
+_MARKS = re.compile(r"[,;:()\[\]\u2013\u2014?!\"\u201c\u201d]|\s-\s")
+_WORDS = re.compile(r"[^\W\d_]+(?:['\u2019][^\W\d_]+)*")
+_NUMBERED = re.compile(r"^[ \t]*\d+\.[ \t]+(?:\(\d+ words?\)[ \t]*)?", re.M)
+
+
+def structure(plan) -> str:
+    return getattr(plan, "structure", "free")
+
+
+def original_text(plan, job: dict) -> str:
+    """A text block's original as the prompt shows it. When the rewrite follows it, its sentences are
+    numbered with their lengths, a blank line between paragraphs, so the model can match each one."""
+    if structure(plan) == "free" or job["kind"] == "answer_box":
+        return job["previous"]
+    sentences, lines = split_sentences(job["previous"]), []
+    for number, sentence in enumerate(sentences, 1):
+        if number > 1 and sentence.paragraph != sentences[number - 2].paragraph:
+            lines.append("")
+        lines.append(f"{number}. ({sentence.words} words) {job['previous'][sentence.start:sentence.end]}")
+    return "\n".join(lines) or job["previous"]
+
+
+def follow_original(plan, job: dict, text: str) -> str:
+    """A rewritten text block laid out like the original: with as many sentences, the original's
+    paragraph breaks, line breaks and spacing between sentences go around the new ones, so the rewrite
+    keeps the original writer's layout, double spaces included. Otherwise the rewrite as it came, on the
+    original's lines."""
+    if structure(plan) == "free" or job["kind"] == "answer_box" or not text.strip():
+        return text
+    original = job["previous"]
+    text = _NUMBERED.sub("", text).strip()
+    old, new = split_sentences(original), split_sentences(text)
+    if not old or len(old) != len(new):
+        return text if "\n" in original else re.sub(r"[ \t]*\n[ \t\n]*", " ", text)
+    parts = [original[:old[0].start]]
+    for index, (was, now) in enumerate(zip(old, new, strict=True)):
+        parts.append(text[now.start:now.end])
+        parts.append(original[was.end:old[index + 1].start] if index + 1 < len(old) else original[was.end:])
+    return "".join(parts)
+
+
+def _similarity(first: list[int], second: list[int]) -> float:
+    """1 minus the summed differences over the summed larger values, position by position; a position
+    one side lacks counts in full."""
+    size = max(len(first), len(second))
+    first, second = first + [0] * (size - len(first)), second + [0] * (size - len(second))
+    total = sum(max(a, b) for a, b in zip(first, second, strict=True))
+    return 1.0 if total == 0 else 1 - sum(abs(a - b) for a, b in zip(first, second, strict=True)) / total
+
+
+def _paragraph_sizes(sentences: list[Sentence]) -> list[int]:
+    counts = Counter(sentence.paragraph for sentence in sentences)
+    return [counts[index] for index in sorted(counts)]
+
+
+def rewrite_measures(original: str, rewrite: str) -> dict:
+    """How a rewrite sits on its original, for a saved sample. `structure_match` (0 to 100) is the mean
+    of three similarities taken sentence by sentence in order: their lengths in words, their punctuation
+    marks, and how many sentences each paragraph holds. `words_kept` is the share of the original's words
+    the rewrite still has (as a multiset): how much of the original writer's wording survives."""
+    old, new = split_sentences(original), split_sentences(rewrite)
+    if not old or not new:
+        return {}
+    marks = [[len(_MARKS.findall(text[s.start:s.end])) for s in sentences]
+             for text, sentences in ((original, old), (rewrite, new))]
+    parts = (_similarity([s.words for s in old], [s.words for s in new]), _similarity(*marks),
+             _similarity(_paragraph_sizes(old), _paragraph_sizes(new)))
+    before = Counter(word.casefold() for word in _WORDS.findall(original))
+    after = Counter(word.casefold() for word in _WORDS.findall(rewrite))
+    return {"structure_match": round(100 * sum(parts) / len(parts), 1),
+            "words_kept": round(100 * sum((before & after).values()) / max(1, sum(before.values())), 1)}
+
+
+# A rewrite keeping this share of the original's words or more is still the original. Told to write
+# like the writer of an original, models often hand it back: 24 to 31 of 32 paragraphs word for word
+# on 2026-10-30. Saved as AI text, the writer's own words would teach the detector they are AI.
+COPIED = 90
+AGAIN = "Your last answer repeated the original almost word for word. Write it again: the same meaning in new words."
+AGAIN_ALL = ("Your last answer repeated these originals almost word for word. Write each block again: the same "
+             "meaning in new words.")
+
+
+def copied(original: str, rewrite: str) -> bool:
+    """Whether a rewrite of `original` is still the original (COPIED% or more of its words)."""
+    return rewrite_measures(original, rewrite).get("words_kept", 0) >= COPIED
+
+
+def rewrite_group(plan, group: list[dict], ask: Callable[[str, list[dict]], str],
+                  clean: Callable[[str], str]) -> tuple[dict[str, str], list[dict]]:
+    """Write a group of blocks in one request (`ask(prompt, jobs)` gives the reply), then the blocks it
+    handed back as their originals once more, together and told so (AGAIN_ALL): at most two requests,
+    where asking for each copy on its own would send the profile and the document again per block. Gives
+    each written block's text by key, a copy included if it comes back twice (it is never saved as AI),
+    and the blocks a reply left out, to be written on their own."""
+    texts, alone, pending = {}, [], group
+    for attempt in range(2):
+        prompt = group_prompt(plan, pending) + (f"\n\n{AGAIN_ALL}" if attempt else "")
+        parsed = parse_group_reply(ask(prompt, pending), [f"B{number}" for number in range(1, len(pending) + 1)])
+        copies = []
+        for number, job in enumerate(pending, 1):
+            if not (text := follow_original(plan, job, clean(parsed.get(f"B{number}", "")))):
+                alone.append(job)
+                continue
+            texts[job["key"]] = text
+            if copied(job["previous"], text):
+                copies.append(job)
+        if not copies:
+            break
+        pending = copies
+    return texts, alone
+
+
+def copied_row(row: dict) -> bool:
+    """Whether a saved AI-labelled row is a copy of what it was meant to rewrite: by the words_kept it
+    was saved with, or by the original the Red team page saves in its prompt."""
+    if row.get("label") not in (1, "1", "ai"):
+        return False
+    if isinstance(row.get("words_kept"), int | float):
+        return row["words_kept"] >= COPIED
+    match = re.search(r"Previous text:\n(.*?)\n\nAdditional instructions:", row.get("prompt") or "", re.S)
+    return bool(match and match.group(1).strip()) and copied(match.group(1), row.get("text") or "")
+
+
 def target_words(plan, job: dict) -> int:
     """About how long a block's new text should be."""
     if plan.match_existing_lengths and job["previous"].strip():
@@ -241,12 +382,14 @@ def group_prompt(plan, jobs: list[dict]) -> str:
         else:
             kind = "Markdown text" if job["kind"] == "markdown_block" else "text"
             items.append(f"[B{number}] A rewrite of the existing {kind} block labelled {job['label']}. {aim}\n"
-                         f"Existing text to regenerate:\n{job['previous']}")
+                         f"Existing text to regenerate:\n{original_text(plan, job)}")
+    follow = FOLLOW.get(structure(plan)) if any(job["kind"] != "answer_box" for job in jobs) else None
     return (
         f"Full document context:\n{plan.context_text}\n\n---\n\n"
         f"Write new text for each of the {len(jobs)} blocks below, which are parts of the document above. "
         f"{voice_rule(plan, jobs)} "
         "Keep each block's meaning and role in the document, using the surrounding document as context. "
+        + (f"In each rewrite, {follow[0].lower()}{follow[1:]} " if follow else "") +
         "Write each block on its own: don't merge blocks, move text between them, or add headings, questions, "
         "table rows or any block not listed. A new answer replaces the previous one, if there is one, and "
         "answers only its own question. These blocks are AI-generated red-team evaluation data.\n\n"
@@ -284,11 +427,12 @@ def block_prompt(plan, job: dict) -> str:
             f"Aim for about {words} words. "
             f"{voice} "
             "Keep its meaning and role in the document, using the surrounding document as context. "
+            + (f"{FOLLOW[structure(plan)]} " if structure(plan) in FOLLOW else "") +
             "Return only the "
             "replacement for this block. Do not output headings, questions, table rows, or any other block. "
             "This replacement is AI-generated red-team evaluation data.\n\n"
             f"Additional instructions:\n{plan.prompt.strip() or '(none)'}\n\n"
-            f"Existing text to regenerate:\n{job['previous']}"
+            f"Existing text to regenerate:\n{original_text(plan, job)}"
         )
     return generation_prompt
 

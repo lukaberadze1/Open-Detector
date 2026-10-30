@@ -29,6 +29,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from eval.redteam_batch import copied_row
 from opendetector import DetectorConfig
 from opendetector.config import DATA_ROOT
 from opendetector.metrics import wilson_interval
@@ -41,7 +42,8 @@ BREAKDOWNS = ("attack", "model", "thinking", "temperature", "blocks_per_request"
 
 
 def load_samples(paths: list[Path]) -> list[dict]:
-    """Every saved sample the detector reads: 150 words or more of prose, once each by id."""
+    """Every saved sample the detector reads: 150 words or more of prose, once each by id. An AI-labelled
+    rewrite that hands back its original (redteam_batch.copied_row) is the writer's text and left out."""
     rows = {}
     for path in paths:
         if not path.exists():
@@ -52,6 +54,8 @@ def load_samples(paths: list[Path]) -> list[dict]:
             except ValueError:
                 continue
             text = row.get("text") or ""
+            if copied_row(row):
+                continue
             if count_words(text) >= DetectorConfig().min_words and looks_like_prose(text):
                 rows.setdefault(row.get("id") or hashlib.sha256(text.encode()).hexdigest(), row)
     return list(rows.values())

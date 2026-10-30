@@ -7,6 +7,7 @@ numpy>=2
 streamlit>=1.66
 python-docx>=1.1
 python-pptx>=1.0
+pypdf>=5.0  # finished pieces saved as PDF, for the style profile
 
 # Evaluation harness
 pandas>=2.2

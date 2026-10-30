@@ -6,7 +6,7 @@ from docx import Document
 from pptx import Presentation
 from pptx.util import Inches
 
-from opendetector.documents import DocumentSection, extract_document, rewritable_blocks
+from opendetector.documents import DocumentSection, extract_answer_slots, extract_document, rewritable_blocks
 
 
 def docx_bytes():
@@ -48,6 +48,12 @@ def test_pptx_shapes_and_table_cells_are_separate_sections():
         DocumentSection("Slide 1, Table 1, row 1, cell 1", "x", "pptx_table_cell", (0, 1, 0, 0)),
         DocumentSection("Slide 1, Table 1, row 1, cell 2", "y", "pptx_table_cell", (0, 1, 0, 1)),
     ]
+
+
+def test_a_pptx_table_reads_as_question_and_answer_pairs():
+    """python-pptx's row cells take no negative index, which once crashed every deck with a table."""
+    (slot,) = extract_answer_slots("deck.pptx", pptx_bytes())
+    assert (slot.question, slot.previous_answer, slot.target.locator) == ("x", "y", (0, 1, 0, 1))
 
 
 @pytest.mark.parametrize("name", ["essay.txt", "no_extension"])

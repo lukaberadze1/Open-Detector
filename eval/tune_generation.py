@@ -47,7 +47,7 @@ import statistics
 import sys
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -78,11 +78,15 @@ from eval.generation_settings import (
     scores,
 )
 from eval.redteam_batch import (
+    AGAIN,
     GROUP_SCHEMA,
+    STRUCTURES,
     block_prompt,
+    copied,
+    follow_original,
     group_by_words,
-    group_prompt,
-    parse_group_reply,
+    rewrite_group,
+    rewrite_measures,
     worth_rewriting,
 )
 from opendetector.config import DATA_ROOT
@@ -122,40 +126,59 @@ class StyleYardstick:
     spread: dict[str, float]
     passages: list[float]
     banned: dict
+    texts: list[str] = field(default_factory=list)  # the writer's passages, in the order of `passages`
 
     @classmethod
-    def build(cls, profile_path: Path, words: int) -> StyleYardstick | None:
-        """None when the profile has no corpus beside it, or too little of one to compare against."""
+    def build(cls, profile_path: Path, words: int, register: str | None = None) -> StyleYardstick | None:
+        """None when the profile has no corpus beside it, or too little of one to compare against. For
+        the finalized register it measures against the writer's finished pieces (the finalized/ folder
+        beside the corpus) when there are enough of them, and against their notes otherwise."""
         import update_style_profile as usp
 
-        folder = profile_path.parent / profile_path.stem.removesuffix("_profile")
-        corpus = folder / "corpus.jsonl"
-        if not corpus.exists():
+        folder = corpus_folder(profile_path)
+        corpus, finished = folder / "corpus.jsonl", folder / usp.FINALIZED
+        if not corpus.exists() and not (register == usp.FINALIZED and finished.is_dir()):
             return None
         banned = usp.banned_patterns(json.loads(profile_path.read_text(encoding="utf-8")))
+        if register == usp.FINALIZED and (
+                yardstick := cls.from_paragraphs(usp.finished_pieces(finished), words, banned)):
+            return yardstick
+        if not corpus.exists():
+            return None
         paragraphs = [entry["text"] for entry in usp.load_corpus(corpus) if "superseded" not in entry]
+        try:
+            target = json.loads((folder / "measurements.json").read_text(encoding="utf-8"))["stacked"]
+        except (OSError, ValueError, KeyError):
+            target = None
+        return cls.from_paragraphs(paragraphs, words, banned, target)
+
+    @classmethod
+    def from_paragraphs(cls, paragraphs: list[str], words: int, banned: dict,
+                        target: dict | None = None) -> StyleYardstick | None:
+        """A yardstick from the writer's paragraphs, cut into passages of about `words` words. The
+        target is the measurements of all of them unless given."""
+        import update_style_profile as usp
+
         chunks, current = [], []
         for paragraph in paragraphs:
             current.append(paragraph)
             if sum(count_words(text) for text in current) >= words:
                 chunks.append(current)
                 current = []
-        summaries = [usp.summarize(usp.measure(chunk, banned)) for chunk in chunks]
-        summaries = [summary for summary in summaries if summary]
-        if len(summaries) < 5:
+        measured = [(chunk, summary) for chunk in chunks if (summary := usp.summarize(usp.measure(chunk, banned)))]
+        if len(measured) < 5:
             return None
-        try:
-            target = json.loads((folder / "measurements.json").read_text(encoding="utf-8"))["stacked"]
-        except (OSError, ValueError, KeyError):
-            target = usp.summarize(usp.measure(paragraphs, banned))
+        target = target or usp.summarize(usp.measure(paragraphs, banned))
         spread = {}
         for label, _ in _measures():
-            values = [value for summary in summaries if (value := _value(summary, label)) is not None]
+            values = [value for _, summary in measured if (value := _value(summary, label)) is not None]
             if len(values) >= 5 and statistics.pstdev(values) > 0:
                 spread[label] = statistics.pstdev(values)
         yardstick = cls(target, spread, [], banned)
-        distances = (yardstick.distance(summary) for summary in summaries)
-        yardstick.passages = [distance for distance in distances if distance is not None]
+        for chunk, summary in measured:
+            if (distance := yardstick.distance(summary)) is not None:
+                yardstick.passages.append(distance)
+                yardstick.texts.append("\n\n".join(chunk))
         return yardstick if len(yardstick.passages) >= 5 else None
 
     def distance(self, summary: dict) -> float | None:
@@ -198,6 +221,60 @@ class StyleYardstick:
                                    f"(this draft: {value:g}; profile: {target:g})."))
         return [instruction for _, instruction in sorted(deviations, reverse=True)[:limit]]
 
+    def typical(self, count: int, most_words: int | None = None) -> list[str]:
+        """`count` of the writer's passages, spread over the quarter closest to the profile: how the writer
+        usually writes, not their oddest notes."""
+        ranked = [text for _, text in sorted(zip(self.passages, self.texts, strict=True), key=lambda pair: pair[0])
+                  if not most_words or count_words(text) <= most_words]
+        pool = ranked[:max(count, len(ranked) // 4)]
+        return [pool[index * len(pool) // count] for index in range(count)] if len(pool) >= count else pool
+
+    def checklist(self) -> list[str]:
+        """The target's rhythm as counts a model can check its own draft against. Models write more
+        commas, fewer short sentences and more varied words than the writer, whatever the profile says."""
+        rhythm = self.target.get("sentence_length") or {}
+        mean, shares = rhythm.get("mean"), rhythm.get("distribution_pct") or {}
+        if not mean:
+            return []
+        lines = [f"About {100 / mean:.0f} sentences per 100 words, {mean:.0f} words long on average."]
+        if (commas := self.target.get("commas_per_sentence")) is not None:
+            lines.append(f"About {100 * commas / mean:.1f} commas per 100 words in all ({commas:.1f} a sentence): "
+                         "most sentences have none.")
+        for share, what in ((shares.get("under_6"), "is under 6 words"),
+                            (shares.get("30_plus"), "runs 30 words or more")):
+            if share:
+                lines.append(f"About 1 sentence in {round(100 / share)} {what}.")
+        lines.append("Use the same plain words again rather than a new synonym each time.")
+        return lines
+
+
+def corpus_folder(profile_path: Path) -> Path:
+    """Where a profile's writing and measurements are kept: data/styles/alexandria/ for
+    data/styles/alexandria_profile.json."""
+    return profile_path.parent / profile_path.stem.removesuffix("_profile")
+
+
+def style_examples(profile_path: Path, register: str | None = None, count: int = 3,
+                   words: int = 120) -> tuple[list[str], list[str]]:
+    """A few of the writer's own passages in `register` and the counts to check a draft against, for the
+    style prompt. Notes come from the profile's corpus; finished work from the finished pieces in its
+    finalized/ folder, so the two never mix. With too little writing in the register there are none.
+    `register` resolves as in style_instructions: the profile's first when None or unknown."""
+    import update_style_profile as usp
+
+    registers = profile_registers(load_style_profile(profile_path))
+    if registers and register not in registers:
+        register = registers[0]
+    if register == usp.FINALIZED:
+        banned = usp.banned_patterns(json.loads(profile_path.read_text(encoding="utf-8")))
+        pieces = usp.finished_pieces(corpus_folder(profile_path) / usp.FINALIZED)
+        yardstick = StyleYardstick.from_paragraphs(pieces, words, banned)
+    else:
+        yardstick = StyleYardstick.build(profile_path, words)
+    if yardstick is None:
+        return [], []
+    return yardstick.typical(count, most_words=2 * words), yardstick.checklist()
+
 
 def _measures() -> list[tuple[str, tuple[str, ...]]]:
     import update_style_profile as usp
@@ -219,10 +296,11 @@ def _value(summary: dict, label: str) -> float | None:
 # -- trials ---------------------------------------------------------------------------
 
 
-def sample_jobs(name: str, data: bytes, words: int, min_blocks: int = 1) -> tuple[list[dict], SimpleNamespace]:
+def sample_jobs(name: str, data: bytes, words: int, min_blocks: int = 1,
+                structure: str = "free") -> tuple[list[dict], SimpleNamespace]:
     """The run of blocks every trial rewrites, from the first, until it holds `words` words and at
     least `min_blocks` blocks, and a plan like the Adversarial Lab's for the prompts: every block,
-    matching each one's length."""
+    matching each one's length and following the original as `structure` says (STRUCTURES)."""
     sections, blocks = extract_document(name, data), rewritable_blocks(name, data)
     kind = "markdown_block" if name.lower().endswith(".md") else "text_block"
     jobs, total = [], 0
@@ -235,7 +313,8 @@ def sample_jobs(name: str, data: bytes, words: int, min_blocks: int = 1) -> tupl
                      "key": f"{index:03d} {kind} {block.label}"})
         total += count_words(block.text)
     plan = SimpleNamespace(prompt="", context_text="\n\n".join(f"[{s.label}]\n{s.text}" for s in sections),
-                           blocks=blocks, answer_slots=[], match_existing_lengths=True, answer_words=100)
+                           blocks=blocks, answer_slots=[], match_existing_lengths=True, answer_words=100,
+                           structure=structure)
     return jobs, plan
 
 
@@ -318,20 +397,21 @@ def run_trial(trial: dict, jobs: list[dict], plan, system: str | None, api_key: 
         group = [by_key[key] for key in keys]
         alone = group
         if len(group) > 1:
-            reply = ask(group_prompt(plan, group), json_schema=GROUP_SCHEMA, timeout=60 + 15 * len(group))
-            parsed = parse_group_reply(reply, [f"B{number}" for number in range(1, len(group) + 1)])
-            alone = []
-            for number, job in enumerate(group, 1):
-                if text := clean_essay(parsed.get(f"B{number}", "")):
-                    texts[job["key"]] = text
-                else:
-                    alone.append(job)
+            written, alone = rewrite_group(plan, group, lambda prompt, jobs: ask(
+                prompt, json_schema=GROUP_SCHEMA, timeout=60 + 15 * len(jobs)), clean_essay)
+            texts.update(written)
             left_out += len(alone)
-        for job in alone:
-            texts[job["key"]] = clean_essay(ask(block_prompt(plan, job), timeout=60))
+        for job in alone:  # as the page does: on its own, and once more if it comes back as the original
+            prompt = block_prompt(plan, job)
+            texts[job["key"]] = follow_original(plan, job, clean_essay(ask(prompt, timeout=60)))
+            if copied(job["previous"], texts[job["key"]]):
+                texts[job["key"]] = follow_original(plan, job, clean_essay(ask(f"{prompt}\n\n{AGAIN}", timeout=60)))
+    measured = [rewrite_measures(job["previous"], texts[job["key"]]) for job in jobs]
     return {**trial, "blocks": len(jobs), "text": "\n\n".join(texts[job["key"]] for job in jobs),
             "seconds": round(seconds, 2), "requests": requests, "retried": retried, "left_out": left_out,
-            "tokens": dict(tokens)}
+            "tokens": dict(tokens), "copied": sum(copied(job["previous"], texts[job["key"]]) for job in jobs),
+            **{name: _mean([block[name] for block in measured if name in block])
+               for name in ("structure_match", "words_kept")}}
 
 
 # -- fitting --------------------------------------------------------------------------
@@ -359,6 +439,8 @@ def aggregate(trials: list[dict]) -> dict:
             "requests_per_block": sum(trial["requests"] for trial in trials) / blocks,
             "tokens_per_block": tokens / blocks,
             "input_tokens_per_block": sum(trial["tokens"].get("total_input_tokens", 0) for trial in trials) / blocks,
+            **{name: _mean([trial[name] for trial in trials if trial.get(name) is not None])
+               for name in ("structure_match", "words_kept")},
             "trials": len(trials), "measured": True}
 
 
@@ -449,21 +531,25 @@ def report(table: dict) -> str:
         "All points on one measure:", "",
         *(f"- {measure}: {setting(_pick(table, measure))}" for measure in MEASURES), "",
         "AI likelihood is the detector's, lower is better. Style match is the share of the writer's own "
-        "passages that are further from the profile, higher is better. ± is the spread between repeats: "
+        "passages that are further from the profile, higher is better. Structure match is how closely the "
+        "rewrites keep the original's sentences (lengths, punctuation, paragraphs), and words kept the share of "
+        "its words they still have. ± is the spread between repeats: "
         "differences smaller than it are noise. Predicted rows add the group size's effect measured on "
         f"{table['baseline_model']}.", "",
         f"Free requests a day, from Gemini's quota errors or set by hand: {known}. A model whose limit isn't "
         f"known loses no quota score for it. The picks and scores here are for a {REFERENCE_BLOCKS}-block "
         "batch; the Adversarial Lab scores the document it has.", "",
         "| Model | Thinking | Temperature | Blocks per request | AI likelihood % | Style match % "
+        "| Structure match % | Words kept % "
         "| Seconds per block | Requests per block | Tokens per block | Trials | Even-points score |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row, value in sorted(zip(rows, utility, strict=True), key=lambda pair: -pair[1]):
         lines.append(
             f"| {row['model']} | {row['thinking']} | {row.get('temperature', BASE_TEMPERATURE):g} "
             f"| {row['group_size']} | {number(row['ai'], row['ai_sd'], 100)} "
-            f"| {number(row['style'], row['style_sd'])} | {row['seconds_per_block']:.1f} "
+            f"| {number(row['style'], row['style_sd'])} | {number(row.get('structure_match'), None)} "
+            f"| {number(row.get('words_kept'), None)} | {row['seconds_per_block']:.1f} "
             f"| {row['requests_per_block']:.2f} | {row['tokens_per_block']:,.0f} "
             f"| {row['trials'] or 'predicted'} | {value:.2f} |")
     return "\n".join(lines) + "\n"
@@ -492,7 +578,9 @@ def _log_labelled(trial: dict, document: str, source: str, style: str) -> None:
            "dataset": "local_tuning", "domain": "document_combined", "model": trial["model"],
            "attack": f"full_document+{style}", "group": "ai", "group_key": f"document-{source}",
            "thinking": trial["thinking"], "group_size": trial["group_size"],
-           "temperature": trial.get("temperature", BASE_TEMPERATURE), "source_file": document}
+           "temperature": trial.get("temperature", BASE_TEMPERATURE), "source_file": document,
+           # how much of the original it keeps: eval.datasets leaves out a copy of the original as AI data
+           "structure_match": trial.get("structure_match"), "words_kept": trial.get("words_kept")}
     with LABELLED.open("a", encoding="utf-8") as output:
         output.write(json.dumps(row, ensure_ascii=False) + "\n")
 
@@ -507,6 +595,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-style", action="store_true",
                         help="write without a style profile, still measuring against --style: the control a "
                              "profile's effect is measured against")
+    parser.add_argument("--examples", type=int, default=0,
+                        help="also send this many of the writer's own passages in the register, with their "
+                             "measured counts, as the Adversarial Lab's switch does")
+    parser.add_argument("--structure", choices=list(STRUCTURES), default="same",
+                        help="how closely each rewrite follows the original block: a light edit, the same "
+                             "sentences in new words (the Adversarial Lab's default), or a free rewrite")
     parser.add_argument("--models", default=",".join(MODELS))
     parser.add_argument("--thinking", default=",".join(LEVELS))
     parser.add_argument("--groups", default=",".join(map(str, GROUPS)), help="blocks per request to try")
@@ -558,17 +652,21 @@ def main(argv: list[str] | None = None) -> int:
         path = Path(args.document)
         data = path.read_bytes()
         # Two requests or more at the largest group size, so every size measured is one a batch would send.
-        jobs, plan = sample_jobs(path.name, data, args.words, min_blocks=2 * max(groups))
+        jobs, plan = sample_jobs(path.name, data, args.words, min_blocks=2 * max(groups), structure=args.structure)
         profile = load_style_profile(args.style)
-        system = None if args.no_style else style_instructions(profile, args.register)
+        examples, checklist = ([], []) if args.no_style or not args.examples else \
+            style_examples(args.style, args.register, args.examples)
+        system = None if args.no_style else style_instructions(profile, args.register, examples, checklist)
         source = hashlib.sha256(data).hexdigest()[:16]
         registers = profile_registers(profile)
         register = (args.register if args.register in registers else registers[0]) if registers else None
         written_in = "plain" if args.no_style else f"{args.style.stem}:{register}" if register else args.style.stem
+        written_in += ("+examples" if examples else "") + ("" if args.structure == "free" else f"+{args.structure}")
         meta = {"document": path.name, "source": source, "style_profile": written_in, "words": args.words,
                 "sample_words": sum(count_words(job["previous"]) for job in jobs), "blocks": len(jobs),
                 "context_chars": len(system or "") + len(plan.context_text), "detector_profile": args.profile,
-                "baseline_model": args.baseline_model, "temperature": args.temperature}
+                "baseline_model": args.baseline_model, "temperature": args.temperature,
+                "register": register}  # what the style match measures against
     same = ("source", "style_profile", "words", "blocks")
     trials = [trial for trial in others if all(trial.get("meta", {}).get(key) == meta.get(key) for key in same)]
     others = [trial for trial in others if trial not in trials]
@@ -606,7 +704,7 @@ def main(argv: list[str] | None = None) -> int:
 
             print(f"Scoring {len(unscored)} rewrites with the {args.profile} detector…")
             detector = Detector.from_config(DetectorConfig.for_profile(args.profile))
-            yardstick = StyleYardstick.build(args.style, meta["sample_words"])
+            yardstick = StyleYardstick.build(args.style, meta["sample_words"], meta.get("register"))
             for trial in unscored:
                 trial["ai"] = detector.analyze(trial["text"], sentences=False).ai_probability
                 trial["style"] = yardstick.match(trial["text"]) if yardstick else None

@@ -94,6 +94,17 @@ several), so the style profile and the document are sent once per group rather t
 and write a few groups at the same time (**Requests at once**, 2 by default). The reply is JSON with
 one entry per block; a block it leaves out is generated again on its own.
 
+**How closely to follow the original** decides what a document rewrite keeps of whoever wrote the
+original, a person or another model. *Same structure*, the default, shows the model each of the
+block's sentences numbered with its length and asks for one new sentence per sentence, at about its
+length and with its punctuation, then puts the original's paragraph breaks and spacing (double spaces
+included) back around the new sentences. *Light edit* also keeps most of the original's words. *Free
+rewrite* keeps only each block's meaning and length. Each saved block records its **structure match**
+(how closely it keeps the original's sentence lengths, punctuation and paragraphs, 0 to 100) and
+**words kept** (the share of the original's words it still has). A block that keeps 90% or more of
+its original's words is the original handed back, not AI text: it is asked for once more in new
+words, and if it still comes back as the original it is left out of the AI-labelled data.
+
 **This document is my own writing** also saves each original block, and the whole original, as
 human-labelled data (label 0) beside its generated version, under the same `group_key`, so a split
 keeps them together. That gives paired data: the same content written by you and by an AI imitating
@@ -141,8 +152,13 @@ skips a model whose quota runs out; every rewrite is logged as labelled AI data.
 repeats: differences smaller than that are noise.
 
 `--no-style` writes without the style profile while still measuring against it, the control for the
-profile's effect: on 2026-10-29 the profile took the detector's AI likelihood from 96 to 98% down to
-2 to 3% (`eval/reports/style_profile_ab.md`).
+profile's effect. `--structure` sets how closely each rewrite follows its original: `same` (the
+default, as on the page), `light` or `free`. The report adds each setting's structure match and the
+share of the original's words its rewrites keep. On 2026-10-30, rewriting the writer's own report
+without any profile, following its sentences one for one took the detector's AI likelihood from 95-100%
+(a free rewrite) down to 3-8%. A free rewrite in the writer's own style turned out to be the original
+handed back, which is why an earlier measurement credited the profile with the same drop
+(`eval/reports/style_profile_ab.md`).
 
 How much of this the detector catches is measured with
 
@@ -273,8 +289,15 @@ habit and slip carries a measured rate and a status: established, emerging, or s
 used at most once in a long text. Only the chosen register is sent (`--register`, or **Register** on
 the Red team page), so quick-note slips never leak into finished work, and the prompt is about a
 third shorter. `alexandria_profile` is kept up to date from the writer's Obsidian vault by
-`update_style_profile.py` and the `/style-profile` skill; finished pieces saved in
-`data/styles/alexandria/finalized/` are measured into the finalized register.
+`update_style_profile.py` and the `/style-profile` skill. Finished pieces saved in
+`data/styles/alexandria/finalized/` are measured into the finalized register: Markdown, text, Word,
+PowerPoint or PDF, each counted in full unless `weights.json` there gives it less. Only the writer's
+own prose counts: long quotations, verse, equations and tables are left out, and so is any text a blank
+template saved in `finalized/templates/` also has, so a filled-in worksheet gives only its answers.
+Vault notes count too, by the rung the writer gave them: Gold (finished) at half weight, Silver
+(drafted) at a fifth, Bronze and fleeting captures not at all. With finished pieces in the folder, a
+finalized-register sample's style match is measured against them rather than against the notes, and
+**Show the model the writer's own passages** offers passages from them.
 
 The supplied writer profile is saved as `data/styles/pasted_style_profile.json`. To generate
 mirrors in that style, use:

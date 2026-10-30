@@ -115,14 +115,15 @@ def extract_answer_slots(filename: str, data: bytes) -> list[AnswerSlot]:
                 if not getattr(shape, "has_table", False) or len(shape.table.columns) < 2:
                     continue
                 for row_number, row in enumerate(shape.table.rows, 1):
-                    question, answer = row.cells[0].text.strip(), row.cells[-1].text.strip()
+                    cells = list(row.cells)  # python-pptx's cells take no negative index
+                    question, answer = cells[0].text.strip(), cells[-1].text.strip()
                     if not question or _is_table_header(question, answer):
                         continue
                     target = DocumentSection(
-                        f"Slide {slide_number}, Table row {row_number}, cell {len(row.cells)}",
+                        f"Slide {slide_number}, Table row {row_number}, cell {len(cells)}",
                         answer,
                         "pptx_table_cell",
-                        (slide_number - 1, shape_number - 1, row_number - 1, len(row.cells) - 1),
+                        (slide_number - 1, shape_number - 1, row_number - 1, len(cells) - 1),
                     )
                     slots.append(AnswerSlot(f"Slide {slide_number}, table row {row_number}",
                                             question, answer, target))

@@ -144,7 +144,7 @@ class FakeGemini:
     def chat(self, base_url, api_key, model, prompt, temperature, retries=5, system=None, timeout=300,
              thinking=None, json_schema=None, usage=None):
         self.calls.append({"model": model, "thinking": thinking, "json": json_schema is not None, "system": system,
-                           "temperature": temperature})
+                           "temperature": temperature, "prompt": prompt})
         if self.busy:
             self.busy -= 1
             raise generate_essays.APIError("HTTP 503 from Gemini Interactions API: high demand")
@@ -257,6 +257,42 @@ def test_style_match_ranks_a_text_among_the_writers_own_passages(tmp_path):
         "no corpus beside the profile, no style match")
 
 
+def test_the_examples_are_the_writers_most_typical_passages_with_their_counts(tmp_path):
+    profile = corpus_profile(tmp_path)
+    yardstick = tune_generation.StyleYardstick.build(profile, words=120)
+    passages, checklist = tune_generation.style_examples(profile, count=3, words=120)
+    assert len(passages) == 3 and len(set(passages)) == 3
+    closest = sorted(yardstick.passages)[len(yardstick.passages) // 4]
+    assert all(yardstick.passages[yardstick.texts.index(text)] <= closest for text in passages), (
+        "picked from the quarter of the writer's passages closest to the profile")
+    assert all(text in "\n\n".join(json.loads(line)["text"] for line in (
+        tmp_path / "styles/writer/corpus.jsonl").read_text().splitlines()) for text in passages.pop().split("\n\n"))
+    mean = yardstick.target["sentence_length"]["mean"]
+    assert checklist[0] == f"About {100 / mean:.0f} sentences per 100 words, {mean:.0f} words long on average."
+    assert any("commas per 100 words" in line for line in checklist)
+
+
+def test_finished_work_examples_come_only_from_finished_pieces(tmp_path):
+    profile = corpus_profile(tmp_path)
+    profile.write_text(json.dumps({"style_profile": {"format": "registers-v2", "registers": {
+        "finalized": {"golden_rule": "Finished."}, "notes": {"golden_rule": "Quick."}}}}))
+    assert tune_generation.style_examples(profile, "finalized") == ([], []), "notes never stand in for finished work"
+    assert tune_generation.style_examples(profile) == ([], []), "the first register, as the prompt picks it"
+    assert len(tune_generation.style_examples(profile, "notes")[0]) == 3
+    finished = tmp_path / "styles/writer/finalized"
+    finished.mkdir()
+    rng = random.Random(2)
+    (finished / "essay.md").write_text("# Bees\n\n" + "\n\n".join(plain_paragraph(rng) for _ in range(40)))
+    passages, checklist = tune_generation.style_examples(profile, "finalized")
+    assert len(passages) == 3 and checklist
+    assert not any(passage in (tmp_path / "styles/writer/corpus.jsonl").read_text() for passage in passages)
+    finished_yardstick = tune_generation.StyleYardstick.build(profile, 120, "finalized")
+    assert all(text not in (tmp_path / "styles/writer/corpus.jsonl").read_text()
+               for text in finished_yardstick.texts), "finished work is measured against finished pieces"
+    assert tune_generation.StyleYardstick.build(profile, 120, "notes").texts[0].split("\n\n")[0] in (
+        tmp_path / "styles/writer/corpus.jsonl").read_text()
+
+
 def test_a_run_measures_scores_writes_the_table_and_resumes(monkeypatch, tmp_path):
     gemini = FakeGemini(monkeypatch)
     monkeypatch.setattr(tune_generation, "load_env", lambda: None)
@@ -347,7 +383,7 @@ def test_the_control_writes_without_the_profile_and_is_still_measured_against_it
     source.write_bytes(document(BLOCKS))
     argv = [str(source), "--style", str(corpus_profile(tmp_path)), "--no-style", "--models", "a",
             "--baseline-model", "a", "--thinking", "low", "--groups", "4", "--temperatures", "0.8",
-            "--repeats", "1", "--words", "40",
+            "--repeats", "1", "--words", "40", "--structure", "free",
             "--out", str(tmp_path / "trials.jsonl"), "--table", str(tmp_path / "table.json"),
             "--report", str(tmp_path / "report.md"), "--limits", str(tmp_path / "limits.json")]
     assert tune_generation.main(argv) == 0
@@ -356,3 +392,11 @@ def test_the_control_writes_without_the_profile_and_is_still_measured_against_it
     assert table["style_profile"] == "plain" and table["rows"][0]["style"] is not None
     (logged,) = [json.loads(line) for line in (tmp_path / "tuning_redteam.jsonl").read_text().splitlines()]
     assert logged["attack"] == "full_document+plain"
+
+    # By default each rewrite follows its original's sentences, a run of its own, measured by how closely.
+    argv[argv.index("free")] = "same"
+    assert tune_generation.main(argv) == 0
+    assert "1. (" in gemini.calls[-1]["prompt"] and "sentence by sentence" in gemini.calls[-1]["prompt"]
+    table = json.loads((tmp_path / "table.json").read_text())
+    assert table["style_profile"] == "plain+same" and table["rows"][0]["structure_match"] is not None
+    assert "| Structure match % |" in (tmp_path / "report.md").read_text()

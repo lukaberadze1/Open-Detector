@@ -549,3 +549,15 @@ def test_a_profile_with_registers_sends_only_the_one_asked_for():
     assert generate_essays.style_instructions(REGISTERED) == finished, "the first register is the default"
     assert generate_essays.profile_registers(REGISTERED) == ["finalized", "notes"]
     assert generate_essays.profile_registers({"syntax_and_burstiness": {}}) == []
+
+
+@pytest.mark.parametrize("profile", [REGISTERED, {"tone": "dry"}], ids=["registers", "older"])
+def test_the_writers_passages_and_counts_come_last(profile):
+    bare = generate_essays.style_instructions(profile, "notes")
+    full = generate_essays.style_instructions(profile, "notes", ["first passage", "second passage"],
+                                              ["About 5 sentences per 100 words."])
+    assert full.startswith(bare), "the profile itself is unchanged"
+    assert full[len(bare) + 1:].split("\n") == [
+        "", "# The writer's own passages", generate_essays.EXAMPLES_INTRO,
+        "", "Passage 1:", "first passage", "", "Passage 2:", "second passage",
+        "", "# Counts to check", generate_essays.CHECKLIST_INTRO, "- About 5 sentences per 100 words."]

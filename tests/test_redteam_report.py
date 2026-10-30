@@ -30,6 +30,7 @@ def test_the_report_counts_misses_and_false_flags_and_scores_each_sample_once(mo
             sample("3", 1, f"ai-missed|{PROSE}", thinking="minimal", temperature=1.3),
             sample("4", 0, f"human|{PROSE}"),
             sample("5", 1, "Too short to score."),
+            sample("6", 1, f"human|{PROSE}", words_kept=98.0),  # a "rewrite" that handed back the original
             sample("1", 1, f"ai-caught|{PROSE}")]  # the same sample saved twice
     samples.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
     argv = [str(samples), "--cache", str(tmp_path / "scores.jsonl"), "--report", str(tmp_path / "report.md")]
@@ -39,7 +40,11 @@ def test_the_report_counts_misses_and_false_flags_and_scores_each_sample_once(mo
     assert "3 AI samples and 1 human ones" in text
     assert "**Missed (Likely human): 67%" in text and "Wrongly flagged (Likely AI): 100%" in text
     assert "### By temperature" in text and "| 1.3 | 2 | 100%" in text
-    assert len(scored) == 4, "the short sample is left out and the repeated one scored once"
+    assert len(scored) == 4, "the short sample and the copy are left out, and the repeated one scored once"
+
+    from eval.datasets import load_local
+
+    assert "6" not in set(load_local(str(samples))["id"]), "nor does a copy reach the detector's training data"
 
     assert redteam_report.main(argv) == 0
     assert len(scored) == 4, "a second run reads the scores it cached"
