@@ -1,6 +1,7 @@
 """Block-by-block checkpoints for the red-team generator app's batches."""
 
 import json
+import re
 import threading
 from types import SimpleNamespace
 
@@ -379,3 +380,60 @@ def test_a_draft_is_rewritten_passage_by_passage_and_joined_back():
         "a passage the reply leaves out stays as drafted, in its paragraph")
     assert "In each rewrite, write it in the sentence plan" in asked[0]
     assert person_instruction() == "" and person_instruction("   ") == "", "no source, no rule against I and you"
+
+
+def test_only_flagged_passages_are_revised_and_a_worse_revision_is_dropped():
+    from eval.redteam_batch import REVISE, passage_spans, revise_flagged
+
+    flagged = " ".join(f"Flagged sentence {n} reads like a tidy machine summary of things." for n in range(6))
+    fine = " ".join(f"Fine sentence {n} sounds like me on a slow afternoon at home." for n in range(6))
+    text = f"{fine}\n\n{flagged}"
+    assert [text[a:b] for a, b in passage_spans(text)] == [fine, flagged]
+
+    def analyze(current):
+        spans = passage_spans(current)
+        sentences = [SimpleNamespace(start=a, ai_probability=0.9 if "Flagged" in current[a:b] else 0.05)
+                     for a, b in spans]
+        return SimpleNamespace(text=current, ai_probability=0.9 if "Flagged" in current else 0.1, sentences=sentences)
+
+    asked = []
+
+    def ask(prompt, pending):
+        asked.append(prompt)
+        return json.dumps({"blocks": [{"id": "B1", "text": "A plainer passage, with the bus I missed in it."}]})
+
+    revised, history = revise_flagged(text, analyze, ask, str.strip, [[(9, "1 comma")]], rounds=3)
+    assert revised == f"{fine}\n\nA plainer passage, with the bus I missed in it.", "only the flagged passage changes"
+    assert history == [0.9, 0.1] and len(asked) == 1, "stops once under the target"
+    assert REVISE in asked[0] and "Sentence plan:" in asked[0] and fine not in asked[0].split("Blocks:")[1]
+
+    def worse(current):
+        report = analyze(current)
+        return SimpleNamespace(**{**vars(report), "ai_probability": 0.95 if "plainer" in current else 0.9})
+
+    kept, history = revise_flagged(text, worse, ask, str.strip, [], rounds=1)
+    assert kept == text and history == [0.9, 0.9], "a revision scoring higher is dropped"
+
+
+def test_each_revised_passage_is_kept_only_if_it_helps():
+    from eval.redteam_batch import revise_flagged
+
+    first = " ".join(f"Tidy sentence {n} offers a balanced overview of the topic." for n in range(6))
+    second = " ".join(f"Neat sentence {n} offers a balanced overview of the topic." for n in range(6))
+    text = f"{first}\n\n{second}\n\nAnd a line of my own.\n\nAnd one more."
+
+    def analyze(current):
+        score = 0.5 + 0.2 * ("Tidy" in current) + 0.2 * ("Neat" in current) - 0.3 * ("worse" not in current
+                                                                                    and "plain" in current)
+        spans = [(m.start(), m.end()) for m in re.finditer(r"[^\n]+", current)]
+        sentences = [SimpleNamespace(start=a, ai_probability=0.9 if "Tidy" in current[a:b] else 0.6)
+                     for a, b in spans]
+        return SimpleNamespace(text=current, ai_probability=score, sentences=sentences)
+
+    def ask(prompt, pending):  # the first passage comes back plainer, the second worse
+        return json.dumps({"blocks": [{"id": "B1", "text": "A plain passage about the bus."},
+                                      {"id": "B2", "text": "A worse passage, tidier still."}]})
+
+    revised, history = revise_flagged(text, analyze, ask, str.strip, [], rounds=1)
+    assert revised == f"A plain passage about the bus.\n\n{second}\n\nAnd a line of my own.\n\nAnd one more."
+    assert history == pytest.approx([0.9, 0.4]), "the good passage is kept though the other one hurt"

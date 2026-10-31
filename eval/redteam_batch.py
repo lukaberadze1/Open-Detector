@@ -34,7 +34,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
-from itertools import islice
+from itertools import islice, pairwise
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -433,21 +433,30 @@ RESTYLE_STRETCH = 1.35
 DRAFT_STRETCH = 1.25
 
 
-def draft_jobs(text: str, words: int = 80) -> list[dict]:
-    """A draft as text blocks to rewrite: its paragraphs, a long one cut at sentence ends into passages of
-    up to about `words` words, each short enough for a skeleton borrowed from the writer to fit."""
-    jobs = []
-    for paragraph in (part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()):
+_PARAGRAPH = re.compile(r"\S(?:(?!\n[ \t]*\n).)*", re.S)
+
+
+def passage_spans(text: str, words: int = 80) -> list[tuple[int, int]]:
+    """Where a text's passages are: its paragraphs, a long one cut at sentence ends into passages of up
+    to about `words` words, each short enough for a skeleton borrowed from the writer to fit."""
+    spans = []
+    for paragraph in _PARAGRAPH.finditer(text):
+        base, body = paragraph.start(), paragraph.group().rstrip()
         start, count = 0, 0
-        for sentence in split_sentences(paragraph):
+        for sentence in split_sentences(body):
             count += sentence.words
             if count >= words:
-                jobs.append(paragraph[start:sentence.end].strip())
+                spans.append((base + start, base + sentence.end))
                 start, count = sentence.end, 0
-        if paragraph[start:].strip():
-            jobs.append(paragraph[start:].strip())
-    return [{"kind": "text_block", "label": f"Passage {number}", "question": "", "previous": passage,
-             "key": f"{number:03d} draft"} for number, passage in enumerate(jobs, 1)]
+        if body[start:].strip():
+            spans.append((base + start, base + len(body)))
+    return [(start + len(text[start:end]) - len(text[start:end].lstrip()), end) for start, end in spans]
+
+
+def draft_jobs(text: str, words: int = 80) -> list[dict]:
+    """A draft as text blocks to rewrite: its passages (passage_spans)."""
+    return [{"kind": "text_block", "label": f"Passage {number}", "question": "", "previous": text[start:end],
+             "key": f"{number:03d} draft"} for number, (start, end) in enumerate(passage_spans(text, words), 1)]
 
 
 def restyle(draft: str, shapes: list, ask: Callable[[str, list[dict]], str], clean: Callable[[str], str]) -> str:
@@ -470,6 +479,69 @@ def restyle(draft: str, shapes: list, ask: Callable[[str, list[dict]], str], cle
             passage += 1
         paragraphs.append(" ".join(pieces) or part)
     return "\n\n".join(paragraphs)
+
+
+# Told what the detector flagged, in the same group request as any other rewrite.
+REVISE = ("A detector reads the passages below as machine-written. Write each again the way the writer would "
+          "really put it, not as a tidy summary: keep its point, but trade a general statement for one concrete, "
+          "particular detail, use the writer's plain, specific words over safe, common ones, and leave out "
+          "signposting, wrap-up lines and balanced pairs or lists.")
+
+
+def passage_scores(spans: list[tuple[int, int]], sentences: list) -> list[float]:
+    """Each passage's mean sentence AI likelihood from a detector Report's `sentences` (0 with none)."""
+    scores = []
+    for start, end in spans:
+        inside = [s.ai_probability for s in sentences if start <= s.start < end]
+        scores.append(sum(inside) / len(inside) if inside else 0.0)
+    return scores
+
+
+def revise_flagged(text: str, analyze: Callable[[str], object], ask: Callable[[str, list[dict]], str],
+                   clean: Callable[[str], str], shapes: list, rounds: int = 2,
+                   target: float = 0.2) -> tuple[str, list[float | None]]:
+    """A text revised where the detector reads it as AI: each round rewrites its most AI-like passages
+    (by sentence score, at most half of them) in new sentence plans borrowed from the writer, told what
+    was flagged (REVISE), and keeps each rewritten passage only if the whole text then scores lower,
+    trying them most flagged first. Kept or dropped as a whole, a round lost every good passage to one
+    bad one, and the samples that stayed flagged were the ones whose rounds were dropped. Stops once it
+    scores under `target`. Rewriting a whole draft again keeps the model's own plan of what to say;
+    rewriting only where the detector reads it breaks that plan up where it shows. `analyze` is the
+    detector's (with sentence scores), run once per rewritten passage. Gives the kept text, normalized as
+    the detector read it, and its AI likelihood after each round, the first before any."""
+    report = analyze(text)
+    if report.ai_probability is None:
+        return text, [None]
+    best, history = report, [report.ai_probability]
+    for round_ in range(1, rounds + 1):
+        if best.ai_probability < target:
+            break
+        base, spans = best.text, passage_spans(best.text)
+        if not spans:
+            break
+        scores = passage_scores(spans, best.sentences)
+        order = sorted(range(len(spans)), key=lambda index: -scores[index])
+        chosen = [index for index in order if scores[index] >= target][:max(1, len(spans) // 2)] or order[:1]
+        jobs = [{"kind": "text_block", "label": f"Passage {index + 1}", "question": "",
+                 "previous": base[slice(*spans[index])], "key": f"{index + 1:03d} revise {round_}"}
+                for index in sorted(chosen)]
+        plan = SimpleNamespace(prompt=REVISE, context_text=base, blocks=[], answer_slots=[],
+                               match_existing_lengths=True, answer_words=100, structure="writer" if shapes else "free",
+                               shapes=shapes)  # no stretch: a revised passage keeps its length, round after round
+        written, _ = rewrite_group(plan, jobs, ask, clean)
+        passages = [base[start:end] for start, end in spans]
+        gaps = [base[:spans[0][0]]] + [base[end:after[0]] for (_, end), after in pairwise(spans)] \
+            + [base[spans[-1][1]:]]
+        for index in chosen:
+            new = written.get(f"{index + 1:03d} revise {round_}", "").strip()
+            if not new or new == passages[index]:
+                continue
+            trial = [*passages[:index], new, *passages[index + 1:]]
+            candidate = analyze("".join(gap + passage for gap, passage in zip(gaps, [*trial, ""], strict=True)))
+            if candidate.ai_probability is not None and candidate.ai_probability < best.ai_probability:
+                best, passages = candidate, trial
+        history.append(best.ai_probability)
+    return best.text, history
 
 
 # How a standard sample is asked for. "challenge" names it an adversarial challenge sample, as the page

@@ -144,6 +144,69 @@ words a sentence, 1.6 commas, long words), and told those numbers the model wrot
 the kind the detector is surest about. The average's plain, uneven, concrete prose was the better
 instruction, so the built-in profile stays the average.
 
+## Revising what the detector flags, 2026-10-30
+
+Until now the generator was open loop: write, restyle, then score. The page's adaptive mode did close
+the loop, but by writing the whole draft again, which brings back the model's own plan each time.
+`redteam_batch.revise_flagged` closes it where the detector reads: it scores the sample sentence by
+sentence, rewrites only its most AI-like passages (at most half of them) in new sentence plans borrowed
+from the writer, told what was flagged (`REVISE`), and keeps a round only if the whole sample then
+scores lower, for up to 3 rounds or until it scores under 20%.
+
+Measured with `python -m eval.tune_prompts --style data/styles/alexandria_profile.json --restyle
+--revise 3` on gemini-3.1-flash-lite (3.5's daily quota was spent), the same prompts as above, 3 repeats,
+scored by the slim detector. *Before* is the same sample after restyle, before any revision.
+
+| Register, prompts | Before: AI likelihood % | Likely human | After: AI likelihood % | Likely human | Words | Tokens per sample |
+|---|---:|---:|---:|---:|---:|---:|
+| finished work: essay, report, story | 56 ± 32 | 2 of 9 | 21 ± 16 | 7 of 9 | 591 | 63,743 |
+| quick notes: review, reply, explanation | 49 ± 30 | 4 of 9 | 18 ± 17 | 8 of 9 | 506 | 56,560 |
+
+The loop and these scores use the slim build (Desklib alone). Scoring the same samples with the full
+build stalled on the 8 GB Mac and is still to be done; the full build adds GLYPH and Binoculars, which
+the loop never saw.
+
+- **Revising where the detector reads works where restyling the whole draft didn't.** Samples starting
+  at 82-95% came down to 9-40% in two or three rounds; a round that made a sample worse was dropped.
+- **Most pass in a round or two, a few never do**: 2 of 18 stayed at *Needs review* (63-65%) after 3
+  rounds.
+- **It does nothing for the style match**, which stays near 0 against the writer's own passages, with or
+  without revising: these get past the detector without measurably reading like the writer.
+- **It costs** up to one request per round (two with a copy retry) and roughly 2.5 times the tokens.
+  The first finished-work run let each revision stretch its passage a third longer (591 words against
+  350 asked); revisions now keep their length.
+
+On the Red team page this is **Revise what the detector flags** (2 rounds), for samples from a prompt,
+never in public mode. Every revised sample is saved as AI-labelled data with the score after each round
+(`revise_rounds`), attack `…+revise4` (2 rounds until 2026-10-31); the 18 above are in `data/essays/tuning_redteam.jsonl`
+(`…+revise3`). They are the hard negatives the detector should be refitted on next.
+
+### The full detector, and the stuck samples, 2026-10-31
+
+The same 18 samples were scored on a 16 GB Windows laptop (`deploy/remote_test/`). Slim matched the Mac
+sample by sample. The **full build**, whose GLYPH and Binoculars the loop never saw, read them slightly
+lower: finished work 19 ± 14%, quick notes 15 ± 13%, 15 likely human, 3 needs review, 0 likely AI. GLYPH
+read most at 1-5% and Binoculars none as AI-like; only Desklib flagged the three that stayed borderline.
+
+Those three (and one more at 28%) had lost two or three rounds each: a round was kept or dropped whole,
+so one passage that scored worse threw away the ones that helped. `revise_flagged` now keeps each
+rewritten passage on its own when the whole text then scores lower. Revised 3 more rounds from where they
+stopped (slim, gemini-3.1-flash-lite), with the old loop and the new:
+
+| Sample | Start % | Old loop % | Rounds | New loop % | Rounds |
+|---|---:|---:|---:|---:|---:|
+| finished 2#1 | 40 | 10 | 1 | 11 | 1 |
+| finished 2#2 | 57 | 27 | 3 | 30 | 3 |
+| informal 3#1 | 63 | 9 | 3 | 9 | 1 |
+| informal 3#2 | 28 | 15 | 1 | 13 | 1 |
+
+- **More rounds is what moved them**: every one ended likely human with either loop. The page now allows
+  4 rounds (`REVISE_ROUNDS`, was 2); with 2, 4 of the 18 would have stayed flagged, 1 as *Likely AI*.
+  A round only runs while the sample is still over 20%.
+- **Keeping passages one by one** got there in fewer rounds once (6 Gemini requests against 8) and
+  costs one detector pass per rewritten passage instead of one per round. Four samples can't tell the
+  two loops' final scores apart.
+
 The sections below are kept as they were measured.
 
 ## The first measurement

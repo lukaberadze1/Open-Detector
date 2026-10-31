@@ -19,7 +19,27 @@ ENGINES = {
     "bino": ("Binoculars", "zero-shot, two small language models"),
 }
 DOWNLOAD_GB = {"glyph": 0.7, "desklib": 1.7, "bino": 2.0}  # each engine's model files, fetched on first use
-RAM_GB = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+
+
+def _ram_gb() -> float:
+    """This computer's memory. Windows has no os.sysconf, so it asks the system directly."""
+    if hasattr(os, "sysconf"):
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+    import ctypes
+
+    class MemoryStatus(ctypes.Structure):
+        _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong), ("total", ctypes.c_ulonglong),
+                    ("available", ctypes.c_ulonglong), ("page_total", ctypes.c_ulonglong),
+                    ("page_available", ctypes.c_ulonglong), ("virtual_total", ctypes.c_ulonglong),
+                    ("virtual_available", ctypes.c_ulonglong), ("extended", ctypes.c_ulonglong)]
+
+    status = MemoryStatus(length=ctypes.sizeof(MemoryStatus))
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        return 16.0  # unknown: assume enough for the full build
+    return status.total / 2**30
+
+
+RAM_GB = _ram_gb()
 # A host can pin the profile: the free Streamlit deploy runs slim. Otherwise machines with 8 GB or
 # less start on slim, because the full build (about 3.5 GB) next to a local text model means heavy
 # swapping there. On the held-out test, slim scores as well as full (eval/reports/slim.md).

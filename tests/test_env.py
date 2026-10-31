@@ -15,7 +15,8 @@ def test_save_env_replaces_one_key_keeps_the_rest_and_can_remove_it(tmp_path, mo
     save_env("GEMINI_API_KEY", "new", path)
     assert path.read_text() == "# keys\nOPENAI_API_KEY=abc\nGEMINI_API_KEY=new\n"
     assert os.environ["GEMINI_API_KEY"] == "new"
-    assert path.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":  # Windows has no Unix file permissions
+        assert path.stat().st_mode & 0o777 == 0o600
     save_env("GEMINI_API_KEY", "", path)
     assert path.read_text() == "# keys\nOPENAI_API_KEY=abc\n"
     assert "GEMINI_API_KEY" not in os.environ

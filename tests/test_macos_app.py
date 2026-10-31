@@ -142,5 +142,5 @@ def test_the_standalone_app_leaves_out_headers_and_test_suites(tmp_path):
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).write_text("")
     build_app.prune_packages(tmp_path)
-    left = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*") if path.is_file())
+    left = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*") if path.is_file())
     assert left == ["pkg/tests.py", "sympy/core/basic.py", "torch/__init__.py", "torch/testing/__init__.py"]

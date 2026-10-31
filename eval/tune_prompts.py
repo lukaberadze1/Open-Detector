@@ -11,6 +11,8 @@ register. `--framing`, `--plan` and `--old-voice` are the variants measured on 2
   first did; `task` (the default) asks for the piece itself.
 - `--plan` gives the sample a whole sentence plan borrowed from the profile's writer (borrowed_plan).
 - `--old-voice` adds the rule the page first sent with no source text, which forbade "I" and "you".
+`--revise N` then rewrites the passages the detector flags, up to N rounds (redteam_batch.revise_flagged),
+and records the AI likelihood after each round; `--examples N` sends N of the writer's own passages.
 
 Samples are resumable in `--out` and logged as labelled AI data, like every other generated text.
 """
@@ -36,8 +38,9 @@ from eval.generate_essays import (
     style_instructions,
     thinking_level,
 )
-from eval.redteam_batch import DRAFT_STRETCH, GROUP_SCHEMA, FRAMINGS, borrowed_plan, restyle, sample_prompt
-from eval.tune_generation import LABELLED, TOKEN_FIELDS, StyleYardstick, writer_shapes
+from eval.redteam_batch import (DRAFT_STRETCH, FRAMINGS, GROUP_SCHEMA, borrowed_plan, restyle, revise_flagged,
+                                sample_prompt)
+from eval.tune_generation import LABELLED, TOKEN_FIELDS, StyleYardstick, style_examples, writer_shapes
 from opendetector.env import load_env
 from opendetector.segment import count_words
 
@@ -57,8 +60,9 @@ PROMPTS = {
 
 
 def run_sample(model: str, prompt: str, system: str | None, api_key: str, temperature: float,
-               thinking: str, shapes: list | None = None) -> dict:
-    """One sample: a draft, then with `shapes` that draft rewritten in the writer's sentences (restyle)."""
+               thinking: str, shapes: list | None = None, analyze=None, rounds: int = 0) -> dict:
+    """One sample: a draft, then with `shapes` that draft rewritten in the writer's sentences (restyle),
+    then with `rounds` its flagged passages revised against the detector's `analyze` (revise_flagged)."""
     tokens, started = dict.fromkeys(TOKEN_FIELDS, 0), time.monotonic()
 
     def ask(request: str, jobs: list[dict] | None = None) -> str:
@@ -72,13 +76,16 @@ def run_sample(model: str, prompt: str, system: str | None, api_key: str, temper
 
     draft = clean_essay(ask(prompt))
     text = restyle(draft, shapes, ask, clean_essay) if shapes else draft
+    history = None
+    if rounds:
+        text, history = revise_flagged(text, analyze, ask, clean_essay, shapes or [], rounds)
     return {"text": text, "draft": draft if shapes else None, "seconds": round(time.monotonic() - started, 2),
-            "tokens": tokens}
+            "tokens": tokens, "rounds": history}
 
 
 def summary(samples: list[dict]) -> list[str]:
-    lines = ["| Model | Samples | AI likelihood % | Likely human | No verdict | Style match % | Words "
-             "| Tokens per sample |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
+    lines = ["| Model | Samples | Before revising % | AI likelihood % | Likely human | No verdict | Style match % "
+             "| Words | Tokens per sample |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for model in sorted({sample["model"] for sample in samples}):
         mine = [sample for sample in samples if sample["model"] == model and "verdict" in sample]
         if not mine:
@@ -86,7 +93,10 @@ def summary(samples: list[dict]) -> list[str]:
         ai = [100 * sample["ai"] for sample in mine if sample["ai"] is not None]  # None: the detector abstained
         style = [sample["style"] for sample in mine if sample.get("style") is not None]
         human = sum(sample["verdict"] == "likely_human" for sample in mine)
+        before = [100 * sample["rounds"][0] for sample in mine
+                  if sample.get("rounds") and sample["rounds"][0] is not None]
         lines.append(f"| {model} | {len(mine)} "
+                     f"| {f'{statistics.fmean(before):.0f} ± {statistics.pstdev(before):.0f}' if before else 'n/a'} "
                      f"| {f'{statistics.fmean(ai):.0f} ± {statistics.pstdev(ai):.0f}' if ai else 'n/a'} "
                      f"| {human} of {len(mine)} | {len(mine) - len(ai)} "
                      f"| {f'{statistics.fmean(style):.0f}' if style else 'n/a'} "
@@ -106,6 +116,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--old-voice", action="store_true", help="the first page's rule forbidding I and you")
     parser.add_argument("--restyle", action="store_true",
                         help="rewrite each draft passage by passage in the writer's sentences, as the page does")
+    parser.add_argument("--revise", type=int, default=0, metavar="N",
+                        help="rewrite the passages the detector flags, up to N rounds")
+    parser.add_argument("--examples", type=int, default=0, metavar="N", help="send N of the writer's own passages")
     parser.add_argument("--models", default="gemini-3.5-flash-lite")
     parser.add_argument("--thinking", default="low")
     parser.add_argument("--temperature", type=float, default=0.8)
@@ -122,16 +135,24 @@ def main(argv: list[str] | None = None) -> int:
     profile = load_style_profile(args.style)
     registers = profile_registers(profile)
     register = (args.register if args.register in registers else registers[0]) if registers else None
-    system = None if args.no_style else style_instructions(profile, register)
+    examples, checklist = ([], []) if args.no_style or not args.examples else \
+        style_examples(args.style, register, args.examples)
+    system = None if args.no_style else style_instructions(profile, register, examples, checklist)
     shapes = writer_shapes(args.style, register) if args.plan or args.restyle else []
     label = ("plain" if args.no_style else f"{args.style.stem}:{register}" if register else args.style.stem) + \
         f"+{args.framing}" + ("+plan" if args.plan else "") + ("+old-voice" if args.old_voice else "") + \
-        ("+restyle" if args.restyle else "")
+        ("+restyle" if args.restyle else "") + \
+        ("+examples" if examples else "") + (f"+revise{args.revise}" if args.revise else "")
     voice = OLD_VOICE if args.old_voice else ""
     done = {}
     if args.out.exists():
         done = {sample["key"]: sample for sample in map(json.loads, args.out.read_text().splitlines()) if sample}
     samples = list(done.values())
+    detector = None
+    if args.revise:
+        from opendetector import Detector, DetectorConfig
+
+        detector = Detector.from_config(DetectorConfig.for_profile(args.profile))
     for model in (name.strip() for name in args.models.split(",") if name.strip()):
         for number, material in enumerate(PROMPTS[args.set], 1):
             for repeat in range(1, args.repeats + 1):
@@ -143,7 +164,8 @@ def main(argv: list[str] | None = None) -> int:
                 prompt = sample_prompt(material, words, voice, args.framing, plan)
                 try:
                     sample = run_sample(model, prompt, system, api_key, args.temperature, args.thinking,
-                                        shapes if args.restyle else None)
+                                        shapes if args.restyle else None,
+                                        detector.analyze if detector else None, args.revise)
                 except (QuotaExhausted, APIError) as exc:
                     print(f"  {model} failed, skipping it: {exc}")
                     break
@@ -160,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
     if unscored:
         from opendetector import Detector, DetectorConfig
 
-        detector, sticks = Detector.from_config(DetectorConfig.for_profile(args.profile)), {}
+        detector, sticks = detector or Detector.from_config(DetectorConfig.for_profile(args.profile)), {}
         for sample in unscored:
             report = detector.analyze(sample["text"], sentences=False)
             size = max(50, round(sample["words"] / 50) * 50)

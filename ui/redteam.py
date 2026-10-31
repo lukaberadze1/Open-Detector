@@ -68,6 +68,7 @@ from eval.redteam_batch import (
     person_instruction,
     rewrite_group,
     restyle,
+    revise_flagged,
     rewrite_measures,
     sample_prompt,
     structure,
@@ -105,6 +106,7 @@ VISITOR_DIR = DATA_ROOT / "data/visitors"  # a public deploy's per-visitor folde
 MAX_STYLE_BYTES = 500_000
 EVASION_TARGET = 0.05  # configured detector-challenge benchmark target
 STYLE_FLOOR = 35  # minimum style-profile percentile used to rank challenge candidates
+REVISE_ROUNDS = 4  # "Revise what the detector flags": rounds at most, one request each, only while still flagged
 DEFAULT_FALLBACK_MODELS = (
     "gemini-3.5-flash-lite",
     "gemini-3.6-flash",
@@ -248,6 +250,7 @@ class Plan:
     structure: str = "writer"  # how closely rewritten text blocks follow the original (redteam_batch.STRUCTURES)
     shapes: list | None = None  # for "writer": the sentence shapes of the profile writer's own paragraphs
     restyle: bool = False  # a sample from a prompt: rewrite the draft in the writer's sentences (redteam_batch.restyle)
+    revise: int = 0  # a sample: rounds rewriting the passages the detector flags (redteam_batch.revise_flagged)
     style_path: Path | None = None
     score: bool = True
     evasion: bool = False
@@ -653,6 +656,15 @@ def _setup(profile: str, conn: Connection) -> Plan:
         plan.evasion = evasion
         if plan.evasion:
             plan.score = True
+        if not plan.batch and not plan.evasion:
+            plan.revise = REVISE_ROUNDS if st.toggle(
+                "Revise what the detector flags", key=keep("keep:redteam:revise", False),
+                help=f"After writing, scores the sample sentence by sentence and rewrites only its most AI-like "
+                     f"passages, in new sentence shapes from the profile's writer, keeping a revision only when "
+                     f"the whole sample then scores lower: up to {REVISE_ROUNDS} rounds, one request each. "
+                     "Every revision is saved as AI-labelled evaluation data.") else 0
+            if plan.revise:
+                plan.score = True
     if plan.evasion:
         st.caption("Every draft is saved as AI-labelled evaluation data; the kept one records the mode and scores. "
                    + (" In a batch, each block is drafted and scored on its own, one at a time." if plan.batch
@@ -1526,6 +1538,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     model, model_errors = conn.model, []
     drafts: dict[str, str] = {}  # every draft written, with the model that wrote it
     reports: dict = {}  # the detector's report on each draft robustness mode scored
+    revise_history: list = []  # with plan.revise, the AI likelihood before and after each round
 
     def generate(prompt: str) -> str:
         nonlocal model, model_errors
@@ -1591,6 +1604,14 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
                 with st.spinner("Rewriting it in the writer's sentences…"):
                     essay = restyle(essay, plan.shapes, restyle_ask, clean_essay)
                 drafts[essay] = model
+            if plan.revise:
+                if conn.local_model and model == conn.local_model:
+                    unload_local_model(conn.local_url, conn.local_model)  # the detector needs the memory it holds
+                with st.spinner("Revising the passages the detector flags…"):
+                    essay, revise_history = revise_flagged(
+                        essay, models.get_detector(plan.profile).analyze, restyle_ask, clean_essay,
+                        plan.shapes or [], plan.revise)
+                drafts[essay] = model
     except APIError as exc:
         st.error(str(exc), icon=":material/error:")
         return
@@ -1636,6 +1657,9 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     }
     if plan.evasion:
         row["temperature"] = 0.95  # robustness mode drafts hotter than the setting
+    if plan.revise:
+        row["attack"] += f"+revise{plan.revise}"
+        row["revise_rounds"] = revise_history  # the AI likelihood before revising and after each round
     if baseline_metrics is not None:
         row["baseline_ai_probability"] = baseline_metrics.get("ai_probability")
         row["baseline_style_match"] = baseline_metrics.get("style_match")
