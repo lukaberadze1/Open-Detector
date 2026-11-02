@@ -264,6 +264,16 @@ def structure(plan) -> str:
     return "same" if chosen == "writer" and not getattr(plan, "shapes", None) else chosen
 
 
+def follows(plan, job: dict) -> bool:
+    """Whether a block's new text follows its original as the plan says. In a whole-document rewrite an
+    answer box's existing answer is an original like any text block, or those few words read as the
+    model's own (on one report 537 words of them took the whole from 18% to 28%); filled on their own,
+    answer boxes get new answers instead."""
+    if structure(plan) == "free":
+        return False
+    return job["kind"] != "answer_box" or bool(getattr(plan, "rewrite_all_blocks", False) and job["previous"].strip())
+
+
 def sentence_shape(sentence: str) -> tuple[int, str]:
     """A sentence's length in words and its punctuation, the way a sentence plan lists them."""
     marks = [f"{count} {name}{'s' if count > 1 else ''}" for mark, name in MARK_NAMES
@@ -310,7 +320,7 @@ def _skeleton(plan, job: dict) -> list[tuple[int, str]]:
 def off_plan(plan, job: dict, text: str) -> bool:
     """Whether a "writer" rewrite came back short of its plan: too few words, sentences well under the
     plan's length, or one cut off ('...the fall of the.'). Models write about half of a plan's words."""
-    if structure(plan) != "writer" or job["kind"] == "answer_box" or not text.strip():
+    if structure(plan) != "writer" or not follows(plan, job) or not text.strip():
         return False
     skeleton = _skeleton(plan, job)
     planned, words = sum(length for length, _ in skeleton), count_words(text)
@@ -329,7 +339,7 @@ def original_text(plan, job: dict) -> str:
     numbered with their lengths, a blank line between paragraphs, so the model can match each one. In
     "writer" it comes as it is, with the sentence plan borrowed from the writer (plan.shapes), or the
     original's own when the writer has nothing that fits."""
-    if structure(plan) == "free" or job["kind"] == "answer_box":
+    if not follows(plan, job):
         return job["previous"]
     if structure(plan) == "writer":
         skeleton = _skeleton(plan, job)
@@ -349,7 +359,7 @@ def follow_original(plan, job: dict, text: str) -> str:
     paragraph breaks, line breaks and spacing between sentences go around the new ones, so the rewrite
     keeps the original writer's layout, double spaces included. Otherwise the rewrite as it came, on the
     original's lines."""
-    if structure(plan) == "free" or job["kind"] == "answer_box" or not text.strip():
+    if not follows(plan, job) or not text.strip():
         return text
     original = job["previous"]
     text = _NUMBERED.sub("", text).strip()
@@ -687,15 +697,16 @@ def group_prompt(plan, jobs: list[dict]) -> str:
     items = []
     for number, job in enumerate(jobs, 1):
         aim = f"Aim for about {target_words(plan, job)} words."
-        if job["kind"] == "answer_box":
+        if job["kind"] == "answer_box" and not follows(plan, job):
             items.append(f"[B{number}] A new answer for the question in {job['label']}. {aim}\n"
                          f"Question to answer:\n{job['question']}\n"
                          f"Previous answer in this right-hand box (may be blank):\n{job['previous'] or '(blank)'}")
         else:
             kind = "Markdown text" if job["kind"] == "markdown_block" else "text"
             items.append(f"[B{number}] A rewrite of the existing {kind} block labelled {job['label']}. {aim}\n"
-                         f"Existing text to regenerate:\n{original_text(plan, job)}")
-    follow = FOLLOW.get(structure(plan)) if any(job["kind"] != "answer_box" for job in jobs) else None
+                         + (f"It answers this question:\n{job['question']}\n" if job["question"] else "")
+                         + f"Existing text to regenerate:\n{original_text(plan, job)}")
+    follow = FOLLOW.get(structure(plan)) if any(follows(plan, job) for job in jobs) else None
     return (
         f"Full document context:\n{plan.context_text}\n\n---\n\n"
         f"Write new text for each of the {len(jobs)} blocks below, which are parts of the document above. "
@@ -717,7 +728,7 @@ def block_prompt(plan, job: dict) -> str:
     block, so a local model can keep it cached and read only the block's own part each time."""
     voice = voice_rule(plan, [job])
     words = target_words(plan, job)
-    if job["kind"] == "answer_box":
+    if job["kind"] == "answer_box" and not follows(plan, job):
         generation_prompt = (
             f"Other document context:\n{plan.context_text}\n\n---\n\n"
             f"Generate a new AI red-team answer for the question in {job['label']}. "
@@ -744,7 +755,8 @@ def block_prompt(plan, job: dict) -> str:
             "replacement for this block. Do not output headings, questions, table rows, or any other block. "
             "This replacement is AI-generated red-team evaluation data.\n\n"
             f"Additional instructions:\n{plan.prompt.strip() or '(none)'}\n\n"
-            f"Existing text to regenerate:\n{original_text(plan, job)}"
+            + (f"It answers this question:\n{job['question']}\n\n" if job["question"] else "")
+            + f"Existing text to regenerate:\n{original_text(plan, job)}"
         )
     return generation_prompt
 

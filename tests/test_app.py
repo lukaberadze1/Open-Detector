@@ -208,6 +208,40 @@ def test_red_team_sample_is_recorded_as_ai_with_its_score(stub_model, tmp_path):
     assert at.session_state["last_generated_result"]["detect_text"] == rows[0]["text"]
 
 
+def test_a_sample_opens_into_the_detect_breakdown_only_when_asked(stub_model, monkeypatch):
+    import hashlib
+
+    from opendetector import Detector
+
+    analyses = []
+    analyze_text = Detector.analyze
+    monkeypatch.setattr(Detector, "analyze", lambda self, text, sentences=True: (
+        analyses.append(sentences), analyze_text(self, text, sentences=sentences))[1])
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.run()
+    at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
+    button(at, "Generate").click()
+    at.run()
+    assert not at.exception, at.exception
+    result = at.session_state["last_generated_result"]
+    assert "breakdown" not in result and True not in analyses  # closed, nothing extra has run
+    assert "Highlights" not in [tab.label for tab in at.tabs]
+
+    digest = hashlib.sha256(result["detect_text"].encode()).hexdigest()[:16]
+    at.session_state[f"redteam:breakdown:{digest}"] = True
+    at.run()
+    assert not at.exception, at.exception
+    breakdown = at.session_state["last_generated_result"]["breakdown"]
+    assert breakdown["report"].ai_probability == pytest.approx(result["score"]["probability"])
+    assert breakdown["report"].sentences and "likely_ai" in breakdown["bands"]
+    assert {"Highlights", "Sentences", "Details"} <= {tab.label for tab in at.tabs}
+
+    runs = analyses.count(True)
+    at.run()
+    assert analyses.count(True) == runs  # kept with the result, not scored again
+
+
 def robustness_page(monkeypatch, replies, until_target):
     """The Red team page in robustness mode, its text model answering `replies` in turn (text, model) and
     its draft loop replaced by `until_target`, which these tests own."""

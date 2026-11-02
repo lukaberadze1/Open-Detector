@@ -119,15 +119,18 @@ def _input() -> tuple[str, str, list | None]:
     return "\n\n".join(section.text for section in sections), upload.name, sections
 
 
+def _load(profile: str, enabled: list[str]):
+    if models.is_loaded(profile, enabled):
+        return models.get_detector(profile, enabled)
+    names = ", ".join(models.ENGINES[name][0] for name in enabled)
+    with st.spinner(f"Loading {names}. The first time, this downloads about "
+                    f"{models.download_gb(profile, enabled):.1f} GB and can take a few minutes…"):
+        return models.get_detector(profile, enabled)
+
+
 def _analyze(text: str, source: str, sections: list | None, profile: str, enabled: list[str],
              sentences: bool) -> None:
-    if not models.is_loaded(profile, enabled):
-        names = ", ".join(models.ENGINES[name][0] for name in enabled)
-        with st.spinner(f"Loading {names}. The first time, this downloads about "
-                        f"{models.download_gb(profile, enabled):.1f} GB and can take a few minutes…"):
-            detector = models.get_detector(profile, enabled)
-    else:
-        detector = models.get_detector(profile, enabled)
+    detector = _load(profile, enabled)
     with st.spinner("Scoring the text with every engine…"):
         report = detector.analyze(text, sentences=sentences)
 
@@ -145,7 +148,21 @@ def _analyze(text: str, source: str, sections: list | None, profile: str, enable
             progress.progress(done / len(sections), text=f"Scored {done} of {len(sections)} sections")
         progress.empty()
 
-    st.session_state[RESULT] = {
+    st.session_state[RESULT] = _result(detector, report, text, source, profile, enabled, rows)
+
+
+def breakdown(text: str, source: str, profile: str, rows: list[dict]) -> dict:
+    """Everything show_result draws for a text scored elsewhere, by every engine of `profile`. `rows` are
+    its parts, already scored: label, text, words, verdict and probability."""
+    enabled = models.engines_of(profile)
+    detector = _load(profile, enabled)
+    with st.spinner("Scoring every sentence…"):
+        report = detector.analyze(text, sentences=True)
+    return _result(detector, report, text, source, profile, enabled, rows)
+
+
+def _result(detector, report, text: str, source: str, profile: str, enabled: list[str], rows: list[dict]) -> dict:
+    return {
         "report": report,
         "bands": [detector.verdict(s.ai_probability) for s in report.sentences],
         "sections": rows,
@@ -254,12 +271,13 @@ def _details(result: dict) -> None:
                f"letters, and folded {norm.compatibility_chars} compatibility characters.")
 
 
-def _results(result: dict, digest: str) -> None:
+def show_result(result: dict, digest: str | None = None) -> None:
+    """The verdict, the engines' readings and the tabs. With `digest`, says when the input has moved on."""
     report = result["report"]
     with st.container(horizontal=True, vertical_alignment="center"):
         st.html(f'<div class="od-section-title"><b>Result</b><span>{html.escape(result["source"])} · '
                 f'{models.PROFILE_LABELS[result["profile"]]} build</span></div>')
-    if result["digest"] != digest:
+    if digest is not None and result["digest"] != digest:
         st.caption(":material/info: The input has changed since this analysis. Analyze again to update it.")
 
     norm = report.normalization
@@ -355,7 +373,7 @@ def render() -> None:
                 _analyze(text, source, sections, profile, enabled, sentences)
 
         if result := st.session_state.get(RESULT):
-            _results(result, _digest(text))
+            show_result(result, _digest(text))
         else:
             st.html('<div class="od-empty"><b>No result yet</b>Paste at least 150 words of prose or upload a '
                     "document on the left, then press Analyze. The verdict, each engine's reading and the "

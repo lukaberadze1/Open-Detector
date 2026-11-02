@@ -12,9 +12,11 @@ from eval.redteam_batch import (
     BatchWorker,
     Checkpoint,
     batch_key,
+    block_prompt,
     copied,
     copied_row,
     follow_original,
+    follows,
     generate_missing,
     group_prompt,
     original_text,
@@ -289,6 +291,23 @@ JOB = {"kind": "text_block", "label": "Paragraph 2", "question": "", "previous":
 def plan_with(structure):
     return SimpleNamespace(structure=structure, prompt="", context_text="Keeping bees", blocks=[], answer_slots=[],
                            match_existing_lengths=True, answer_words=100)
+
+
+def test_a_whole_document_rewrite_follows_answer_boxes_but_filling_them_alone_replaces_them():
+    box = {**JOB, "kind": "answer_box", "question": "Why water?", "key": "1"}
+    rewriting = SimpleNamespace(**vars(plan_with("same")), rewrite_all_blocks=True)
+    filling = plan_with("same")
+    assert follows(rewriting, box) and not follows(filling, box)
+    assert not follows(rewriting, {**box, "previous": " "}), "a blank box has nothing to follow"
+    assert not follows(SimpleNamespace(**vars(plan_with("free")), rewrite_all_blocks=True), box)
+    for prompt in (block_prompt(rewriting, box), group_prompt(rewriting, [box, {**box, "key": "2"}])):
+        assert "1. (5 words) Bees need water nearby ." in prompt and "Why water?" in prompt
+        assert "sentence by sentence" in prompt
+    for prompt in (block_prompt(filling, box), group_prompt(filling, [box, {**box, "key": "2"}])):
+        assert "1. (5 words)" not in prompt and "sentence by sentence" not in prompt
+    reply = "New one here now. Second one is here too today. Third and last is here."
+    assert follow_original(rewriting, box, reply) != reply, "the original's layout goes around it"
+    assert follow_original(filling, box, reply) == reply
 
 
 def test_a_rewrite_that_follows_the_original_is_shown_its_numbered_sentences():

@@ -63,6 +63,7 @@ from eval.redteam_batch import (
     block_prompt,
     copied,
     follow_original,
+    follows,
     group_by_words,
     group_prompt,
     person_instruction,
@@ -1165,7 +1166,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
             "detector_profile": None,
             **_settings(plan),
             **(item.get("score") or {}),
-            **_followed([item]),
+            **_followed(plan, [item]),
         })
         checkpoint.blocks[item["key"]]["recorded"] = True
     # The whole regenerated text is a sample of its own: unlike most single blocks, it is long enough
@@ -1190,7 +1191,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
             "target_section": None,
             **_settings(plan),
             **{key: value for key, value in document_score.items() if key != "words"},
-            **_followed(items),
+            **_followed(plan, items),
         })
         checkpoint.meta["document_recorded"] = True
     if plan.human_source and rows:
@@ -1237,7 +1238,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
             else None
         ),
         "score_label": "Whole regenerated document",
-        "followed": _followed(items),
+        "followed": _followed(plan, items),
         "baseline_score": checkpoint.meta.get("document_baseline_score"),
         "checkpoint_path": str(checkpoint.path),
         "attachment": text_attachment,
@@ -1262,21 +1263,21 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
                 "probability": (item.get("score") or {}).get("ai_probability"),
                 "style_match": (item.get("score") or {}).get("style_match"),
                 "baseline_style_match": item.get("baseline_style_match"),
-                "structure_match": _followed([item]).get("structure_match"),
+                "structure_match": _followed(plan, [item]).get("structure_match"),
             }
             for item in items
         ],
     }
 
 
-def _followed(items: list[dict]) -> dict:
-    """How the rewritten text blocks among `items` sit on the uploaded originals, taken together:
-    structure match and words kept (redteam_batch.rewrite_measures). Empty for answer boxes, whose
-    previous answer is replaced rather than rewritten."""
-    blocks = [item for item in items if item["kind"] != "answer_box"]
+def _followed(plan: Plan, items: list[dict]) -> dict:
+    """How the rewritten blocks among `items` sit on the uploaded originals, taken together: structure
+    match and words kept (redteam_batch.rewrite_measures). Empty for answer boxes given new answers,
+    whose previous answer is replaced rather than rewritten."""
+    blocks = [item for item in items if item["kind"] != "answer_box" or follows(plan, item)]
     if not blocks:
         return {}
-    return rewrite_measures("\n\n".join(item["target"].text for item in blocks),
+    return rewrite_measures("\n\n".join(item["previous"] for item in blocks),
                             "\n\n".join(item["text"] for item in blocks))
 
 
@@ -1896,6 +1897,29 @@ def _open_in_detect(text: str) -> None:
     st.switch_page(nav.detect_page())
 
 
+def _breakdown(result: dict, profile: str) -> None:
+    """The Detect page's result for the text behind the score, in place. Scoring every sentence takes a
+    while, so it runs the first time this is opened and is kept with the result."""
+    text = result.get("detect_text") or result["essay"]
+    digest = hashlib.sha256(text.encode()).hexdigest()[:16]
+    panel = st.expander("Full breakdown", icon=":material/analytics:", key=f"redteam:breakdown:{digest}",
+                        on_change="rerun")  # keyed by the text: a new sample starts closed
+    if not panel.open:
+        return
+    with panel:
+        if "breakdown" not in result:
+            rows = [{"label": item["label"], "text": item["text"], "words": count_words(item["text"]),
+                     "verdict": item["verdict"], "probability": item["probability"]}
+                    for item in result.get("batch_answers") or []]
+            build = models.PINNED_PROFILE or (result.get("row") or {}).get("detector_profile") or profile
+            try:
+                result["breakdown"] = detect.breakdown(text, result.get("score_label", "Generated sample"), build, rows)
+            except Exception as exc:  # The sample and its score stay on the page.
+                st.warning(f"Could not score the sentences: {exc}")
+                return
+        detect.show_result(result["breakdown"])
+
+
 def _show_result(result: dict, profile: str) -> None:
     row = result.get("row") or {}
     with st.container(border=True):
@@ -1936,6 +1960,7 @@ def _show_result(result: dict, profile: str) -> None:
                                    f"punctuation and their paragraphs. They keep {followed['words_kept']:.0f}% of "
                                    "its words.")
                 verdict_badge(score["verdict"])
+            _breakdown(result, profile)
         elif score:
             words = f" ({score['words']} words)" if score.get("words") else ""
             st.caption(f":material/info: The detector abstained: {VERDICTS[score['verdict']][0].lower()}{words}.")
