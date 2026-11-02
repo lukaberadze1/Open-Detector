@@ -83,6 +83,10 @@ def test_a_process_holding_the_mutex_means_a_batch_is_running():
         assert launcher.batch_running(server)
         awake.terminate()
         awake.wait()
+        # In a .venv python.exe is a launcher, and the Python that holds the mutex ends just after it.
+        deadline = time.monotonic() + 10
+        while launcher.batch_running(server) and time.monotonic() < deadline:
+            time.sleep(0.1)
         assert not launcher.batch_running(server)
     finally:
         server.kill()
