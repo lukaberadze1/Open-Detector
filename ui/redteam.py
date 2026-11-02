@@ -73,6 +73,7 @@ from eval.redteam_batch import (
     person_instruction,
     rewrite_group,
     restyle,
+    REVISE_CANDIDATES,
     REVISE_KEEPING,
     WIN_BELOW,
     revise_blocks,
@@ -85,7 +86,7 @@ from eval.redteam_batch import (
     worth_rewriting,
 )
 from eval.evasion_mode import PROFILE_ID, PROFILE_INSTRUCTIONS, generate_until_target
-from eval.text_attacks import CLAUSES, GROUP_WORDS, PIVOTS, attack_label, attack_name, run_attacks
+from eval.text_attacks import CLAUSES, FREE_TRIP, GROUP_WORDS, PIVOTS, attack_label, attack_name, run_attacks
 from opendetector import DetectorConfig
 from opendetector.config import DATA_ROOT
 from opendetector.documents import (
@@ -815,7 +816,14 @@ def _attacks(plan: Plan) -> None:
         clauses = st.toggle("Move clauses around", key=keep("keep:redteam:clauses", False),
                             help="Turns about half the sentences that can safely be turned around ('Because A, B.' "
                                  "and 'B because A.'). No words change, and it takes no requests.")
-        plan.attacks = ((attack_name(pivot),) if pivot != "Off" else ()) + ((CLAUSES,) if clauses else ())
+        free = False
+        if plan.style_path and plan.style_path.parent == BUILTIN_STYLE_DIR:  # no writer's voice for it to lose
+            free = st.toggle("Free translation round trip", key=keep("keep:redteam:free_trip", False),
+                             help="Sends the finished text through Google Translate's public web address, into "
+                                  "German, French and back, with no model and no quota. It's unofficial and its bot "
+                                  "check often refuses, and then the text stays as it was. Your text goes to Google.")
+        plan.attacks = (((attack_name(pivot),) if pivot != "Off" else ()) + ((FREE_TRIP,) if free else ())
+                        + ((CLAUSES,) if clauses else ()))
         if plan.attacks:
             plan.score = True
         with st.container(horizontal=True):
@@ -1495,7 +1503,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
     # answers one request at a time anyway.
     group_size = 1 if plan.evasion else plan.group_size
     workers = 1 if plan.evasion or is_local(conn.base_url) else plan.parallel
-    clean = styled_clean(plan.style_path, plan.register)
+    clean = styled_clean(plan.style_path, plan.register, swaps=not public())
 
     def words(key: str) -> int:
         return target_words(plan, by_key[key])
@@ -1683,6 +1691,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         texts = {key: checkpoint.blocks[key]["text"] for key in checkpoint.generated(keys)}
         changed, history = revise_blocks(texts, models.get_detector(plan.profile).analyze, ask, clean,
                                          plan.shapes or [], plan.revise, prompt=REVISE_KEEPING, facts=True,
+                        candidates=REVISE_CANDIDATES,
                                          fits=_style_fits(plan, "\n\n".join(texts.values())))
         for key, text in changed.items():
             checkpoint.update(key, text=text, score=candidate_metrics(text, plan.profile, plan.style_path,
@@ -1781,7 +1790,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     drafts: dict[str, str] = {}  # every draft written, with the model that wrote it
     reports: dict = {}  # the detector's report on each draft robustness mode scored
     revise_history: list = []  # with plan.revise, the AI likelihood before and after each round
-    clean = styled_clean(plan.style_path, plan.register)
+    clean = styled_clean(plan.style_path, plan.register, swaps=not public())
 
     def generate(prompt: str) -> str:
         nonlocal model, model_errors
@@ -1869,6 +1878,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
                     essay, revise_history = revise_flagged(
                         essay, models.get_detector(plan.profile).analyze, restyle_ask, clean,
                         plan.shapes or [], plan.revise, prompt=REVISE_KEEPING, facts=True,
+                        candidates=REVISE_CANDIDATES,
                         fits=_style_fits(plan, essay))
                 drafts[essay] = model
     except APIError as exc:

@@ -43,7 +43,7 @@ from eval.generate_essays import (
 )
 from eval.redteam_batch import (DRAFT_STRETCH, FRAMINGS, GROUP_SCHEMA, borrowed_plan, plainer_words, restyle,
                                 revise_flagged, sample_prompt)
-from eval.text_attacks import CLAUSES, PIVOTS, attack_label, attack_name, run_attacks
+from eval.text_attacks import CLAUSES, FREE_TRIP, PIVOTS, attack_label, attack_name, run_attacks
 from eval.tune_generation import LABELLED, TOKEN_FIELDS, StyleYardstick, style_examples, writer_shapes
 from opendetector.env import load_env
 from opendetector.segment import count_words
@@ -147,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--revise", type=int, default=0, metavar="N",
                         help="rewrite the passages the detector flags, up to N rounds")
     parser.add_argument("--attack", action="append", default=[],
-                        choices=[CLAUSES, *(attack_name(pivot) for pivot in PIVOTS)],
+                        choices=[CLAUSES, FREE_TRIP, *(attack_name(pivot) for pivot in PIVOTS)],
                         help="run on each sample before revising (eval/text_attacks.py); repeat it to stack them")
     parser.add_argument("--top-p", type=float, help="the models' top-p, unset by default")
     parser.add_argument("--top-k", type=int, help="the models' top-k, unset by default")
@@ -209,7 +209,8 @@ def main(argv: list[str] | None = None) -> int:
                     sample = run_sample(model, prompt, system, api_key, args.temperature, args.thinking,
                                         shapes if args.restyle else None,
                                         detector.analyze if detector else None, args.revise,
-                                        styled_clean(args.style, register) if not args.no_style else clean_essay,
+                                        (styled_clean(args.style, register, swaps=True) if not args.no_style
+                                         else clean_essay),
                                         vocabulary, provider.base_url, tuple(args.attack), sampling or None)
                 except (QuotaExhausted, APIError) as exc:
                     print(f"  {model} failed, skipping it: {exc}")

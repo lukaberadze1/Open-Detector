@@ -1,5 +1,6 @@
 """Attacks on finished AI text, applied after it is written and before it is revised, to see what they do to the
-detector: a round trip through another language, and moving clauses around. Each returns the attacked text with
+detector: a round trip through another language, one with no model and no quota (`free_round_trip`), and moving
+clauses around. Each returns the attacked text with
 what it did; what comes out is still AI text, and is logged as such with the attack in its label.
 
 Nothing here runs a model itself: `ask` is the caller's, so the page and the benchmarks use their own connections.
@@ -9,15 +10,28 @@ It should ask without a style profile, which would pull a translation away from 
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 import re
+import time
+import urllib.parse
+import urllib.request
 from collections.abc import Callable, Iterable, Sequence
+from itertools import pairwise
 
 from opendetector.segment import count_words, split_sentences
 
 PIVOTS = ("German", "Japanese", "Russian", "Finnish")
 ROUND_TRIP = "roundtrip"
 CLAUSES = "clauses"
+FREE_TRIP = "freetrip"
+# Google Translate's public web endpoint: unofficial, and on 2026-11-02 its bot check answered 429 from the first
+# request, so `free_round_trip` changed nothing. It says who is asking: don't dress it up as a browser to get past that.
+FREE_URL = "https://translate.googleapis.com/translate_a/single"
+FREE_AGENT = "OpenDetector/1.0 (+https://github.com/lukaberadze1/Open-Detector)"
+FREE_HOPS = ("en", "de", "fr", "en")  # after ClearRewriter's lib/formal-inversion.ts
+FREE_CHARS = 1500  # a request's text: it travels in the address
+FREE_PAUSE = 0.3  # seconds between requests
 GROUP_WORDS = 400  # words a translation request carries
 LENGTHS = (0.6, 1.6)  # a paragraph coming back outside these multiples of its length has lost or gained something
 CLAUSE_SHARE = 0.5  # of the sentences that can be turned around
@@ -110,6 +124,52 @@ def round_trip(paragraphs: Sequence[str], ask: Callable[[str], str], pivot: str 
     return result, changed
 
 
+def free_translate(text: str, source: str, target: str) -> str:
+    """`text` through Google Translate's public web endpoint. Raises OSError or ValueError when it refuses."""
+    query = urllib.parse.urlencode({"client": "gtx", "sl": source, "tl": target, "dt": "t", "q": text})
+    request = urllib.request.Request(f"{FREE_URL}?{query}", headers={"User-Agent": FREE_AGENT})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        data = json.load(response)
+    return "".join(part[0] for part in data[0] if part and part[0])
+
+
+def _free_chunks(text: str) -> list[str]:
+    """`text` cut at sentence ends into pieces short enough for one request."""
+    chunks, current = [], ""
+    for sentence in split_sentences(text):
+        piece = text[sentence.start:sentence.end].strip()
+        if current and len(current) + len(piece) > FREE_CHARS:
+            chunks.append(current)
+            current = ""
+        current = f"{current} {piece}".strip()
+    return [*chunks, current] if current else []
+
+
+def free_round_trip(paragraphs: Sequence[str], translate: Callable[[str, str, str], str] = free_translate,
+                    clean: Callable[[str], str] = str.strip, pause: float = FREE_PAUSE) -> tuple[list[str], int]:
+    """Each paragraph through FREE_HOPS, in its place, with no model and no quota. One that comes back without its
+    numbers or at another length stays as it was, and so does the rest once the endpoint refuses. Returns the
+    paragraphs and how many changed."""
+    result, changed = list(paragraphs), 0
+    for number, paragraph in enumerate(paragraphs):
+        if not paragraph.strip():
+            continue
+        try:
+            pieces = []
+            for chunk in _free_chunks(paragraph):
+                for source, target in pairwise(FREE_HOPS):
+                    chunk = translate(chunk, source, target)
+                    time.sleep(pause)
+                pieces.append(chunk)
+        except (OSError, ValueError, IndexError, TypeError):
+            break
+        returned = clean(" ".join(pieces))
+        if returned and returned != paragraph and _faithful(paragraph, returned):
+            result[number] = returned
+            changed += 1
+    return result, changed
+
+
 def _capitalized(text: str) -> str:
     return text[:1].upper() + text[1:]
 
@@ -169,6 +229,8 @@ def run_attacks(texts: Sequence[str], attacks: Iterable[str], ask: Callable[[str
         if attack == CLAUSES:
             turned = [reorder_clauses(text) for text in result]
             result, changes[attack] = [text for text, _ in turned], sum(count for _, count in turned)
+        elif attack == FREE_TRIP:
+            result, changes[attack] = free_round_trip(result, clean=clean)
         elif attack.startswith(f"{ROUND_TRIP}-"):
             if ask is None:
                 raise ValueError(f"{attack} needs a model to ask")

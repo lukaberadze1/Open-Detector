@@ -601,7 +601,19 @@ REVISE = ("A detector reads the passages below as machine-written. Write each ag
           "particular detail, use the writer's plain, specific words over safe, common ones, and leave out "
           "signposting, wrap-up lines and balanced pairs or lists.")
 # As REVISE, for a text that has to keep saying what it said: left to it, revision drops names and numbers.
-REVISE_KEEPING = REVISE + " Keep every name, date and number the passage gives, and add none it doesn't."
+REVISE_KEEPING = (REVISE + " Keep every name, date and number the passage gives, and add none it doesn't. Leave out "
+                  "the habits that give AI writing away (from github.com/blader/humanizer): 'not X but Y', a short "
+                  "closing line that repeats the point, things grouped in threes when the meaning has no three "
+                  "parts, inflated importance, a trailing '-ing' clause, and comments on the writing itself such as "
+                  "'it is evident that' or 'this shows'. Where the style profile says otherwise, it wins.")
+REVISE_CANDIDATES = 3  # the rewrites a passage gets each round, the best kept: one request each per group of passages
+# Stock phrases, only to choose between candidates a detector scores alike (from ClearRewriter).
+_STOCK = ("furthermore", "moreover", "additionally", "in conclusion", "it is important to note", "delve", "tapestry",
+          "navigate the", "underscore", "multifaceted", "unprecedented", "pivotal role", "foster", "leverag",
+          "in the realm of", "a testament to", "crucial", "comprehensive", "facilitate", "utilize", "it is evident")
+_NEGATIONS = {"not", "no", "never", "none", "nor", "cannot", "without", "neither", "nobody", "nothing"}
+_PERSONAL = {"i", "me", "my", "mine", "we", "us", "our", "ours", "you", "your", "yours"}
+_WORD = re.compile(r"[a-z]+(?:'[a-z]+)?")
 STYLE_SLACK = 0.05  # how much further from the profile (StyleYardstick.text_distance) a revised text may drift
 
 
@@ -614,6 +626,41 @@ def keeps_facts(passage: str, revised: str, share: float = FACTS_KEPT) -> bool:
     capitalized words other than those opening a sentence. A prompt alone left revision dropping them."""
     terms = {term.rstrip(".,") for term in _FACT.findall(passage.strip())}
     return not terms or sum(term in revised for term in terms) >= share * len(terms)
+
+
+def stock_phrases(text: str) -> int:
+    low = text.lower()
+    return sum(phrase in low for phrase in _STOCK)
+
+
+def meaning_kept(passage: str, revised: str, context: str = "") -> bool:
+    """keeps_facts and more, after ClearRewriter's check: no name or number that isn't in the passage or in `context`,
+    the document around it, no more than one negation gained or lost, no 'I', 'we' or 'you' the passage doesn't have,
+    and about the same length."""
+    if not keeps_facts(passage, revised):
+        return False
+    if not 0.6 <= len(revised) / max(1, len(passage)) <= 1.6:
+        return False
+    known = passage + " " + context
+    if any(term.rstrip(".,") not in known for term in _FACT.findall(revised.strip())):
+        return False
+
+    def words(text: str) -> list[str]:
+        return [word.split("'")[0] if word.endswith(("'re", "'ll", "'ve", "'m", "'d")) else word
+                for word in _WORD.findall(text.lower().replace("\u2019", "'"))]
+
+    before, after = words(passage), words(revised)
+    negations = [sum(word in _NEGATIONS or word.endswith("n't") for word in side) for side in (before, after)]
+    return abs(negations[0] - negations[1]) <= 1 and not (set(after) - set(before)) & _PERSONAL
+
+
+def _written_tries(plan, jobs_for: Callable[[int], list[dict]], ask, clean, tries: int) -> dict[str, list[str]]:
+    """What `tries` rewrites of the same passages came back as, by the part of each job's key before its ' try '."""
+    written: dict[str, list[str]] = {}
+    for attempt in range(tries):
+        for key, text in rewrite_group(plan, jobs_for(attempt), ask, clean)[0].items():
+            written.setdefault(key.split(" try ")[0], []).append(text)
+    return written
 
 
 def style_guard(distance: Callable[[str], float | None], text: str,
@@ -645,7 +692,7 @@ def passage_scores(spans: list[tuple[int, int]], sentences: list) -> list[float]
 def revise_flagged(text: str, analyze: Callable[[str], object], ask: Callable[[str, list[dict]], str],
                    clean: Callable[[str], str], shapes: list, rounds: int = 2, target: float = WIN_BELOW,
                    fits: Callable[[str], bool] | None = None, prompt: str = REVISE,
-                   facts: bool = False) -> tuple[str, list[float | None]]:
+                   facts: bool = False, candidates: int = 1) -> tuple[str, list[float | None]]:
     """A text revised where the detector reads it as AI: each round rewrites its most AI-like passages
     (by sentence score, at most half of them) in new sentence plans borrowed from the writer, told what
     was flagged (REVISE), and keeps each rewritten passage only if the whole text then scores lower,
@@ -655,7 +702,8 @@ def revise_flagged(text: str, analyze: Callable[[str], object], ask: Callable[[s
     rewriting only where the detector reads it breaks that plan up where it shows. `analyze` is the
     detector's (with sentence scores), run once per rewritten passage. With `fits` (style_guard) a passage
     that takes the text away from the style profile is dropped too. Gives the kept text, normalized as the
-    detector read it, and its AI likelihood after each round, the first before any."""
+    detector read it, and its AI likelihood after each round, the first before any. With `candidates`, a
+    passage gets that many rewrites a round, in different plans, and the lowest-scoring that passes is the one tried."""
     report = analyze(text)
     if report.ai_probability is None:
         return text, [None]
@@ -669,29 +717,38 @@ def revise_flagged(text: str, analyze: Callable[[str], object], ask: Callable[[s
         scores = passage_scores(spans, best.sentences)
         order = sorted(range(len(spans)), key=lambda index: -scores[index])
         chosen = [index for index in order if scores[index] >= target][:max(1, len(spans) // 2)] or order[:1]
-        jobs = [{"kind": "text_block", "label": f"Passage {index + 1}", "question": "",
-                 "previous": base[slice(*spans[index])], "key": f"{index + 1:03d} revise {round_}"}
-                for index in sorted(chosen)]
+        def jobs(attempt: int, chosen=chosen, base=base, spans=spans, round_=round_) -> list[dict]:
+            return [{"kind": "text_block", "label": f"Passage {index + 1}", "question": "",
+                     "previous": base[slice(*spans[index])],
+                     "key": f"{index + 1:03d} revise {round_} try {attempt}"} for index in sorted(chosen)]
+
         plan = SimpleNamespace(prompt=prompt, context_text=base, blocks=[], answer_slots=[],
                                match_existing_lengths=True, answer_words=100, structure="writer" if shapes else "free",
                                shapes=shapes)  # no stretch: a revised passage keeps its length, round after round
-        written, _ = rewrite_group(plan, jobs, ask, clean)
+        written = _written_tries(plan, jobs, ask, clean, candidates)
         passages = [base[start:end] for start, end in spans]
         gaps = [base[:spans[0][0]]] + [base[end:after[0]] for (_, end), after in pairwise(spans)] \
             + [base[spans[-1][1]:]]
         for index in chosen:
-            new = written.get(f"{index + 1:03d} revise {round_}", "").strip()
-            if not new or new == passages[index]:
-                continue
-            if facts and not keeps_facts(passages[index], new):
-                continue
-            trial = [*passages[:index], new, *passages[index + 1:]]
-            joined = "".join(gap + passage for gap, passage in zip(gaps, [*trial, ""], strict=True))
-            if fits and not fits(joined):
-                continue
-            candidate = analyze(joined)
-            if candidate.ai_probability is not None and candidate.ai_probability < best.ai_probability:
-                best, passages = candidate, trial
+            kept = None
+            for new in written.get(f"{index + 1:03d} revise {round_}", []):
+                new = new.strip()
+                if not new or new == passages[index]:
+                    continue
+                if facts and not meaning_kept(passages[index], new, base):
+                    continue
+                trial = [*passages[:index], new, *passages[index + 1:]]
+                joined = "".join(gap + passage for gap, passage in zip(gaps, [*trial, ""], strict=True))
+                if fits and not fits(joined):
+                    continue
+                candidate = analyze(joined)
+                if candidate.ai_probability is None:
+                    continue
+                rank = (round(candidate.ai_probability, 2), stock_phrases(new))
+                if kept is None or rank < kept[0]:
+                    kept = (rank, candidate, trial)
+            if kept and kept[1].ai_probability < best.ai_probability:
+                best, passages = kept[1], kept[2]
         history.append(best.ai_probability)
         if _stalled(history):
             break
@@ -728,7 +785,7 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
                   clean: Callable[[str], str], shapes: list, rounds: int = 2, target: float = WIN_BELOW,
                   windows: Callable[[str], list[tuple[int, int, float]]] | None = None,
                   fits: Callable[[str], bool] | None = None, prompt: str = REVISE, facts: bool = False,
-                  ) -> tuple[dict[str, str], list[float | None]]:
+                  candidates: int = 1) -> tuple[dict[str, str], list[float | None]]:
     """A document's rewritten blocks revised where the detector reads the whole as AI, as revise_flagged does
     a sample, keeping each block in its place in the document. `texts` holds each block's text by key, in
     document order. A long block is cut into passages (passage_spans), since whole it gets one all-or-nothing
@@ -738,7 +795,8 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
     hottest document window go first,
     sentence scores only breaking ties, since the worst such window is what the document's score reads.
     With `fits` (style_guard) a block that takes the whole away from the style profile is dropped too, and with
-    `facts` (keeps_facts) one that loses the passage's names and numbers.
+    `facts` (meaning_kept) one that loses the passage's names and numbers or changes its meaning. With `candidates`,
+    a passage gets that many rewrites a round, in different plans, and the lowest-scoring that passes is the one tried.
     Gives the changed blocks' texts by key, and the AI likelihood after each round, the first before any."""
     shown, gaps, blocks = {}, {}, {}  # each passage's text and what follows it, by "block#number"
     for key, text in texts.items():
@@ -773,24 +831,33 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
             chosen = [name for name in order if scores[name] >= target][:REVISED_BLOCKS] or order[:1]
         if not chosen:
             break
-        jobs = [{"kind": "text_block", "label": f"Passage {number}", "question": "", "previous": shown[name],
-                 "key": f"{name} revise {round_}"} for number, name in enumerate(chosen, 1)]
+        def jobs(attempt: int, chosen=chosen, shown=shown, round_=round_) -> list[dict]:
+            return [{"kind": "text_block", "label": f"Passage {number}", "question": "", "previous": shown[name],
+                     "key": f"{name} revise {round_} try {attempt}"} for number, name in enumerate(chosen, 1)]
+
         plan = SimpleNamespace(prompt=prompt, context_text=whole(shown), blocks=[], answer_slots=[],
                                match_existing_lengths=True, answer_words=100, structure="writer" if shapes else "free",
                                shapes=shapes)
-        written, _ = rewrite_group(plan, jobs, ask, clean)
+        written = _written_tries(plan, jobs, ask, clean, candidates)
         for name in chosen:
-            new = normalize(written.get(f"{name} revise {round_}", ""))[0]
-            if not new or new == shown[name]:
-                continue
-            if facts and not keeps_facts(shown[name], new):
-                continue
-            trial = {**shown, name: new}
-            if fits and not fits(whole(trial)):
-                continue
-            candidate = analyze(whole(trial), sentences=False).ai_probability
-            if candidate is not None and candidate < best:
-                best, shown[name] = candidate, new
+            kept = None
+            for text in written.get(f"{name} revise {round_}", []):
+                new = normalize(text)[0]
+                if not new or new == shown[name]:
+                    continue
+                if facts and not meaning_kept(shown[name], new, whole(shown)):
+                    continue
+                trial = {**shown, name: new}
+                if fits and not fits(whole(trial)):
+                    continue
+                candidate = analyze(whole(trial), sentences=False).ai_probability
+                if candidate is None:
+                    continue
+                rank = (round(candidate, 2), stock_phrases(new))
+                if kept is None or rank < kept[0]:
+                    kept = (rank, candidate, new)
+            if kept and kept[1] < best:
+                best, shown[name] = kept[1], kept[2]
                 touched.add(blocks[name])
         history.append(best)
         if _stalled(history):

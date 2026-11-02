@@ -1,0 +1,1972 @@
+{
+"source": "Ported from rudra496/ClearRewriter (lib/collocations.ts, SAFE_SYNONYMS, AI_LEXICON), replacements that add I, you or we left out.",
+"phrases": {
+"in order to": [
+"to",
+"for the purpose of"
+],
+"due to the fact that": [
+"since",
+"because",
+"seeing as",
+"given that"
+],
+"it is worth noting that": [
+"worth mentioning",
+"also",
+"one more thing",
+"it helps to know"
+],
+"it is worth noting": [
+"worth mentioning",
+"it's good to know",
+"keep in mind"
+],
+"it is important to note": [
+"keep in mind",
+"remember",
+"it helps to know"
+],
+"it is important to": [
+"it matters to",
+"make sure to",
+"it's key to"
+],
+"it is important": [
+"it matters",
+"this is key",
+"this counts",
+"this is a big deal"
+],
+"it is essential": [
+"this is non-negotiable"
+],
+"it is crucial": [
+"this matters a lot",
+"this is make-or-break"
+],
+"it is evident that": [
+"clearly",
+"obviously",
+"it's pretty clear"
+],
+"it is clear that": [
+"clearly",
+"obviously",
+"no surprise"
+],
+"it is clear": [
+"obviously",
+"clearly",
+"no doubt",
+"pretty obvious"
+],
+"it is possible": [
+"it could happen",
+"there's a chance",
+"maybe"
+],
+"it is likely": [
+"probably",
+"chances are"
+],
+"it is unlikely": [
+"probably not",
+"doubtful",
+"a long shot"
+],
+"it is necessary": [
+"it has to happen",
+"required"
+],
+"it is interesting": [
+"pretty cool actually",
+"neat"
+],
+"it is difficult": [
+"it's hard",
+"not easy",
+"tough",
+"tricky"
+],
+"it is true that": [
+"sure",
+"granted",
+"fair point",
+"admittedly"
+],
+"it should be noted": [
+"keep in mind",
+"worth knowing",
+"one thing to remember"
+],
+"it should be mentioned": [
+"worth bringing up",
+"also"
+],
+"it goes without saying": [
+"obviously",
+"naturally",
+"of course",
+"no brainer"
+],
+"it is safe to say": [
+"safe bet"
+],
+"it cannot be denied": [
+"hard to dispute",
+"no way around it"
+],
+"it cannot be overstated": [
+"this really can't be said enough",
+"huge deal",
+"seriously important"
+],
+"has the ability to": [
+"can",
+"is able to",
+"knows how to"
+],
+"has the potential to": [
+"could",
+"might just",
+"stands a chance of"
+],
+"has the capacity to": [
+"can",
+"is equipped to",
+"has what it takes to"
+],
+"has the potential": [
+"could",
+"might",
+"has a shot at"
+],
+"a large number of": [
+"tons of",
+"a bunch of",
+"quite a few",
+"loads of",
+"a whole lot of"
+],
+"a significant number of": [
+"quite a few",
+"a good chunk of",
+"a bunch of"
+],
+"a wide range of": [
+"all sorts of",
+"a variety of",
+"different kinds of"
+],
+"a variety of": [
+"different",
+"various",
+"all kinds of",
+"a mix of"
+],
+"a great deal of": [
+"a lot of",
+"tons of",
+"loads of",
+"a massive amount of"
+],
+"a vast amount of": [
+"a ton of",
+"so much",
+"a mountain of"
+],
+"a considerable amount": [
+"a lot",
+"quite a bit",
+"a good amount"
+],
+"a considerable number": [
+"a bunch",
+"quite a few",
+"a good number"
+],
+"a high level of": [
+"a lot of",
+"deep",
+"serious"
+],
+"in the field of": [
+"when it comes to",
+"in the world of",
+"for anyone working in"
+],
+"in the realm of": [
+"in the world of",
+"when it comes to",
+"within"
+],
+"in the context of": [
+"in the case of",
+"given"
+],
+"in the case of": [
+"when it comes to",
+"for",
+"with"
+],
+"in addition to": [
+"besides",
+"on top of",
+"along with",
+"plus"
+],
+"in terms of": [
+"when it comes to",
+"regarding",
+"as for",
+"looking at"
+],
+"in light of": [
+"given",
+"considering",
+"because of",
+"with"
+],
+"in spite of": [
+"despite",
+"even with",
+"even though",
+"regardless of"
+],
+"in relation to": [
+"about",
+"regarding",
+"when it comes to",
+"connected to"
+],
+"in comparison to": [
+"compared to",
+"versus",
+"next to",
+"against"
+],
+"in contrast to": [
+"unlike",
+"compared to",
+"on the flip side",
+"while"
+],
+"in response to": [
+"as an answer to",
+"reacting to",
+"to address"
+],
+"make a decision": [
+"decide",
+"land on something",
+"figure out what to do"
+],
+"make a difference": [
+"change things",
+"have an impact",
+"actually matter"
+],
+"make an effort": [
+"try",
+"put in the work",
+"push",
+"make a point of"
+],
+"make use of": [
+"use",
+"leverage",
+"take advantage of",
+"put to work"
+],
+"make a contribution": [
+"chip in",
+"add something"
+],
+"make progress": [
+"move forward",
+"get somewhere",
+"make headway"
+],
+"take into account": [
+"consider",
+"factor in",
+"think about",
+"keep in mind"
+],
+"take into consideration": [
+"consider",
+"factor in",
+"think about",
+"weigh"
+],
+"take advantage of": [
+"use",
+"leverage",
+"capitalize on",
+"jump on"
+],
+"play a role": [
+"matter",
+"be a factor",
+"make a difference",
+"have a say"
+],
+"play a crucial role": [
+"be a big deal",
+"really matter",
+"make a huge difference"
+],
+"play a key role": [
+"be central",
+"be a big factor",
+"really matter"
+],
+"play a significant role": [
+"be a big part",
+"carry real weight",
+"matter a lot"
+],
+"play an important role": [
+"really matter",
+"be important",
+"carry weight"
+],
+"on the other hand": [
+"then again",
+"but then",
+"on the flip side",
+"that said"
+],
+"on the one hand": [
+"for one thing",
+"sure",
+"on one side"
+],
+"at the same time": [
+"simultaneously",
+"meanwhile",
+"all the while",
+"but also"
+],
+"at the end of the day": [
+"ultimately",
+"when all is said and done",
+"in the end"
+],
+"for the most part": [
+"mostly",
+"generally",
+"by and large",
+"usually"
+],
+"for the purpose of": [
+"to",
+"for",
+"in order to"
+],
+"as a matter of fact": [
+"actually",
+"in fact",
+"truthfully",
+"honestly"
+],
+"as a result of": [
+"because of",
+"thanks to",
+"due to",
+"from"
+],
+"as a result": [
+"so",
+"because of this",
+"that's why",
+"consequently"
+],
+"as well as": [
+"and",
+"plus",
+"along with",
+"alongside"
+],
+"with regard to": [
+"about",
+"regarding",
+"when it comes to",
+"on the topic of"
+],
+"with respect to": [
+"about",
+"regarding",
+"in terms of",
+"on"
+],
+"with the exception of": [
+"except",
+"other than",
+"besides"
+],
+"first and foremost": [
+"first off",
+"to start",
+"the main thing"
+],
+"last but not least": [
+"finally",
+"one more thing",
+"also"
+],
+"to begin with": [
+"first off",
+"to start",
+"for starters"
+],
+"to sum up": [
+"basically",
+"in short",
+"long story short",
+"the bottom line"
+],
+"to put it differently": [
+"or to say it another way",
+"in other words",
+"basically"
+],
+"to put it simply": [
+"basically",
+"simply put",
+"long story short"
+],
+"the vast majority of": [
+"most",
+"pretty much all",
+"nearly all",
+"almost all"
+],
+"the majority of": [
+"most",
+"a lot of",
+"pretty much all"
+],
+"a growing number of": [
+"more and more",
+"an increasing number of",
+"increasingly"
+],
+"an increasing number of": [
+"more and more",
+"growing numbers of"
+],
+"the purpose of": [
+"the point of"
+],
+"the fact that": [
+"that",
+"how",
+"the reality that"
+],
+"the ability to": [
+"being able to",
+"can",
+"getting to"
+],
+"the importance of": [
+"the value of",
+"the role of"
+],
+"the development of": [
+"building",
+"the rise of",
+"the growth of"
+],
+"the implementation of": [
+"rolling out",
+"deploying",
+"putting in place"
+],
+"the utilization of": [
+"using",
+"the use of"
+],
+"the use of": [
+"using",
+"relying on"
+],
+"the impact of": [
+"the effect of",
+"the result of",
+"what comes from"
+],
+"the results of": [
+"what happened when",
+"the outcome of"
+],
+"in conclusion": [
+"to wrap up",
+"so yeah",
+"basically",
+"at the end of the day"
+],
+"to conclude": [
+"to wrap up",
+"so",
+"anyway",
+"long story short"
+],
+"in summary": [
+"basically",
+"long story short",
+"so yeah",
+"the bottom line"
+],
+"it is widely recognized": [
+"everyone knows",
+"it's pretty well known",
+"people generally agree"
+],
+"it is widely accepted": [
+"most people agree",
+"it's generally agreed",
+"pretty much everyone accepts"
+],
+"it is generally accepted": [
+"most people agree",
+"it's pretty widely accepted",
+"common knowledge"
+],
+"it is generally understood": [
+"most people get that",
+"pretty clear to everyone",
+"common understanding"
+],
+"there is a growing": [
+"there's more and more"
+],
+"there is no doubt": [
+"no question",
+"clearly",
+"definitely",
+"for sure"
+],
+"there is no denying": [
+"hard to argue with",
+"undeniably"
+],
+"demonstrates that": [
+"shows that",
+"proves",
+"makes it clear that"
+],
+"suggests that": [
+"hints at",
+"points to",
+"seems like"
+],
+"indicates that": [
+"shows",
+"points to",
+"suggests",
+"gives the sense that"
+],
+"has been shown to": [
+"has proven to",
+"turns out to"
+],
+"has been proven to": [
+"it's been shown",
+"clearly"
+],
+"responsible for": [
+"in charge of",
+"handling",
+"taking care of",
+"doing"
+],
+"associated with": [
+"linked to",
+"tied to",
+"connected to",
+"related to"
+],
+"according to": [
+"per",
+"based on what",
+"says"
+],
+"prior to": [
+"before",
+"leading up to",
+"ahead of"
+],
+"subsequent to": [
+"after",
+"following",
+"once"
+],
+"in the first place": [
+"to begin with",
+"first off",
+"for starters"
+],
+"in the second place": [
+"secondly",
+"also",
+"on top of that"
+],
+"moreover": [
+"additionally",
+"also",
+"in addition"
+],
+"furthermore": [
+"additionally",
+"in addition",
+"also"
+],
+"additionally": [
+"also",
+"in addition"
+],
+"nevertheless": [
+"still",
+"but",
+"even so",
+"that said"
+],
+"consequently": [
+"so",
+"as a result",
+"that's why",
+"because of that"
+],
+"subsequently": [
+"then",
+"after that",
+"later",
+"next"
+],
+"facilitate": [
+"help with",
+"make easier",
+"enable",
+"allow"
+],
+"utilize": [
+"use",
+"work with",
+"put to use",
+"apply"
+],
+"implement": [
+"put in place",
+"roll out",
+"set up",
+"start using"
+],
+"leverage": [
+"use",
+"take advantage of",
+"build on",
+"work with"
+],
+"optimize": [
+"improve",
+"fine-tune",
+"make better",
+"tweak"
+],
+"comprehensive": [
+"thorough",
+"complete",
+"detailed",
+"full"
+],
+"facilitates the": [
+"helps with",
+"makes it easier to",
+"allows for"
+],
+"paramount": [
+"key",
+"top priority",
+"most important",
+"critical"
+],
+"underscore": [
+"highlight",
+"stress",
+"point out",
+"show"
+],
+"delve into": [
+"dig into",
+"look at",
+"explore",
+"get into"
+],
+"sheds light on": [
+"helps explain",
+"clarifies",
+"makes sense of",
+"reveals"
+],
+"landscape": [
+"world",
+"space",
+"scene",
+"area",
+"environment"
+],
+"a myriad of": [
+"lots of",
+"tons of",
+"all kinds of",
+"a bunch of"
+],
+"multifaceted": [
+"complex",
+"many-sided",
+"layered",
+"complicated"
+],
+"seamless": [
+"smooth",
+"easy",
+"frictionless",
+"painless"
+],
+"synergy": [
+"teamwork",
+"working together",
+"combined effort",
+"collaboration"
+],
+"paradigm shift": [
+"big change",
+"fundamental shift",
+"game changer",
+"new way of thinking"
+],
+"holistic": [
+"complete",
+"all-around",
+"full-picture",
+"big-picture"
+],
+"groundbreaking": [
+"revolutionary",
+"huge",
+"game-changing",
+"innovative"
+],
+"transformative": [
+"life-changing",
+"revolutionary",
+"major",
+"powerful"
+],
+"unprecedented": [
+"never seen before",
+"unheard of",
+"unlike anything before",
+"brand new"
+],
+"embark on": [
+"start",
+"begin",
+"kick off",
+"dive into"
+],
+"navigating": [
+"working through",
+"dealing with",
+"handling",
+"figuring out"
+],
+"pivotal": [
+"key",
+"crucial",
+"critical",
+"game-changing"
+],
+"integral": [
+"important",
+"essential",
+"key",
+"central"
+],
+"robust": [
+"strong",
+"solid",
+"tough",
+"reliable"
+],
+"innovative": [
+"new",
+"fresh",
+"creative",
+"cutting-edge"
+],
+"streamline": [
+"simplify",
+"speed up",
+"make easier",
+"smooth out"
+],
+"state-of-the-art": [
+"latest",
+"cutting-edge",
+"modern",
+"top-of-the-line"
+],
+"cutting-edge": [
+"latest",
+"bleeding-edge",
+"newest",
+"advanced"
+],
+"best practices": [
+"smart approaches",
+"proven methods",
+"what works",
+"standard approaches"
+],
+"in today's world": [
+"now",
+"these days",
+"right now",
+"at this point"
+],
+"in today's society": [
+"nowadays",
+"these days",
+"right now",
+"in 2024"
+],
+"in the modern era": [
+"now",
+"these days",
+"today",
+"in this day and age"
+],
+"in this day and age": [
+"now",
+"these days",
+"today",
+"right now"
+],
+"a deep dive into": [
+"a closer look at",
+"digging into",
+"exploring",
+"looking at"
+],
+"deep dive": [
+"closer look",
+"detailed look",
+"proper examination",
+"real analysis"
+],
+"unlocking the potential": [
+"tapping into",
+"making the most of",
+"getting more out of",
+"using"
+],
+"unlocking": [
+"opening up",
+"revealing",
+"exposing",
+"making available"
+],
+"the intersection of": [
+"the overlap between",
+"the crossroads of",
+"the meeting point of"
+],
+"at the intersection of": [
+"between",
+"at the crossroads of",
+"where"
+],
+"paving the way": [
+"leading to",
+"making room for",
+"opening the door for",
+"setting up"
+],
+"paves the way": [
+"leads to",
+"sets up",
+"clears the path for",
+"makes possible"
+],
+"the backbone of": [
+"the core of",
+"what supports",
+"the foundation of",
+"what holds up"
+],
+"a testament to": [
+"proof of",
+"shows that",
+"evidence of",
+"a sign of"
+],
+"in an ever-changing": [
+"in a changing",
+"as things change in",
+"in today's",
+"in a shifting"
+],
+"ever-evolving": [
+"constantly changing",
+"always shifting",
+"developing",
+"moving"
+],
+"not only": [
+"not just",
+"both"
+],
+"it is imperative that": [
+"it's critical to"
+],
+"the landscape of": [
+"the world of",
+"the field of",
+"the area of",
+"the space of"
+],
+"navigating the complexities": [
+"dealing with the complexity",
+"working through the complications",
+"handling the tricky parts"
+],
+"a rich tapestry": [
+"a mix of",
+"a blend of",
+"a variety of",
+"a combination of"
+],
+"tapestry": [
+"mix",
+"blend",
+"combination",
+"mosaic",
+"collection"
+],
+"the nuances of": [
+"the subtle parts of",
+"the details of",
+"the finer points of"
+],
+"bringing to light": [
+"revealing",
+"showing",
+"exposing",
+"uncovering"
+],
+"in the grand scheme of things": [
+"overall",
+"in the bigger picture",
+"all things considered"
+],
+"it bears mentioning": [
+"worth saying",
+"also",
+"one more thing"
+],
+"serves as a": [
+"acts as a",
+"works as a",
+"functions as a",
+"is a"
+],
+"acts as a catalyst": [
+"sparks",
+"drives",
+"pushes forward",
+"accelerates"
+],
+"catalyst for change": [
+"what drives change",
+"what pushes things forward",
+"a driver of change"
+],
+"the crux of": [
+"the heart of",
+"the key part of",
+"the main point of",
+"what matters most about"
+],
+"at its core": [
+"basically",
+"fundamentally",
+"at the heart of it"
+],
+"at its essence": [
+"basically",
+"in essence",
+"at heart",
+"fundamentally"
+],
+"it is undeniable that": [
+"clearly",
+"obviously",
+"no question"
+],
+"undeniably": [
+"clearly",
+"without doubt",
+"for sure",
+"no question"
+],
+"a beacon of": [
+"a sign of",
+"an example of",
+"a model for",
+"a symbol of"
+],
+"the paradigm of": [
+"the model of",
+"the approach to",
+"the pattern of",
+"the framework for"
+],
+"in a rapidly evolving": [
+"in a fast-changing",
+"in a quickly changing",
+"in today's",
+"in a developing"
+],
+"rapidly evolving": [
+"fast-changing",
+"quickly developing",
+"shifting",
+"growing"
+],
+"weaving together": [
+"combining",
+"bringing together",
+"mixing",
+"merging"
+],
+"a delicate balance": [
+"a tricky balance",
+"a fine line",
+"a careful balance",
+"a tight balance"
+],
+"it is paramount": [
+"it's crucial",
+"this is the top priority",
+"this matters most",
+"nothing is more important"
+],
+"paramount importance": [
+"really important",
+"top priority",
+"critical",
+"the most important thing"
+],
+"fostering a culture of": [
+"building a culture of",
+"creating an environment for",
+"encouraging"
+],
+"the proliferation of": [
+"the spread of",
+"the growth of",
+"more and more",
+"the rise in"
+],
+"proliferation": [
+"spread",
+"growth",
+"increase",
+"expansion"
+],
+"a myriad of ways": [
+"lots of ways",
+"many ways",
+"all sorts of ways",
+"tons of ways"
+],
+"championing": [
+"supporting",
+"pushing for",
+"leading",
+"advocating for"
+],
+"demystifying": [
+"explaining",
+"breaking down",
+"making sense of",
+"clarifying"
+],
+"thought-provoking": [
+"interesting",
+"worth reflecting on",
+"stimulating"
+],
+"game-changing": [
+"huge",
+"revolutionary",
+"major",
+"a big deal"
+],
+"reshaping the way": [
+"changing how",
+"transforming how",
+"shifting how"
+],
+"bridging the gap": [
+"closing the gap",
+"connecting",
+"filling the gap",
+"linking"
+],
+"a cornerstone of": [
+"a key part of",
+"central to",
+"essential to",
+"a foundation of"
+],
+"stands as": [
+"is",
+"serves as",
+"works as",
+"functions as"
+],
+"encompasses": [
+"includes",
+"covers",
+"involves",
+"contains"
+],
+"the advent of": [
+"the arrival of",
+"the start of",
+"the beginning of"
+],
+"a stark contrast": [
+"a big difference",
+"a clear difference",
+"totally different from",
+"nothing like"
+],
+"delves deeper": [
+"goes deeper",
+"looks closer",
+"digs into",
+"explores further"
+],
+"unparalleled": [
+"unmatched",
+"unequaled",
+"unrivaled",
+"like nothing else"
+],
+"a lens through which": [
+"a way to look at",
+"a perspective on",
+"an angle for"
+]
+},
+"synonyms": {
+"actually": [
+"really",
+"honestly",
+"truthfully",
+"in fact"
+],
+"basically": [
+"essentially",
+"pretty much",
+"fundamentally",
+"at its core"
+],
+"because": [
+"since",
+"as",
+"seeing as",
+"given that"
+],
+"before": [
+"earlier",
+"prior",
+"leading up to",
+"ahead of"
+],
+"begin": [
+"start",
+"kick off",
+"get going",
+"launch"
+],
+"believe": [
+"think",
+"feel",
+"reckon",
+"figure"
+],
+"big": [
+"large",
+"huge",
+"massive",
+"major"
+],
+"change": [
+"shift",
+"alter",
+"modify",
+"revamp"
+],
+"choose": [
+"pick",
+"select",
+"opt for",
+"go with"
+],
+"clear": [
+"obvious",
+"plain",
+"apparent",
+"straightforward"
+],
+"common": [
+"widespread",
+"typical",
+"standard",
+"usual"
+],
+"create": [
+"make",
+"build",
+"craft",
+"develop"
+],
+"deadline": [
+"cutoff",
+"due date",
+"time limit"
+],
+"decide": [
+"choose",
+"settle on",
+"resolve"
+],
+"different": [
+"distinct",
+"various",
+"diverse",
+"unlike"
+],
+"difficult": [
+"hard",
+"tough",
+"challenging",
+"tricky"
+],
+"end": [
+"finish",
+"wrap up",
+"close",
+"conclude"
+],
+"enough": [
+"plenty",
+"sufficient",
+"adequate"
+],
+"especially": [
+"particularly",
+"notably",
+"specifically",
+"above all"
+],
+"exactly": [
+"precisely",
+"spot-on",
+"specifically"
+],
+"fast": [
+"quick",
+"rapid",
+"swift",
+"speedy"
+],
+"finally": [
+"at last",
+"in the end",
+"after all that"
+],
+"find": [
+"discover",
+"come across",
+"stumble upon",
+"uncover"
+],
+"first": [
+"initially",
+"to start",
+"for starters",
+"first off"
+],
+"focus": [
+"concentrate",
+"zero in",
+"hone in",
+"center"
+],
+"follow": [
+"track",
+"pursue",
+"go after",
+"trail"
+],
+"get": [
+"obtain",
+"acquire",
+"land",
+"pick up"
+],
+"give": [
+"provide",
+"supply",
+"hand over",
+"deliver"
+],
+"good": [
+"solid",
+"great",
+"strong",
+"quality"
+],
+"grow": [
+"expand",
+"increase",
+"develop",
+"build up"
+],
+"handle": [
+"deal with",
+"manage",
+"tackle",
+"take care of"
+],
+"happen": [
+"occur",
+"take place",
+"come about",
+"go down"
+],
+"help": [
+"assist",
+"support",
+"aid",
+"lend a hand"
+],
+"huge": [
+"massive",
+"enormous",
+"gigantic",
+"immense"
+],
+"idea": [
+"concept",
+"thought",
+"notion",
+"plan"
+],
+"important": [
+"crucial",
+"key",
+"vital",
+"significant"
+],
+"improve": [
+"enhance",
+"boost",
+"upgrade",
+"better"
+],
+"include": [
+"feature",
+"incorporate",
+"cover",
+"involve"
+],
+"interesting": [
+"fascinating",
+"intriguing",
+"compelling",
+"thought-provoking"
+],
+"keep": [
+"maintain",
+"hold on to",
+"retain",
+"preserve"
+],
+"know": [
+"understand",
+"realize",
+"be aware"
+],
+"large": [
+"big",
+"huge",
+"substantial",
+"sizeable"
+],
+"learn": [
+"find out",
+"pick up",
+"figure out",
+"discover"
+],
+"look": [
+"appear",
+"seem",
+"come across as"
+],
+"main": [
+"primary",
+"chief",
+"principal",
+"key"
+],
+"make": [
+"create",
+"build",
+"craft",
+"produce"
+],
+"many": [
+"a lot of",
+"tons of",
+"quite a few",
+"numerous"
+],
+"method": [
+"approach",
+"technique",
+"way",
+"strategy"
+],
+"necessary": [
+"required",
+"essential",
+"needed",
+"must-have"
+],
+"new": [
+"fresh",
+"novel",
+"recent",
+"latest"
+],
+"often": [
+"frequently",
+"regularly",
+"commonly",
+"a lot"
+],
+"old": [
+"previous",
+"former",
+"past",
+"earlier"
+],
+"part": [
+"piece",
+"section",
+"portion",
+"component"
+],
+"place": [
+"spot",
+"location",
+"area",
+"site"
+],
+"plan": [
+"strategy",
+"scheme",
+"blueprint",
+"proposal"
+],
+"point": [
+"purpose",
+"objective",
+"goal",
+"message"
+],
+"problem": [
+"issue",
+"challenge",
+"difficulty",
+"headache"
+],
+"quick": [
+"fast",
+"rapid",
+"swift",
+"speedy"
+],
+"really": [
+"truly",
+"genuinely",
+"actually",
+"honestly"
+],
+"reason": [
+"cause",
+"motive",
+"basis",
+"rationale"
+],
+"result": [
+"outcome",
+"consequence",
+"effect",
+"end product"
+],
+"right": [
+"correct",
+"proper",
+"appropriate",
+"suitable"
+],
+"see": [
+"notice",
+"observe",
+"spot",
+"catch"
+],
+"seem": [
+"appear",
+"look like",
+"come across as"
+],
+"show": [
+"reveal",
+"display",
+"present",
+"demonstrate"
+],
+"simple": [
+"easy",
+"straightforward",
+"basic",
+"uncomplicated"
+],
+"small": [
+"tiny",
+"little",
+"modest",
+"minor"
+],
+"start": [
+"begin",
+"kick off",
+"launch",
+"get going"
+],
+"still": [
+"yet",
+"even so",
+"nevertheless"
+],
+"stop": [
+"halt",
+"cease",
+"end",
+"quit"
+],
+"think": [
+"believe",
+"consider",
+"reckon",
+"feel"
+],
+"try": [
+"attempt",
+"make an effort",
+"give it a shot"
+],
+"turn": [
+"shift",
+"change",
+"flip",
+"switch"
+],
+"use": [
+"employ",
+"apply",
+"put to work",
+"utilize"
+],
+"very": [
+"extremely",
+"incredibly",
+"super",
+"quite"
+],
+"want": [
+"need",
+"desire",
+"wish",
+"aim for"
+],
+"way": [
+"method",
+"approach",
+"manner",
+"strategy"
+],
+"work": [
+"job",
+"task",
+"labor",
+"effort"
+],
+"worth": [
+"valuable",
+"meaningful",
+"of value"
+]
+},
+"lexicon": [
+[
+"\\b(?:moreover|furthermore|additionally|in addition|lastly|finally),\\s*",
+""
+],
+[
+"\\bit is important to note that\\s*,?\\s*",
+""
+],
+[
+"\\bit is worth (?:noting|mentioning) that\\s*,?\\s*",
+""
+],
+[
+"\\bit should be (?:noted|emphasized) that\\s*,?\\s*",
+""
+],
+[
+"\\bit must be noted that\\s*,?\\s*",
+""
+],
+[
+"\\bit is (?:crucial|essential|imperative|vital) to\\s+",
+"it helps to "
+],
+[
+"\\bit is (?:evident|clear|apparent) that\\s*,?\\s*",
+"clearly, "
+],
+[
+"\\bin conclusion\\s*,?\\s*",
+""
+],
+[
+"\\bin summary\\s*,?\\s*",
+""
+],
+[
+"\\bto summarize\\s*,?\\s*",
+""
+],
+[
+"\\bto conclude\\s*,?\\s*",
+""
+],
+[
+"\\bas (?:previously )?mentioned(?: earlier)?\\s*,?\\s*",
+""
+],
+[
+"\\bas (?:discussed|noted) (?:earlier|above)\\s*,?\\s*",
+""
+],
+[
+"\\bneedless to say\\s*,?\\s*",
+""
+],
+[
+"\\blast but not least\\s*,?\\s*",
+""
+],
+[
+"\\bfirst and foremost\\s*,?\\s*",
+"first, "
+],
+[
+"\\bat the end of the day\\s*,?\\s*",
+""
+],
+[
+"\\bin today'?s world\\s*,?\\s*",
+""
+],
+[
+"\\bin today'?s digital landscape\\s*,?\\s*",
+"today "
+],
+[
+"\\bin this day and age\\s*,?\\s*",
+"now "
+],
+[
+"\\bin the modern era\\s*,?\\s*",
+"now "
+],
+[
+"\\bin the (?:contemporary|current) landscape\\s*,?\\s*",
+"today "
+],
+[
+"\\bin the realm of\\b",
+"in"
+],
+[
+"\\bas we navigate\\s+",
+"as we handle "
+],
+[
+"\\bplays? a (?:crucial|important|pivotal|key|vital|significant) role (?:in|of)\\b",
+"matters in"
+],
+[
+"\\bplays? a (?:crucial|important|pivotal|key|vital) role\\b",
+"matters"
+],
+[
+"\\bhas the potential to\\b",
+"can"
+],
+[
+"\\bdelve(?:s)? into\\b",
+"dig into"
+],
+[
+"\\bsheds? light on\\b",
+"shows"
+],
+[
+"\\bbrings? to the forefront\\b",
+"highlights"
+],
+[
+"\\bembarks? on a journey\\b",
+"starts"
+],
+[
+"\\bnavigat(?:e|es|ing) the\\b",
+"handle the"
+],
+[
+"\\ba myriad of\\b",
+"many"
+],
+[
+"\\ba multitude of\\b",
+"many"
+],
+[
+"\\ba (?:wide|broad|vast) (?:range|array) of\\b",
+"many"
+],
+[
+"\\ba significant number of\\b",
+"many"
+],
+[
+"\\ba (?:large|small) number of\\b",
+"many"
+],
+[
+"\\bin terms of\\b",
+"for"
+],
+[
+"\\bwhen it comes to\\b",
+"for"
+],
+[
+"\\bon the other hand\\s*,?\\s*",
+""
+],
+[
+"\\bas a result\\s*,?\\s*",
+"so "
+],
+[
+"\\bin order to\\b",
+"to"
+],
+[
+"\\bdue to the fact that\\b",
+"because"
+],
+[
+"\\bdespite the fact that\\b",
+"although"
+],
+[
+"\\ba (?:key|crucial|vital|critical) aspect of\\b",
+"a core part of"
+],
+[
+"\\bleverage(?:d|s|ing)?\\b",
+"use"
+],
+[
+"\\butilize(?:d|s|ing)?\\b",
+"use"
+],
+[
+"\\bfacilitate(?:d|s|ing)?\\b",
+"help"
+],
+[
+"\\bfoster(?:ed|s|ing)?\\b",
+"build"
+],
+[
+"\\bcultivat(?:e|ed|es|ing)\\b",
+"grow"
+],
+[
+"\\bempower(?:ed|s|ing)?\\b",
+"enable"
+],
+[
+"\\brobust\\b",
+"strong"
+],
+[
+"\\bcomprehensive(?:ly)?\\b",
+"complete"
+],
+[
+"\\binnovative\\b",
+"new"
+],
+[
+"\\bunprecedented\\b",
+"rare"
+],
+[
+"\\bseamless(?:ly)?\\b",
+"smooth"
+],
+[
+"\\bstreamline(?:d|s|ing)?\\b",
+"simplify"
+],
+[
+"\\bparadigm\\b",
+"model"
+],
+[
+"\\bsynerg(?:y|ies|istic(?:ally)?)\\b",
+"teamwork"
+],
+[
+"\\bmultifaceted\\b",
+"complex"
+],
+[
+"\\bholistic(?:ally)?\\b",
+"whole"
+],
+[
+"\\bcutting-edge\\b",
+"advanced"
+],
+[
+"\\bstate-of-the-art\\b",
+"modern"
+],
+[
+"\\bgroundbreaking\\b",
+"new"
+],
+[
+"\\btransformative\\b",
+"important"
+],
+[
+"\\bshowcase(?:d|s|ing)?\\b",
+"show"
+],
+[
+"\\bunderscore(?:d|s|ing)?\\b",
+"highlight"
+],
+[
+"\\belucidate(?:d|s|ing)?\\b",
+"explain"
+],
+[
+"\\bmitigat(?:e|ed|es|ing)\\b",
+"reduce"
+],
+[
+"\\bsynthesi[sz]e(?:d|s|ing)?\\b",
+"combine"
+],
+[
+"\\bmyriad\\b",
+"many"
+],
+[
+"\\bnevertheless\\b",
+"still"
+],
+[
+"\\bconsequently\\b",
+"so"
+],
+[
+"\\bsubsequently\\b",
+"then"
+],
+[
+"\\bthus,?\\s+",
+"so "
+],
+[
+"\\bhence,?\\s+",
+"so "
+],
+[
+"\\bdemonstrat(?:e|es|ed)\\b",
+"show"
+],
+[
+"\\billustrat(?:e|es|ed)\\b",
+"show"
+],
+[
+"\\bnotably\\b,?\\s*",
+""
+],
+[
+"\\bremarkably\\b,?\\s*",
+""
+],
+[
+"\\bsignificantly\\b,?\\s*",
+""
+],
+[
+"\\bessentially\\b,?\\s*",
+""
+]
+]
+}

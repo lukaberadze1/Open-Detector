@@ -57,8 +57,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from eval.human_swaps import human_swaps
 from opendetector.env import load_env
 
+HUMAN_PROFILE = "human_default_profile"  # the built-in profile, the only one word swaps run on
 GEMINI_API_URL = "https://generativelanguage.googleapis.com"
 GEMINI_OPENAI_URL = f"{GEMINI_API_URL}/v1beta/openai"
 DEFAULT_MODEL = "gemini-3.8-flash"
@@ -353,17 +355,20 @@ def temper_misspellings(text: str, shares: Iterable[tuple[str, str, float]]) -> 
 _CUT_SHORT = re.compile(r"(?:^|(?<=[.!?] ))([^\W\d_]+(?: [^\W\d_]+)?)\. +(?=[a-z])", re.M)
 
 
-def styled_clean(profile_path: Path | None, register: str | None = None) -> Callable[[str], str]:
+def styled_clean(profile_path: Path | None, register: str | None = None, swaps: bool = False) -> Callable[[str], str]:
     """clean_essay for samples in a style profile: also cuts spacing slips and recurring misspellings back
-    to how often the writer makes them, and rejoins sentences cut off to fit a sentence plan."""
+    to how often the writer makes them, and rejoins sentences cut off to fit a sentence plan. With `swaps`, the
+    built-in human profile's replies also get eval.human_swaps; no other profile's do."""
     if profile_path is None:
         return clean_essay
     registers = profile_registers(load_style_profile(profile_path))
     register = (register if register in registers else registers[0]) if registers else register
     rates, shares = quirk_rates(profile_path, register), misspelling_shares(profile_path, register)
 
+    swapped = human_swaps if swaps and Path(profile_path).stem == HUMAN_PROFILE else str
+
     def clean(reply: str) -> str:
-        return temper_misspellings(temper_quirks(_CUT_SHORT.sub(r"\1 ", clean_essay(reply)), rates), shares)
+        return swapped(temper_misspellings(temper_quirks(_CUT_SHORT.sub(r"\1 ", clean_essay(reply)), rates), shares))
 
     return clean
 

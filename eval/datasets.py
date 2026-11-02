@@ -182,6 +182,24 @@ def load_persuade(csv_path: str, n: int | None = None, seed: int = 0) -> pd.Data
     return _finish(out)
 
 
+def pairs_to_local(source: str | Path, out: str | Path) -> int:
+    """Write AI and human pairs (JSONL with `id`, `ai`, `human`, `gen_model`, as ClearRewriter's training/pairs.jsonl)
+    as `load_local` reads them: two rows a pair, sharing a `group_key` so a pair never straddles a split. Gives the
+    rows written, leaving out a pair missing either side."""
+    written = 0
+    with Path(out).open("w", encoding="utf-8") as output:
+        for line in Path(source).read_text(encoding="utf-8").splitlines():
+            pair = json.loads(line)
+            if not (pair.get("ai") or "").strip() or not (pair.get("human") or "").strip():
+                continue
+            for label, text, model in ((1, pair["ai"], pair.get("gen_model", "unknown")), (0, pair["human"], "human")):
+                row = {"id": f"{pair['id']}-{label}", "text": text, "label": label, "model": model,
+                       "group": "ai" if label else "human", "group_key": str(pair["id"]), "domain": "pairs"}
+                output.write(json.dumps(row, ensure_ascii=False) + "\n")
+                written += 1
+    return written
+
+
 def load_local(path: str, dataset: str | None = None) -> pd.DataFrame:
     """Your own data as JSONL or CSV. Needs `text` and `label` (0/1 or "human"/"ai");
     optional: id, domain, model, attack, group, group_key."""

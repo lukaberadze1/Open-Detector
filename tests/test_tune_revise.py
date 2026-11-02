@@ -44,3 +44,77 @@ def test_first_drafts_are_ranked_lowest_first_against_the_base():
     rows = {"base": [{"start": 0.9, "facts": 70.0, "words_kept": 50.0}], "idiom": [{"start": 0.5}]}
     lines = table(rows).splitlines()
     assert lines[6].startswith("| idiom | 1 | 50 | 50-50 | 1 | -40 |") and lines[7].startswith("| base | 1 | 90 |")
+
+
+def test_human_swaps_replace_stock_phrases_and_are_stable():
+    from eval.human_swaps import human_swaps
+
+    text = "Furthermore, it is important to note that the fleet did not utilize Salamis in order to win in 480 BC."
+    swapped = human_swaps(text)
+    assert "urthermore" not in swapped and "utilize" not in swapped.lower() and "in order to" not in swapped
+    assert "Salamis" in swapped and "480" in swapped and swapped[0].isupper()
+    assert swapped == human_swaps(text), "a text picks its swaps the same way every time"
+    assert human_swaps("") == ""
+
+
+def test_only_the_built_in_profile_gets_word_swaps(tmp_path):
+    import json
+
+    from eval.generate_essays import styled_clean
+
+    reply = "Furthermore, the fleet went north in the spring of that year."
+    for stem, swapped in (("human_default_profile", True), ("mine", False)):
+        path = tmp_path / f"{stem}.json"
+        path.write_text(json.dumps({"tone": "plain"}))
+        assert ("urthermore" not in styled_clean(path, swaps=True)(reply)) is swapped
+        assert "Furthermore" in styled_clean(path, swaps=False)(reply), "off unless asked for, as on a public deploy"
+
+
+def test_pairs_become_two_labelled_rows_sharing_a_group(tmp_path):
+    import json
+
+    from eval.datasets import load_local, pairs_to_local
+
+    source, out = tmp_path / "pairs.jsonl", tmp_path / "local.jsonl"
+    rows = [{"id": "a", "ai": "Machine text here.", "human": "My own text.", "gen_model": "m"},
+            {"id": "b", "ai": "", "human": "No machine side."}]
+    source.write_text("\n".join(json.dumps(row) for row in rows))
+    assert pairs_to_local(source, out) == 2
+    frame = load_local(str(out))
+    assert sorted(frame["label"]) == [0, 1] and set(frame["group_key"]) == {"a"}
+
+
+def test_the_free_round_trip_goes_through_every_hop_and_keeps_what_comes_back_wrong():
+    from eval.text_attacks import FREE_HOPS, free_round_trip
+
+    hops = []
+
+    def translate(text, source, target):
+        hops.append((source, target))
+        return text.replace("the", "that") if target == "en" else text
+
+    parts = ["In 480 the fleet met the enemy at the strait near the shore.", ""]
+    result, changed = free_round_trip(parts, translate, pause=0)
+    assert changed == 1 and "that fleet" in result[0] and result[1] == ""
+    assert hops == [("en", "de"), ("de", "fr"), ("fr", "en")] and FREE_HOPS == ("en", "de", "fr", "en")
+    lost, changed = free_round_trip(parts, lambda text, s, t: text.replace("480", "many"), pause=0)
+    assert lost == parts and changed == 0, "a paragraph that loses a number stays as it was"
+
+
+def test_the_free_round_trip_stops_quietly_when_the_endpoint_refuses():
+    from eval.text_attacks import free_round_trip
+
+    def refuse(text, source, target):
+        raise OSError("429")
+
+    parts = ["The first paragraph of this text goes here today.", "The second paragraph of this text goes here."]
+    assert free_round_trip(parts, refuse, pause=0) == (parts, 0)
+
+
+def test_only_the_built_in_profile_is_offered_the_free_round_trip():
+    import inspect
+
+    from ui import redteam
+
+    source = inspect.getsource(redteam._attacks)
+    assert "BUILTIN_STYLE_DIR" in source and "FREE_TRIP" in source

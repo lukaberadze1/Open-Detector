@@ -525,6 +525,54 @@ def test_revising_drops_what_loses_the_facts_however_well_it_scores():
     assert revise_blocks(texts, _document_detector(score), ask, str.strip, [], rounds=1, facts=True)[0] == {}
 
 
+def test_the_meaning_check_refuses_invented_names_flipped_negations_and_new_people():
+    from eval.redteam_batch import meaning_kept
+
+    passage = "The fleet of Xerxes met Themistocles at Salamis in 480 BC, and the allies did hold the strait."
+    assert meaning_kept(passage, "Themistocles and the allies held the strait at Salamis against Xerxes in 480 BC.")
+    assert not meaning_kept(passage, "Themistocles met Xerxes and Leonidas at Salamis in 480 BC and held the strait.")
+    assert meaning_kept(passage, "Themistocles met Xerxes and Leonidas at Salamis in 480 BC and held the strait.",
+                        "Leonidas died earlier."), "a name from elsewhere in the document is fine"
+    assert not meaning_kept(passage, "We watched Themistocles meet Xerxes at Salamis in 480 BC as allies held it.")
+    assert not meaning_kept(passage, "Xerxes never met Themistocles, not at Salamis, not in 480 BC, and no one held.")
+    assert not meaning_kept(passage, "Themistocles, Xerxes, Salamis, 480.")
+
+
+def test_the_lowest_scoring_of_several_candidates_is_kept_each_in_its_own_plan():
+    from eval.redteam_batch import revise_blocks
+
+    words = " ".join(["word"] * 20)
+    replies, keys = iter(["An ordinary passage about the bus.", "A better passage about the train.",
+                          "A worse passage about the car."]), []
+
+    def ask(prompt, pending):
+        keys.extend(job["key"] for job in pending)
+        return json.dumps({"blocks": [{"id": "B1", "text": next(replies)}]})
+
+    def score(current):
+        word = next((w for w in ("bus", "train", "car") if w in current), "")
+        return {"bus": 0.3, "train": 0.05, "car": 0.4}.get(word, 0.5)
+
+    changed, history = revise_blocks({"a": f"Tidy {words}"}, _document_detector(score), ask, str.strip, [], rounds=1,
+                                     candidates=3)
+    assert changed == {"a": "A better passage about the train."} and history == pytest.approx([0.5, 0.05])
+    assert len(set(keys)) == 3, "a different key, so a different borrowed plan, for each"
+
+
+def test_a_tie_between_candidates_goes_to_the_one_with_fewer_stock_phrases():
+    from eval.redteam_batch import revise_blocks
+
+    words = " ".join(["word"] * 20)
+    replies = iter(["Furthermore, a crucial passage about the bus.", "A plain passage about the bus."])
+
+    def ask(prompt, pending):
+        return json.dumps({"blocks": [{"id": "B1", "text": next(replies)}]})
+
+    changed, _ = revise_blocks({"a": f"Tidy {words}"}, _document_detector(lambda text: 0.2 if "bus" in text else 0.5),
+                               ask, str.strip, [], rounds=1, candidates=2)
+    assert changed == {"a": "A plain passage about the bus."}
+
+
 def test_revising_goes_on_while_it_helps_and_stops_when_it_stalls():
     from eval.redteam_batch import _stalled
 

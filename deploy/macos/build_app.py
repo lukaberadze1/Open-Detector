@@ -46,7 +46,8 @@ LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/Laun
 APP_FILES = ("app.py", "LICENSE", ".streamlit/config.toml", "models/combiner.json", "models/combiner_slim.json",
              "models/generation_tuning.json",
              "deploy/macos/launcher.py", "eval/__init__.py", "eval/generate_essays.py", "eval/redteam_batch.py",
-             "eval/evasion_mode.py", "eval/generation_settings.py", "eval/text_attacks.py", "eval/tune_generation.py",
+             "eval/evasion_mode.py", "eval/generation_settings.py", "eval/text_attacks.py", "eval/human_swaps.py",
+             "styles/human_default/swaps.json", "eval/tune_generation.py",
              "update_style_profile.py", "styles/human_default_profile.json", "styles/human_default/shapes.json",
              "styles/human_default/yardstick.json")
 APP_PACKAGES = ("opendetector", "ui")

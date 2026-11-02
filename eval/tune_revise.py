@@ -28,9 +28,9 @@ from pathlib import Path
 from eval import generate_essays
 from eval.generate_essays import (GEMINI_API_URL, APIError, QuotaExhausted, load_style_profile, style_instructions,
                                   styled_clean)
-from eval.redteam_batch import (GROUP_SCHEMA, REVISE, REVISE_KEEPING, WIN_BELOW, document_windows, revise_blocks,
-                                style_guard)
-from eval.text_attacks import CLAUSES, PIVOTS, attack_label, attack_name, run_attacks
+from eval.redteam_batch import (GROUP_SCHEMA, REVISE, REVISE_CANDIDATES, REVISE_KEEPING, WIN_BELOW, document_windows,
+                                revise_blocks, style_guard)
+from eval.text_attacks import CLAUSES, FREE_TRIP, PIVOTS, attack_label, attack_name, run_attacks
 from eval.tune_generation import StyleYardstick, _log_labelled, run_trial, sample_jobs, writer_shapes
 from opendetector.env import load_env
 from opendetector.metrics import wilson_interval
@@ -42,6 +42,11 @@ METHODS = ("sentences", "windows")
 BUSY_WAITS = (60, 120, 300, 300)  # seconds before writing a repeat again after a model is overloaded or times out
 # Instructions tried on top of the style profile, by name (--note); each is labelled in the attack.
 NOTES = {
+    "tells": "Leave out the habits that give AI writing away (from github.com/blader/humanizer): 'not X but Y', a "
+             "short closing line that repeats the point, a staged run-up before the point, things grouped in threes "
+             "when the meaning has no three parts, stacked qualifiers, inflated importance, sales language, a "
+             "trailing '-ing' clause, stock AI words, and comments on the writing itself. Where the style profile "
+             "says otherwise, it wins.",
     "active": "Prefer verbs to abstract nouns: write 'they decided' over 'they made a decision', and use the "
               "active voice wherever the sentence allows it.",
     "asymmetric": "Avoid even, balanced writing: don't give every point the same weight or length, skip the "
@@ -168,6 +173,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--rounds", type=int, default=10, help="at most: revising stops when it stalls")
     parser.add_argument("--methods", default="sentences", help="how to choose blocks to revise")
+    parser.add_argument("--candidates", type=int, default=REVISE_CANDIDATES,
+                        help="rewrites a passage gets each round, the best kept: the page's three use three times "
+                             "the requests")
     parser.add_argument("--note", choices=list(NOTES), action="append", default=[],
                         help="an instruction added to the style profile; repeat it to stack them")
     parser.add_argument("--no-guard", action="store_true",
@@ -175,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--as-page", action="store_true",
                         help="revise as the page does: keep names and numbers, and stay close to the style profile")
     parser.add_argument("--attack", action="append", default=[],
-                        choices=[CLAUSES, *(attack_name(pivot) for pivot in PIVOTS)],
+                        choices=[CLAUSES, FREE_TRIP, *(attack_name(pivot) for pivot in PIVOTS)],
                         help="run on each rewrite before revising (eval/text_attacks.py); repeat it to stack them")
     parser.add_argument("--top-p", type=float, help="the models' top-p, unset by default")
     parser.add_argument("--top-k", type=int, help="the models' top-k, unset by default")
@@ -198,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
         style += f"+{note}"
     style += f"+t{args.temperature:g}" + ("+as-page" if args.as_page else "") + ("+no-guard" if args.no_guard else "")
     sampling = {option: value for option, value in (("top_p", args.top_p), ("top_k", args.top_k)) if value is not None}
-    style += "+draft" if not args.rounds else ""  # the first draft alone: --rounds 0 revises nothing
+    style += f"+best{args.candidates}" if args.rounds else "+draft"
     style += attack_label(args.attack) + "".join(f"+{option}{value:g}" for option, value in sampling.items())
     methods = [method.strip() for method in args.methods.split(",") if method.strip()]
     saved = [json.loads(line) for line in args.out.open(encoding="utf-8")] if args.out.exists() else []
@@ -212,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
 
         detector = Detector.from_config(DetectorConfig.for_profile("slim"))
         shapes = writer_shapes(args.style, args.register)
-        clean = styled_clean(args.style, args.register)
+        clean = styled_clean(args.style, args.register, swaps=True)
 
         def ask(prompt: str, pending: list[dict]) -> str:
             return generate_essays.chat(GEMINI_API_URL, api_key, args.model, prompt, args.temperature, retries=2,
@@ -252,7 +260,8 @@ def main(argv: list[str] | None = None) -> int:
                     changed, history = revise_blocks(
                         parts, detector.analyze, ask, clean, shapes, args.rounds, fits=fits,
                         windows=document_windows(detector) if method == "windows" else None,
-                        prompt=REVISE_KEEPING if args.as_page else REVISE, facts=args.as_page)
+                        prompt=REVISE_KEEPING if args.as_page else REVISE, facts=args.as_page,
+                        candidates=args.candidates)
                     # A run with --rounds 0 and nothing more measures the attack alone.
                     text = "\n\n".join(changed.get(key, part) for key, part in parts.items())
                     row[method] = {"history": history, "changed": len(changed), "words": count_words(text),

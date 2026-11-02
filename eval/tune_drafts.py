@@ -3,7 +3,8 @@
 this screens every change first. It runs eval.tune_revise --rounds 0 once per setup, each change on its own, then
 writes eval/reports/drafts.md, best first. Each setup keeps its runs in eval/cache/drafts/, so a stopped run resumes.
 Everything written is logged as labelled AI data. Spends quota: a few requests a draft. Moving clauses around isn't
-here: on 20 saved rewrites it left the mean at 72.4% (2026-11-02), since it changes only a sentence or two.
+here: on 20 saved rewrites it left the mean at 72.4% (2026-11-02), since it changes only a sentence or two. Nor is
+the free round trip, which Google's bot check refused on its first request the same night.
 Screen on documents other than those kept back for the final proof (data/essays/sources/fresh/).
 
     python -m eval.tune_drafts data/essays/sources/claude_salamis.md data/essays/sources/revise/mage-15379.md
