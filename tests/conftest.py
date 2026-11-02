@@ -18,3 +18,12 @@ def own_limits(monkeypatch, tmp_path_factory):
     from eval import generation_settings
 
     monkeypatch.setattr(generation_settings, "LIMITS", tmp_path_factory.mktemp("limits") / "model_limits.json")
+
+
+@pytest.fixture(autouse=True)
+def own_visitors(monkeypatch, tmp_path_factory):
+    """Every test keeps visitors' folders in a folder of its own, so a public-mode run of the app never
+    sweeps this computer's data/visitors."""
+    from ui import redteam
+
+    monkeypatch.setattr(redteam, "VISITOR_DIR", tmp_path_factory.mktemp("visitors") / "visitors")

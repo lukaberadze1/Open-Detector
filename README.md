@@ -37,8 +37,8 @@ person on a score alone.
 
 Try both pages at https://open-detector.streamlit.app. In the Adversarial Lab, paste your own Gemini
 key in the sidebar. Samples are written in the built-in human style profile, measured from 1,750
-texts by different people, unless you add a profile of your own; your key and profile are kept only
-for your browser session.
+texts by different people, unless you add a profile of your own. Your key lasts for your browser
+session, and what you upload or generate is deleted from the server after 24 hours unused.
 
 ## Download the Mac app
 

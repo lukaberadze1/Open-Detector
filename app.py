@@ -41,6 +41,10 @@ page = st.navigation(pages, position="top" if len(pages) > 1 else "hidden")
 if not style.public() and not prefs.load().get("welcomed"):
     prefs.update(welcomed=True)  # the Guide opens first once per computer, then stays a tab away
     st.switch_page(nav.guide_page())
+if style.public():
+    from ui import redteam
+
+    redteam.tend_visitor_folders()  # here, so old folders still go on a day visitors only check texts
 with st.sidebar:
     models.profile_picker()
 page.run()

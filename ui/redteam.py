@@ -7,7 +7,8 @@ each block as they go (eval/redteam_batch.py), so reruns, page switches and clos
 
 On a public deploy (OPENDETECTOR_PUBLIC=on) each visitor brings their own Gemini key and style
 profile, nothing reads the host's keys, and each visitor's samples, profiles and batches are kept in
-a folder of their own under data/visitors/ for as long as their browser session lasts.
+a folder of their own under data/visitors/, which is deleted once it has gone unused for
+VISITOR_KEEP_HOURS (tend_visitor_folders).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -103,6 +105,8 @@ OUTPUT_PATH = DATA_ROOT / "data/essays/local_redteam.jsonl"
 EXPORT_DIR = DATA_ROOT / "data/essays/exports"
 BATCH_DIR = DATA_ROOT / "data/essays/batches"
 VISITOR_DIR = DATA_ROOT / "data/visitors"  # a public deploy's per-visitor folders
+VISITOR_KEEP_HOURS = 24  # how long a visitor's folder stays after it was last used
+VISITOR_SWEEP_SECONDS = 3600  # how often, at most, the server looks for folders past that
 MAX_STYLE_BYTES = 500_000
 EVASION_TARGET = 0.05  # configured detector-challenge benchmark target
 STYLE_FLOOR = 35  # minimum style-profile percentile used to rank challenge candidates
@@ -207,6 +211,73 @@ def _own_batches() -> dict[str, BatchWorker]:
     """The batches this session may see: those whose checkpoints are in its own store."""
     batches = _store().batches
     return {path: worker for path, worker in running_batches().items() if Path(path).parent == batches}
+
+
+@st.cache_resource
+def _sweep_clock() -> dict:
+    """When the server last looked for old visitor folders, shared by every session."""
+    return {"lock": threading.Lock(), "last": 0.0}
+
+
+def _last_touched(folder: Path) -> float:
+    """The newest change anywhere in a folder. A folder's own time misses a write to a file further down,
+    such as a batch checkpoint or a sample added to the log."""
+    newest = folder.lstat().st_mtime
+    for parent, directories, files in os.walk(folder):  # doesn't follow links
+        for name in directories + files:
+            with contextlib.suppress(OSError):  # gone since the walk listed it
+                newest = max(newest, os.lstat(os.path.join(parent, name)).st_mtime)
+    return newest
+
+
+def purge_visitor_folders(now: float | None = None) -> list[Path]:
+    """Delete the visitors' folders unused for VISITOR_KEEP_HOURS and return them. Only on a public deploy,
+    only real folders directly inside VISITOR_DIR, and never one with a batch still running. A batch that
+    ended with nobody left to see it goes with its folder, or its worker would stay in memory for good."""
+    if not public():
+        return []
+    cutoff = (time.time() if now is None else now) - VISITOR_KEEP_HOURS * 3600
+    batches = running_batches()
+    removed = []
+    try:
+        root = VISITOR_DIR.resolve()
+        folders = list(VISITOR_DIR.iterdir())
+    except OSError:  # no visitor has saved anything yet
+        return removed
+    for folder in folders:
+        try:
+            if folder.is_symlink() or not folder.is_dir() or folder.resolve().parent != root:
+                continue
+            own = {path: worker for path, worker in list(batches.items()) if Path(path).is_relative_to(folder)}
+            if any(worker.is_alive() for worker in own.values()) or _last_touched(folder) > cutoff:
+                continue
+            shutil.rmtree(folder)
+        except OSError:  # tried again at the next sweep
+            continue
+        for path in own:
+            batches.pop(path, None)
+        removed.append(folder)
+    return removed
+
+
+def tend_visitor_folders() -> None:
+    """Called on every run of every page of a public deploy (app.py). Marks this session's folder as in use,
+    so a visitor who comes back to an open tab keeps their work, and now and then deletes old folders."""
+    if not public():
+        return
+    if visitor := st.session_state.get("redteam:visitor"):
+        with contextlib.suppress(OSError):  # nothing saved yet
+            os.utime(VISITOR_DIR / visitor)
+    clock = _sweep_clock()
+    if not clock["lock"].acquire(blocking=False):
+        return  # another session is on it
+    try:
+        now = time.time()
+        if now - clock["last"] >= VISITOR_SWEEP_SECONDS:
+            clock["last"] = now
+            purge_visitor_folders(now)
+    finally:
+        clock["lock"].release()
 
 
 @dataclass
@@ -625,7 +696,8 @@ def _setup(profile: str, conn: Connection) -> Plan:
                             format_func=lambda stem: BUILTIN_NAMES.get(stem, stem),
                             help="Human (built in) is how people write, measured from 1,750 texts by different "
                                  "writers. A profile of one writer, added below, reads more like that writer. "
-                                 + ("Yours are kept for this browser session." if public() else
+                                 + ("Yours last for this browser session, and the server deletes them after "
+                                    f"{VISITOR_KEEP_HOURS} hours unused." if public() else
                                     "Yours are the JSON files in data/styles/."))
         plan.style_path = styles[name] if use_style else None
         _register(plan)
@@ -637,7 +709,8 @@ def _setup(profile: str, conn: Connection) -> Plan:
         "Add your own style profile", type="json", key="redteam:style_upload", on_change=_add_style_profile,
         help="A JSON style profile of one writer, in the format of style_profile_template.json, for samples "
              "that read like that writer rather than people in general. "
-             + ("It is kept only for this browser session." if public() else "It is saved in data/styles/."),
+             + (f"It lasts for this browser session, and the server deletes it after {VISITOR_KEEP_HOURS} hours "
+                "unused." if public() else "It is saved in data/styles/."),
     )
     if style_notice := st.session_state.pop("redteam:style_notice", None):
         getattr(st, style_notice[0])(style_notice[1])
@@ -2048,6 +2121,10 @@ def render() -> None:
         return
     st.caption(":material/science: Evaluation use only. Outputs are AI-generated challenge data and should remain "
                "labelled as such when shared or analyzed.")
+    if public():
+        st.caption(f":material/schedule: What you upload and generate here is deleted from this site's server after "
+                   f"{VISITOR_KEEP_HOURS} hours unused, and reloading the page starts afresh, so download what you "
+                   "want to keep.")
 
     generate_tab, saved_tab = st.tabs(["Generate challenges", "Challenge results"])
     with generate_tab:

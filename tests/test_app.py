@@ -3,7 +3,9 @@ combiners, and a stand-in text model on the Red team page writing to a temporary
 
 import io
 import json
+import os
 import re
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -549,6 +551,129 @@ def test_public_visitors_see_only_their_own_profiles_and_samples(stub_model, mon
     assert any("No samples yet" in i.value for i in other.info)
 
 
+DAY = 24 * 3600
+
+
+def visitor_folder(root, name, age):
+    """A visitor's folder with a sample and a batch checkpoint, everything in it last changed `age` seconds ago."""
+    folder = root / name
+    (folder / "batches").mkdir(parents=True)
+    (folder / "local_redteam.jsonl").write_text("{}\n")
+    (folder / "batches" / "b.json").write_text("{}")
+    then = time.time() - age
+    for path in [*folder.rglob("*"), folder]:
+        os.utime(path, (then, then))
+    return folder
+
+
+@pytest.fixture
+def visitors(monkeypatch, tmp_path):
+    """A public deploy's visitor folder, kept under tmp_path, with no batches and a clock that has yet to sweep."""
+    from ui import redteam
+
+    root = tmp_path / "visitors"
+    root.mkdir()
+    batches, clock = {}, {"lock": threading.Lock(), "last": 0.0}
+    monkeypatch.setattr(redteam, "VISITOR_DIR", root)
+    monkeypatch.setattr(redteam, "running_batches", lambda: batches)
+    monkeypatch.setattr(redteam, "_sweep_clock", lambda: clock)
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
+    return SimpleNamespace(root=root, batches=batches, clock=clock)
+
+
+def test_visitor_folders_go_once_unused_for_the_keeping_period(visitors):
+    from ui import redteam
+
+    old = visitor_folder(visitors.root, "old", 2 * DAY)
+    recent = visitor_folder(visitors.root, "recent", DAY / 2)
+    deep = visitor_folder(visitors.root, "deep", 2 * DAY)
+    (deep / "batches" / "b.json").write_text("{}")  # the folder's own time doesn't show this one
+    assert redteam.purge_visitor_folders() == [old]
+    assert not old.exists() and recent.exists() and deep.exists()
+
+
+def test_a_local_run_never_deletes_visitor_folders(visitors, monkeypatch):
+    from ui import redteam
+
+    folder = visitor_folder(visitors.root, "old", 2 * DAY)
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "off")
+    assert redteam.purge_visitor_folders() == []
+    redteam.tend_visitor_folders()
+    assert folder.exists() and visitors.clock["last"] == 0.0
+
+
+def test_a_folder_with_a_running_batch_stays_and_an_ended_one_goes(visitors):
+    from ui import redteam
+
+    running = visitor_folder(visitors.root, "running", 2 * DAY)
+    ended = visitor_folder(visitors.root, "ended", 2 * DAY)
+    visitors.batches[str(running / "batches" / "b.json")] = SimpleNamespace(is_alive=lambda: True)
+    visitors.batches[str(ended / "batches" / "b.json")] = SimpleNamespace(is_alive=lambda: False)
+    assert redteam.purge_visitor_folders() == [ended]
+    assert running.exists()
+    assert list(visitors.batches) == [str(running / "batches" / "b.json")], "the ended batch's worker is let go"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="making links on Windows needs extra rights")
+def test_deleting_visitor_folders_never_leaves_their_folder(visitors, tmp_path):
+    from ui import redteam
+
+    outside = visitor_folder(tmp_path, "outside", 2 * DAY)
+    (visitors.root / "link").symlink_to(outside, target_is_directory=True)
+    stray = visitors.root / "stray.txt"
+    stray.write_text("not a visitor's folder")
+    os.utime(stray, (0, 0))
+    inner = visitor_folder(visitors.root, "inner", 2 * DAY)
+    (inner / "out").symlink_to(outside, target_is_directory=True)
+    os.utime(inner / "out", (0, 0), follow_symlinks=False)
+    os.utime(inner, (0, 0))
+    assert redteam.purge_visitor_folders() == [inner]
+    assert (outside / "local_redteam.jsonl").exists() and (visitors.root / "link").is_symlink() and stray.exists()
+
+
+def test_visitor_folders_are_swept_at_most_now_and_then(visitors):
+    from ui import redteam
+
+    first = visitor_folder(visitors.root, "first", 2 * DAY)
+    redteam.tend_visitor_folders()
+    assert not first.exists()
+    second = visitor_folder(visitors.root, "second", 2 * DAY)
+    redteam.tend_visitor_folders()
+    assert second.exists(), "not swept again so soon"
+    visitors.clock["last"] -= redteam.VISITOR_SWEEP_SECONDS
+    redteam.tend_visitor_folders()
+    assert not second.exists()
+
+
+def test_any_page_sweeps_and_a_returning_visitor_keeps_their_folder(visitors, monkeypatch, tmp_path):
+    from ui import prefs
+
+    monkeypatch.setattr(prefs, "PATH", tmp_path / "ui_prefs.json")
+    abandoned = visitor_folder(visitors.root, "abandoned", 2 * DAY)
+    returning = visitor_folder(visitors.root, "returning", 2 * DAY)
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.session_state["redteam:visitor"] = "returning"
+    at.run()
+    assert not at.exception, at.exception
+    assert not abandoned.exists() and returning.exists()
+
+
+def test_a_visitor_whose_folder_was_deleted_carries_on(stub_model, monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
+    at = public_page("a")
+    at.text_input(key="keep:redteam:api_key").input("visitor-key")
+    at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
+    button(at, "Generate challenge sample").click()
+    at.run()
+    folder = tmp_path / "visitors" / "a"
+    assert (folder / "local_redteam.jsonl").is_file()
+    shutil.rmtree(folder)
+    button(at, "Generate challenge sample").click()
+    at.run()
+    assert not at.exception, at.exception
+    assert len((folder / "local_redteam.jsonl").read_text().splitlines()) == 1
+
+
 def test_public_visitors_dont_see_each_others_batches(stub_model, monkeypatch):
     from ui.components import Upload
 
@@ -844,6 +969,7 @@ def test_a_public_guide_explains_where_the_key_goes_and_saves_nothing(monkeypatc
     assert len(at.text_input) == 0, "no key box: a visitor's key goes in the Adversarial Lab's sidebar"
     text = " ".join(block.value for block in at.markdown)
     assert "never writes it down" in text and "Remember it on this device" in text
+    assert "deleted after 24 hours unused" in text
 
 
 def test_a_visitor_can_keep_their_key_on_their_own_device_and_forget_it(stub_model, monkeypatch):

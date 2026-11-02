@@ -213,9 +213,11 @@ while the tab is open; **Remember it on this device** asks the visitor's own bro
 this site (`ui/device_storage.py`, a small component that answers only the app on its own origin),
 so it fills in again on that device and no other, and **Forget it on this device** removes it. Samples
 are written in the built-in human profile unless the visitor adds their own with **Add your own style
-profile**, kept only for that browser session; the host's own keys and `data/styles/` profiles are
+profile**, usable only in that browser session; the host's own keys and `data/styles/` profiles are
 never used. Each visitor sees only their own samples and batches, and reloading the page starts
-afresh, so download what you want to keep. Public mode always writes with Gemini: the API address
+afresh, so download what you want to keep. Their folder on the server is deleted once it has gone
+unused for 24 hours (`VISITOR_KEEP_HOURS`), unless a batch is still running in it; the server checks
+at most hourly, while the app is running. Public mode always writes with Gemini: the API address
 can't be changed and there is no local fallback. The Guide is there too, saving nothing: it explains
 where a visitor's key goes.
 

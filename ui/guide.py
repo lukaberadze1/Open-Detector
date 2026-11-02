@@ -92,6 +92,8 @@ def _key_panel() -> None:
 
 
 def _public_key_panel() -> None:
+    from .redteam import VISITOR_KEEP_HOURS
+
     with st.container(key="od-panel-guide-key"):
         st.subheader("Your Gemini key, for the Adversarial Lab")
         st.markdown(
@@ -107,7 +109,10 @@ def _public_key_panel() -> None:
             "again next time.\n"
             "- **Remember it on this device.** Your browser keeps it for this site, on this device only, and "
             "fills it in next time. **Forget it on this device** removes it. Don't turn it on on a shared or "
-            "public computer."
+            "public computer.\n\n"
+            "**Where your work goes.** What you upload or generate in the lab is saved on this site's server in a "
+            f"folder only your browser session can open, and deleted after {VISITOR_KEEP_HOURS} hours unused. "
+            "Reloading the page starts afresh, so download what you want to keep."
         )
         st.page_link(nav.redteam_page(), label="Open the Adversarial Lab", icon=":material/science:")
 

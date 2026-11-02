@@ -202,7 +202,10 @@ To regenerate both shipped combiners after the caches change:
     address to Gemini (a visitor-chosen URL would let them make the server fetch any address),
     and keeps each browser session's samples, profiles and batches in `data/visitors/<id>/`
     through `_store()` and `_own_batches()`. New code that writes or lists saved work must go
-    through those, never the module-level paths.
+    through those, never the module-level paths. `tend_visitor_folders` (run by `app.py` on every page,
+    public mode only) deletes a folder unused for `VISITOR_KEEP_HOURS`, checking at most every
+    `VISITOR_SWEEP_SECONDS`, never one with a live batch in `running_batches()`. The Guide, the lab
+    page, `README.md` and `DETECTOR.md` tell visitors the period, so change them together.
   - **The downloadable app** (`OPENDETECTOR_PACKAGED=on`) keeps its user's key and samples like a
     local run, and offers no local text model by default. It does offer robustness mode, the owner's
     choice; public mode does not, so keep drafting aids out of public mode.
