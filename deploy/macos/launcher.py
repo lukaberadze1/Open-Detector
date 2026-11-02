@@ -101,15 +101,19 @@ def wait_for_exit(parent: int) -> None:
 
 def start_server(port: int) -> subprocess.Popen:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if LOG_PATH.exists():
-        LOG_PATH.replace(LOG_PATH.with_name("server.previous.log"))
+    path = LOG_PATH
+    try:
+        if path.exists():
+            path.replace(path.with_name("server.previous.log"))
+    except PermissionError:  # Windows: a server of another open window still has it open
+        path = path.with_name(f"server-{os.getpid()}.log")
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     if not WINDOWS:
         # Apps opened from the Finder get a bare PATH; add Homebrew's for the tools the app calls.
         env["PATH"] = os.pathsep.join([os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
                                        "/opt/homebrew/bin", "/usr/local/bin"])
     env.pop("PYTHONEXECUTABLE", None)  # set by the app bundle for the launcher only
-    with LOG_PATH.open("w") as log:
+    with path.open("w") as log:
         return subprocess.Popen([sys.executable, __file__, "--serve", str(port), "--parent", str(os.getpid())],
                                 cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                 creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)

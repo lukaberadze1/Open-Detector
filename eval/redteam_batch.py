@@ -48,6 +48,19 @@ def batch_key(*parts) -> str:
     return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
+def replace_file(source: Path, target: Path, tries: int = 20) -> None:
+    """os.replace that waits out a moment's lock. Windows refuses while anything has the target open: the
+    page reading the batch's progress, or antivirus looking at the file just written."""
+    for attempt in range(tries):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == tries - 1:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
 @dataclass
 class Checkpoint:
     """A batch's progress on disk: `meta` describes the batch and `blocks` maps each block's key to
@@ -82,7 +95,7 @@ class Checkpoint:
             temporary = self.path.with_name(self.path.name + ".tmp")
             temporary.write_text(json.dumps({"meta": self.meta, "blocks": self.blocks}, ensure_ascii=False),
                                  encoding="utf-8")
-            os.replace(temporary, self.path)
+            replace_file(temporary, self.path)
 
     def update(self, key: str, **fields) -> None:
         with self._lock:

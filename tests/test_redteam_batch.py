@@ -1,6 +1,7 @@
 """Block-by-block checkpoints for the red-team generator app's batches."""
 
 import json
+import os
 import re
 import threading
 from types import SimpleNamespace
@@ -527,3 +528,29 @@ def test_a_word_swap_is_kept_only_if_it_helps_and_keeps_the_text():
     assert redteam_batch.plainer_words(text, vocabulary, reply(split), str)[0] == text, "sentences changed"
     asked.clear()
     assert redteam_batch.plainer_words(text, set(), reply(good), str)[0] == text and not asked, "nothing to compare"
+
+
+def test_saving_waits_out_a_moment_when_windows_has_the_file_locked(tmp_path, monkeypatch):
+    real, calls = os.replace, []
+
+    def locked_at_first(source, target):
+        calls.append(target)
+        if len(calls) < 3:
+            raise PermissionError(5, "Access is denied")
+        real(source, target)
+
+    monkeypatch.setattr(redteam_batch.os, "replace", locked_at_first)
+    monkeypatch.setattr(redteam_batch.time, "sleep", lambda seconds: None)
+    checkpoint = redteam_batch.Checkpoint.start(tmp_path / "batch.json", {"source": "a"})
+    assert len(calls) == 3
+    assert redteam_batch.Checkpoint.load(checkpoint.path).meta["source"] == "a"
+
+
+def test_saving_gives_up_on_a_lock_that_stays(tmp_path, monkeypatch):
+    def locked(source, target):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(redteam_batch.os, "replace", locked)
+    monkeypatch.setattr(redteam_batch.time, "sleep", lambda seconds: None)
+    with pytest.raises(PermissionError):
+        redteam_batch.replace_file(tmp_path / "a", tmp_path / "b", tries=3)
