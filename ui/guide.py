@@ -35,7 +35,7 @@ def check_key(key: str) -> tuple[bool, str | None]:
             return False, "Google didn't accept this key. Copy all of it again from the key page and paste it here."
         return True, f"Saved, but Google answered with an error ({exc.code}), so it couldn't be checked just now."
     except OSError:
-        return True, "Saved, but this Mac couldn't reach Google to check it. Check your internet connection."
+        return True, "Saved, but this computer couldn't reach Google to check it. Check your internet connection."
 
 
 def _where() -> str:
@@ -156,7 +156,7 @@ def render() -> None:
             + (" (this site doesn't remember it between visits)" if public else "") + ". For light or dark, "
             "use the **⋮** menu at the top right, then **Settings**.\n"
             + ("- **This site runs Slim,** the strongest single engine, which scores as well as Full on the "
-               "project's tests. The Mac app can run Full too.\n" if public else
+               "project's tests. The downloadable app can run Full too.\n" if public else
                "- **Slim or Full:** Slim, the strongest single engine, scores as well as Full on the project's "
                "tests and needs about 1.5 GB of memory. Full adds two more engines, needs about 3.5 GB and "
                f"downloads about {models.download_gb('full') - models.download_gb('slim'):.1f} GB more.\n")

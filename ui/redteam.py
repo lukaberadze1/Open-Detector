@@ -179,7 +179,7 @@ def public() -> bool:
 
 
 def packaged() -> bool:
-    """Whether this is the downloadable Mac app (deploy/macos/build_app.py --standalone). It keeps its
+    """Whether this is the downloadable app (`build_app.py --standalone`, Mac or Windows). It keeps its
     user's key and samples like a local run, but serves people this project doesn't know, so it offers
     no local text model by default."""
     return os.environ.get("OPENDETECTOR_PACKAGED", "").strip().lower() in ("1", "on", "true", "yes")
@@ -301,16 +301,35 @@ def duration(seconds: float) -> str:
     return f"{seconds / 60:.0f} min" if seconds >= 90 else f"{seconds:.0f} s"
 
 
+# Windows' caffeinate: asks the system to stay awake and holds the mutex until this server stops.
+_WINDOWS_KEEP_AWAKE = """
+import ctypes, sys
+kernel32 = ctypes.WinDLL("kernel32")
+kernel32.CreateMutexW.restype = kernel32.OpenProcess.restype = ctypes.c_void_p
+kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+kernel32.SetThreadExecutionState.argtypes = [ctypes.c_uint32]
+mutex = kernel32.CreateMutexW(None, False, sys.argv[1])
+kernel32.SetThreadExecutionState(0x80000001)  # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+server = kernel32.OpenProcess(0x00100000, False, int(sys.argv[2]))  # SYNCHRONIZE
+if server:
+    kernel32.WaitForSingleObject(server, 0xFFFFFFFF)
+"""
+BATCH_MUTEX = "Local\\OpenDetectorBatch"  # deploy/macos/launcher.py looks for this one
+
+
 def _keep_awake() -> subprocess.Popen | None:
-    """Keep the Mac from going to sleep while a batch runs: until the returned process is ended, or
-    this server stops. Nothing happens on other systems. The Mac app (deploy/macos/launcher.py)
-    looks for this caffeinate child to ask before quitting during a batch."""
-    if sys.platform != "darwin":
-        return None
+    """Keep the computer from going to sleep while a batch runs: until the returned process is ended, or
+    this server stops. Nothing happens on Linux. The desktop app (deploy/macos/launcher.py) looks for
+    this process to ask before quitting during a batch."""
     try:
-        return subprocess.Popen(["caffeinate", "-i", "-s", "-w", str(os.getpid())])
+        if sys.platform == "darwin":
+            return subprocess.Popen(["caffeinate", "-i", "-s", "-w", str(os.getpid())])
+        if sys.platform == "win32":
+            return subprocess.Popen([sys.executable, "-c", _WINDOWS_KEEP_AWAKE, BATCH_MUTEX, str(os.getpid())],
+                                    creationflags=subprocess.CREATE_NO_WINDOW)
     except OSError:
-        return None
+        pass
+    return None
 
 
 def _notify(message: str) -> None:
@@ -2112,7 +2131,7 @@ def render() -> None:
         # Generator mode: while a batch runs, the page shows only its progress. One batch runs at a time.
         st.markdown("A batch is running. Keep this tab open: reloading or closing it loses the results."
                     if public() else
-                    "A batch is running. The detector is unloaded until the blocks are written, and the Mac stays "
+                    "A batch is running. The detector is unloaded until the blocks are written, and the computer stays "
                     "awake until it ends. You can close this tab: a notification says when it's done.")
         for worker in running:
             _batch_progress(worker)

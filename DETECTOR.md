@@ -371,6 +371,12 @@ This writes `models/combiner.json`, which the app picks up automatically, and
 RAID-test has about 672k texts, so run this on a GPU machine. Then open a pull request to
 [liamdugan/raid](https://github.com/liamdugan/raid). Declare it if the combiner saw RAID-train.
 
+## Install on Windows
+
+The Windows download comes from `.github/workflows/windows-app.yml`, which builds, installs and checks
+`Open-Detector-Setup.exe` on GitHub's Windows machines. Publishing a release attaches the file to it.
+The code is in `deploy/windows/`.
+
 ## Install as a Mac app
 
 `deploy/macos/build_app.py` makes **Open Detector.app** in `~/Applications` (`--dest` picks another

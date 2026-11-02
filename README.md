@@ -72,6 +72,22 @@ The texts you check never leave your Mac. Your key and generated challenge sampl
 To update, download the newest file and replace the app; your key and samples stay. To remove it,
 drag the app to the Bin and delete those two folders.
 
+## Download for Windows
+
+The same app for Windows 10 or 11 (64-bit), with about 4 GB of free space. It needs no administrator
+password and runs on the processor, not the graphics card.
+
+1. Download **[Open-Detector-Setup.exe](https://github.com/lukaberadze1/Open-Detector/releases/latest/download/Open-Detector-Setup.exe)**.
+2. Open the downloaded file. Windows may say it protected your PC, because this free app isn't
+   registered with Microsoft: press **More info**, then **Run anyway**. You only do this once per download.
+3. Press **Install**, then open **Open Detector** from the Start menu.
+4. The app opens on its **Guide**, as on a Mac. Your first check downloads the detector, about 1.7 GB, once.
+
+The texts you check never leave your computer. Your key and samples are kept in
+`%LOCALAPPDATA%\Open Detector`, and the downloaded models in `%USERPROFILE%\.cache\huggingface`.
+To update, run the newest file; your key and samples stay. To remove it, use **Settings > Apps > Installed
+apps** and delete those two folders.
+
 ## How it scores
 
 Three engines score overlapping windows of the whole text: GLYPH (DeBERTa-v3-base), Desklib
@@ -122,6 +138,15 @@ That app runs your checkout. To build the self-contained download instead, `dist
 
 ```bash
 .venv/bin/python deploy/macos/build_app.py --standalone --dmg
+```
+
+The Windows download, `dist/Open-Detector-Setup.exe`, builds on GitHub's Windows machines
+(`.github/workflows/windows-app.yml`), so it needs no Windows computer. Publishing a release adds the
+file to it, and **Run workflow** on the Actions page builds it for download from the run. After changing
+package versions in the `.venv`, update the versions it installs:
+
+```bash
+.venv/bin/python deploy/windows/build_app.py --pin
 ```
 
 To score a file from the command line:

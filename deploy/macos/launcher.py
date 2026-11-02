@@ -1,12 +1,13 @@
-"""Open Detector as a Mac app: the Streamlit app in a native window of its own.
+"""Open Detector as a desktop app: the Streamlit app in a native window of its own, on a Mac or on Windows.
 
     .venv/bin/python deploy/macos/launcher.py      # what Open Detector.app runs; works from a terminal too
 
 Starts the app's server on 127.0.0.1 only, shows a loading page until it answers, then shows the
-app in a WebKit window. Closing the window or quitting stops the server, after asking first if a Red
-team batch is still running. If the launcher dies some other way, the server notices and stops
-itself. The server's output goes to ~/Library/Logs/Open Detector/server.log, and the page offers it
-if the server fails. build_app.py wraps this script in Open Detector.app.
+app in a WebKit window (WebView2 on Windows). Closing the window or quitting stops the server, after
+asking first if a Red team batch is still running. If the launcher dies some other way, the server
+notices and stops itself. The server's output goes to ~/Library/Logs/Open Detector/server.log
+(%LOCALAPPDATA%\\Open Detector\\Logs on Windows), and the page offers it if the server fails.
+build_app.py wraps this script in Open Detector.app, deploy/windows/build_app.py in Open Detector.exe.
 """
 
 from __future__ import annotations
@@ -28,8 +29,13 @@ ROOT = Path(__file__).resolve().parents[2]
 # The app's data folder, as opendetector/config.py finds it (this script runs before any of the app loads).
 DATA_ROOT = Path(os.environ["OPENDETECTOR_HOME"]).expanduser() if os.environ.get("OPENDETECTOR_HOME") else ROOT
 APP_NAME = "Open Detector"
-LOG_PATH = Path.home() / "Library/Logs" / APP_NAME / "server.log"
-WINDOW_STATE = Path.home() / "Library/Application Support" / APP_NAME / "window.json"
+WINDOWS = sys.platform == "win32"
+# Windows' own folder for an app's data, where deploy/windows/build_app.py's executable also puts DATA_ROOT.
+LOCAL_APP_DATA = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
+LOG_PATH = (LOCAL_APP_DATA / APP_NAME / "Logs" if WINDOWS else Path.home() / "Library/Logs" / APP_NAME) / "server.log"
+WINDOW_STATE = (LOCAL_APP_DATA if WINDOWS else Path.home() / "Library/Application Support") / APP_NAME / "window.json"
+# ui/redteam.py's keep-awake process holds this named mutex on Windows for as long as a batch runs.
+BATCH_MUTEX = "Local\\OpenDetectorBatch"
 # A fixed port keeps the page's address the same between launches, so what the page stores in the
 # browser, such as the chosen theme, lasts. Any free port is used when something else holds it.
 PREFERRED_PORT = 8517
@@ -64,8 +70,7 @@ def serve(port: int, parent: int) -> None:
     force quit or crash of the launcher leaves no server behind)."""
 
     def watch_parent() -> None:
-        while os.getppid() == parent:
-            time.sleep(1)
+        wait_for_exit(parent)
         os.kill(os.getpid(), signal.SIGTERM)  # Streamlit's own handler shuts the server down
         time.sleep(15)
         os._exit(1)
@@ -77,18 +82,37 @@ def serve(port: int, parent: int) -> None:
     sys.exit(cli.main())
 
 
+def wait_for_exit(parent: int) -> None:
+    """Return once the launcher `parent` has gone. Windows keeps reporting a dead parent's id, so there
+    it waits on the process itself."""
+    if not WINDOWS:
+        while os.getppid() == parent:
+            time.sleep(1)
+        return
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    handle = kernel32.OpenProcess(0x00100000, False, parent)  # SYNCHRONIZE
+    if handle:
+        kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)  # INFINITE
+
+
 def start_server(port: int) -> subprocess.Popen:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     if LOG_PATH.exists():
         LOG_PATH.replace(LOG_PATH.with_name("server.previous.log"))
-    # Apps opened from the Finder get a bare PATH; add Homebrew's for the tools the app calls.
-    env = {**os.environ, "PYTHONUNBUFFERED": "1",
-           "PATH": os.pathsep.join([os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
-                                    "/opt/homebrew/bin", "/usr/local/bin"])}
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    if not WINDOWS:
+        # Apps opened from the Finder get a bare PATH; add Homebrew's for the tools the app calls.
+        env["PATH"] = os.pathsep.join([os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+                                       "/opt/homebrew/bin", "/usr/local/bin"])
     env.pop("PYTHONEXECUTABLE", None)  # set by the app bundle for the launcher only
     with LOG_PATH.open("w") as log:
         return subprocess.Popen([sys.executable, __file__, "--serve", str(port), "--parent", str(os.getpid())],
-                                cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+                                cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0)
 
 
 def wait_until_ready(url: str, server: subprocess.Popen, timeout: float = START_TIMEOUT) -> bool:
@@ -107,10 +131,20 @@ def wait_until_ready(url: str, server: subprocess.Popen, timeout: float = START_
 
 
 def batch_running(server: subprocess.Popen) -> bool:
-    """Whether the Red team page is running a batch: it keeps the Mac awake with caffeinate, a child
-    of the server, for exactly that long."""
+    """Whether the Red team page is running a batch: it keeps the computer awake for exactly that long,
+    on a Mac with caffeinate, a child of the server, on Windows with a process holding BATCH_MUTEX."""
     if server.poll() is not None:
         return False
+    if WINDOWS:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.OpenMutexW.restype = ctypes.c_void_p
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel32.OpenMutexW(0x00100000, False, BATCH_MUTEX)  # SYNCHRONIZE
+        if handle:
+            kernel32.CloseHandle(handle)
+        return bool(handle)
     found = subprocess.run(["pgrep", "-P", str(server.pid), "-x", "caffeinate"], capture_output=True, check=False)
     return found.returncode == 0
 
@@ -123,6 +157,15 @@ def log_tail(lines: int = 30) -> str:
 
 
 def dark_mode() -> bool:
+    if WINDOWS:
+        import winreg
+
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+                return winreg.QueryValueEx(key, "AppsUseLightTheme")[0] == 0
+        except OSError:
+            return False
     found = subprocess.run(["defaults", "read", "-g", "AppleInterfaceStyle"], capture_output=True, text=True,
                            check=False)
     return found.stdout.strip() == "Dark"
@@ -169,7 +212,7 @@ body.instrument {{ --bg: #EEF1F0; --text: #0A1E25; --muted: #4A6470; --panel: #f
 }}
 body {{ margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
   background: var(--sky), var(--bg); color: var(--text);
-  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; -webkit-user-select: none; }}
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; -webkit-user-select: none; }}
 main {{ position: relative; max-width: 620px; padding: 40px 44px 36px; text-align: center; border-radius: 28px;
   background: var(--panel); border: 1px solid var(--edge);
   box-shadow: 0 1px 0 rgba(255,255,255,.12) inset, 0 30px 80px -30px rgba(0,0,0,.45);
@@ -191,7 +234,7 @@ p {{ color: var(--muted); margin: 6px 0; }}
   animation: sweep 1.6s ease-in-out infinite; }}
 .later {{ opacity: 0; animation: show .4s 15s forwards; font-size: 13px; }}
 pre {{ text-align: left; background: rgba(127,127,127,.08); border: 1px solid var(--hair); border-radius: 12px;
-  padding: 12px 14px; font: 12px/1.45 ui-monospace, Menlo, monospace; max-height: 42vh; overflow: auto;
+  padding: 12px 14px; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; max-height: 42vh; overflow: auto;
   white-space: pre-wrap; -webkit-user-select: text; color: var(--text); }}
 button {{ font: inherit; font-weight: 600; padding: 8px 18px; margin: 10px 4px 0; border-radius: 999px; cursor: pointer;
   border: 1px solid var(--hair); background: transparent; color: var(--text); }}
@@ -202,7 +245,8 @@ body.instrument main {{ border-radius: 4px; box-shadow: 0 24px 60px -30px rgba(0
     linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent));
   background-size: 16px 1.5px, 1.5px 16px, 16px 1.5px, 1.5px 16px;
   background-position: top left, top left, bottom right, bottom right; background-repeat: no-repeat; }}
-body.instrument h1, body.instrument p, body.instrument button {{ font-family: "SF Mono", ui-monospace, Menlo, monospace;
+body.instrument h1, body.instrument p, body.instrument button {{ font-family: "SF Mono", ui-monospace, Menlo, Consolas,
+  monospace;
   text-transform: uppercase; letter-spacing: .1em; }}
 body.instrument h1 {{ font-size: 17px; letter-spacing: .2em; }}
 body.instrument p {{ font-size: 12px; }}
@@ -287,7 +331,8 @@ class DesktopApp:
 
     def start(self) -> None:
         """Start a server and show it once it answers; show what went wrong if it stops."""
-        add_undo_to_edit_menu()
+        if not WINDOWS:
+            add_undo_to_edit_menu()
         port = pick_port()
         server = self.server = start_server(port)
         url = f"http://127.0.0.1:{port}"
@@ -333,6 +378,14 @@ class DesktopApp:
 
     @staticmethod
     def _confirm_quit() -> bool:
+        if WINDOWS:
+            import ctypes
+
+            yes = ctypes.WinDLL("user32").MessageBoxW(
+                None, "A Red team batch is still running. Quitting stops it. The blocks written so far are saved: "
+                      "start the same batch again and press Resume to continue from there.\n\nQuit anyway?",
+                APP_NAME, 0x4 | 0x30 | 0x100)  # Yes and No, a warning, No by default
+            return yes == 6  # IDYES
         import AppKit
 
         alert = AppKit.NSAlert.alloc().init()
@@ -369,10 +422,16 @@ class PageApi:
         self._app.restart()
 
     def show_log(self) -> None:
-        subprocess.run(["open", "-R", str(LOG_PATH)], check=False)
+        if WINDOWS:
+            subprocess.run(["explorer", f"/select,{LOG_PATH}"], check=False)
+        else:
+            subprocess.run(["open", "-R", str(LOG_PATH)], check=False)
 
 
 def main(argv: list[str] | None = None) -> None:
+    if sys.stderr is None:  # a Windows app has no console: keep what would be lost
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        sys.stdout = sys.stderr = LOG_PATH.with_name("launcher.log").open("w", buffering=1)
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--serve", type=int, metavar="PORT", help=argparse.SUPPRESS)
     parser.add_argument("--parent", type=int, help=argparse.SUPPRESS)

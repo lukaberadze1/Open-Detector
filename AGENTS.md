@@ -21,6 +21,8 @@ An AI-generated-text detector, built as a calibrated ensemble:
 - **Live app:** https://open-detector.streamlit.app runs the slim profile and the Red team page in
   public mode, deployed from branch `feat/phase1-ensemble` of
   https://github.com/lukaberadze1/Open-Detector (public).
+- **Windows app:** `deploy/windows/build_app.py` builds the same app as `dist/Open-Detector-Setup.exe`. It
+  runs on GitHub's Windows machines (`.github/workflows/windows-app.yml`), and a published release gets the file.
 - **Mac app:** `deploy/macos/build_app.py` installs `Open Detector.app`, the same Streamlit app in a
   native window that runs on this checkout. With `--standalone --dmg` it builds the self-contained
   download, `dist/Open-Detector.dmg`, offered on the repo's GitHub releases for anyone to install.
@@ -83,6 +85,7 @@ model this code no longer uses.
 | `deploy/streamlit_cloud/` | `streamlit_app.py` pins the slim profile, turns on public mode and runs `app.py`; `requirements.txt` installs CPU-only PyTorch. |
 | `deploy/huggingface/` | Docker Space for the full profile with `deploy.py`. Blocked: Hugging Face now needs PRO for Docker Spaces. |
 | `deploy/macos/` | The Mac app. `launcher.py` runs the app's server on 127.0.0.1 (port 8517 when free) and shows it in a pywebview (WebKit) window, with a loading page and an error page (both in the look last picked in the app) that can restart the server, a remembered window size, and a question before quitting during a Red team batch; the server stops itself if the launcher dies. `build_app.py` writes `~/Applications/Open Detector.app`: Info.plist, an icon drawn from `ui/assets/mark.svg`, and a small C executable, compiled with clang, that runs `launcher.py` on the `.venv`'s Python inside the app's own process. `--standalone` instead copies uv's standalone CPython into the bundle, installs `deploy/macos/requirements.txt` at the `.venv`'s versions, drops torch's headers and every package's test suite (`prune_packages`; macOS checks each file of a downloaded app on first launch), copies the code in `APP_FILES`/`APP_PACKAGES`, byte-compiles it, and signs every binary ad hoc; its executable sets `OPENDETECTOR_HOME` to `~/Library/Application Support/Open Detector` and `OPENDETECTOR_PACKAGED=on`, and runs the server too. `--dmg` packs it into `dist/Open-Detector.dmg`. |
+| `deploy/windows/`, `.github/workflows/windows-app.yml` | The Windows download. `build_app.py` copies uv's standalone CPython into a stage folder, installs `deploy/macos/requirements.txt` at the versions in `constraints.txt` (`--pin` writes them from the `.venv`, and a test fails when they drift), copies the code in the Mac build's `APP_FILES`/`APP_PACKAGES`, byte-compiles it, and compiles with MSVC a small `Open Detector.exe` (icon `app.ico`, drawn from the Mac icon) that loads the app's Python and runs `deploy/macos/launcher.py`, which works on both systems; given arguments it runs them as python would. `installer.iss` packs that with Inno Setup into `dist/Open-Detector-Setup.exe`: per-user, no administrator password, and installs Microsoft's WebView2 where it is missing. The workflow runs the tests on Windows, builds it, and runs `smoke_test.ps1`: install, score a text with the installed app (about the Mac's score), open the window, and check the server stops when the app is killed. Data goes to `%LOCALAPPDATA%\Open Detector`. Publishing a GitHub release runs it and attaches the file; the app is unsigned, so Windows SmartScreen warns once. |
 | `deploy/remote_test/` | Runs the tests and the detector-against-generator checks on another computer and packs the results to send back. |
 | `tests/` | pytest suite with stand-in engines: no model downloads, about 10–25 s. |
 | `DETECTOR.md` | User guide: setup, evaluation workflow, deployment, red-teaming, known limits. |
@@ -244,7 +247,8 @@ To regenerate both shipped combiners after the caches change:
   program that embeds Python: a shell script that `exec`s python loses the app's process (macOS
   reports pid -1), which breaks accessibility and bringing the open window forward. The launcher
   tells a Red team batch is running from the `caffeinate` child `ui/redteam.py` starts, so keep that
-  child if you change how batches keep the Mac awake.
+  child if you change how batches keep the Mac awake. On Windows the launcher looks for a named mutex
+  held by the same keep-awake process instead (`BATCH_MUTEX`).
 - **Unicode in source is deliberate.** Cyrillic and Greek look-alike letters and curly quotes in
   `opendetector/normalize.py`, `opendetector/segment.py` and some tests are intentional;
   `ruff.toml` exempts those files.
@@ -278,9 +282,14 @@ Each of these is one command.
   .venv/bin/python deploy/macos/build_app.py
   ```
 - Build the download, `dist/Open-Detector.dmg` (also needs uv; takes a few minutes), then attach it
-  to a GitHub release under that exact name, which README.md's download link points to:
+  to a GitHub release under that exact name, which README.md's download link points to (publishing the
+  release also builds and attaches `Open-Detector-Setup.exe`, the Windows download, on GitHub's machines):
   ```bash
   .venv/bin/python deploy/macos/build_app.py --standalone --dmg
+  ```
+- After changing package versions in the `.venv`, update what the Windows build installs:
+  ```bash
+  .venv/bin/python deploy/windows/build_app.py --pin
   ```
 - Measure the Red team page's generation settings on a document (spends Gemini quota; resumes where it
   stopped), which rewrites `models/generation_tuning.json` and `eval/reports/tuning.md`:
