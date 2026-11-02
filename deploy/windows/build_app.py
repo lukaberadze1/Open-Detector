@@ -111,6 +111,7 @@ def bundle_python(home: Path) -> None:
     prefix = subprocess.run([found, "-c", "import sys; print(sys.base_prefix)"], capture_output=True, text=True,
                             check=True).stdout.strip()
     shutil.copytree(prefix, home, ignore=shutil.ignore_patterns("__pycache__"))
+    (home / "Lib/EXTERNALLY-MANAGED").unlink(missing_ok=True)  # the marker that keeps pip off a system Python
     python = home / "python.exe"
     subprocess.run([uv, "pip", "install", "--python", str(python), "--link-mode", "copy", "--no-progress",
                     "-r", str(ROOT / "deploy/macos/requirements.txt"), "-c", str(CONSTRAINTS)], check=True)
@@ -122,7 +123,7 @@ def prune_python(home: Path) -> None:
     lib = home / "Lib"
     packages = lib / "site-packages"
     mac.prune_packages(packages)
-    unused = [home / "tcl", home / "Scripts", home / "Doc", lib / "EXTERNALLY-MANAGED",
+    unused = [home / "tcl", home / "Scripts", home / "Doc",
               *(lib / name for name in ("test", "tkinter", "idlelib", "turtledemo", "ensurepip")),
               *(home / "DLLs").glob("_tkinter*"), *(home / "DLLs").glob("tcl*"), *(home / "DLLs").glob("tk*"),
               *(packages / "torch/lib").glob("*.lib")]
