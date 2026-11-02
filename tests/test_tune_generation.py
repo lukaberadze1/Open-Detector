@@ -293,6 +293,22 @@ def test_finished_work_examples_come_only_from_finished_pieces(tmp_path):
         tmp_path / "styles/writer/corpus.jsonl").read_text()
 
 
+def test_a_long_text_is_measured_against_finished_work_not_the_notes(tmp_path):
+    profile = corpus_profile(tmp_path)
+    profile.write_text(json.dumps({"style_profile": {"format": "registers-v2", "registers": {
+        "finalized": {"golden_rule": "Finished."}, "notes": {"golden_rule": "Quick."}}}}))
+    finished = tmp_path / "styles/writer/finalized"
+    finished.mkdir()
+    rng = random.Random(3)
+    paragraphs = [plain_paragraph(rng) for _ in range(40)]
+    (finished / "essay.md").write_text("# Bees\n\n" + "\n\n".join(paragraphs))
+    longer_than_all_of_it = 2 * sum(len(paragraph.split()) for paragraph in paragraphs)
+    yardstick = tune_generation.StyleYardstick.build(profile, longer_than_all_of_it, "finalized")
+    notes = (tmp_path / "styles/writer/corpus.jsonl").read_text()
+    assert len(yardstick.passages) >= 5
+    assert all(text not in notes for text in yardstick.texts)
+
+
 def test_a_run_measures_scores_writes_the_table_and_resumes(monkeypatch, tmp_path):
     gemini = FakeGemini(monkeypatch)
     monkeypatch.setattr(tune_generation, "load_env", lambda: None)

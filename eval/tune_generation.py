@@ -134,7 +134,9 @@ class StyleYardstick:
     def build(cls, profile_path: Path, words: int, register: str | None = None) -> StyleYardstick | None:
         """None when the profile has no corpus beside it, or too little of one to compare against. For
         the finalized register it measures against the writer's finished pieces (the finalized/ folder
-        beside the corpus) when there are enough of them, and against their notes otherwise."""
+        beside the corpus), in shorter passages when they can't fill enough of `words`, and against their
+        notes only when they are too few even then: notes differ from finished work, so a long text must
+        not be held to them just for being long."""
         import update_style_profile as usp
 
         folder = corpus_folder(profile_path)
@@ -144,9 +146,12 @@ class StyleYardstick:
         if not corpus.exists() and not (register == usp.FINALIZED and finished.is_dir()):
             return None
         banned = usp.banned_patterns(json.loads(profile_path.read_text(encoding="utf-8")))
-        if register == usp.FINALIZED and (
-                yardstick := cls.from_paragraphs(usp.finished_pieces(finished), words, banned)):
-            return yardstick
+        if register == usp.FINALIZED:
+            pieces, size = usp.finished_pieces(finished), words
+            while pieces and size:
+                if yardstick := cls.from_paragraphs(pieces, size, banned):
+                    return yardstick
+                size //= 2
         if not corpus.exists():
             return None
         paragraphs = [entry["text"] for entry in usp.load_corpus(corpus) if "superseded" not in entry]
