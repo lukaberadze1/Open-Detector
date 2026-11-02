@@ -259,6 +259,15 @@ def _writer_text(profile_path: Path, register: str | None) -> str:
     return "\n\n".join(entry["text"] for entry in usp.load_corpus(corpus) if "superseded" not in entry)
 
 
+def writer_vocabulary(profile_path: Path) -> set[str]:
+    """Every lowercase word the writer has written, in either register. Empty when the writing isn't
+    beside the profile, as on a public deploy or for the built-in profile."""
+    import update_style_profile as usp
+
+    writing = _writer_text(profile_path, usp.FINALIZED) + "\n\n" + _writer_text(profile_path, None)
+    return {word.lower() for word in re.findall(r"[^\W\d_]+", writing)}
+
+
 def misspelling_shares(profile_path: Path, register: str | None = None) -> list[tuple[str, str, float]]:
     """The profile's recurring misspellings as (misspelling, word, share): how many of the word's uses the
     writer misspells, counted from their own writing. A share, not a rate per 1,000 words: an essay on

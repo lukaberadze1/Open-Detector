@@ -479,3 +479,32 @@ def test_asked_again_a_shorter_rewrite_doesnt_replace_a_longer_one():
 
     written, _ = redteam_batch.rewrite_group(plan, [job], ask, str)
     assert written == {"1": "Short but the longer of the two replies."}
+
+
+def test_only_words_the_writer_never_uses_are_listed():
+    vocabulary = {"walk", "door", "plain", "dull"}
+    text = "He walked through transparent doors, and Mr Davis proceeded down the plain lengthy hall. Transparent again."
+    assert redteam_batch.unfamiliar_words(text, vocabulary) == [
+        "through", "transparent", "proceeded", "down", "lengthy", "hall", "again"]
+
+
+def test_a_word_swap_is_kept_only_if_it_helps_and_keeps_the_text():
+    vocabulary = set(["the", "door", "was", "plain", "and", "long", "and", "it", "was", "a", "long", "hall"])
+    text = "The door was transparent and the hall was lengthy and it was very long and plain."
+    asked = []
+
+    def reply(answer):
+        def ask(prompt):
+            asked.append(prompt)
+            return answer
+        return ask
+
+    good = "The door was plain and the hall was long and it was very long and plain."
+    assert redteam_batch.plainer_words(text, vocabulary, reply(good), str) == (good, 3, 1)
+    assert "Words to replace: transparent, lengthy, very" in asked[0]
+    assert redteam_batch.plainer_words(text, vocabulary, reply("The door was plain."), str)[0] == text, "shortened"
+    assert redteam_batch.plainer_words(text, vocabulary, reply(text), str)[0] == text, "no better"
+    split = "The door was plain. And the hall was long. And it was. Very long. And plain and long and long and."
+    assert redteam_batch.plainer_words(text, vocabulary, reply(split), str)[0] == text, "sentences changed"
+    asked.clear()
+    assert redteam_batch.plainer_words(text, set(), reply(good), str)[0] == text and not asked, "nothing to compare"

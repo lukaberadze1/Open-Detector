@@ -38,9 +38,10 @@ from eval.generate_essays import (
     style_instructions,
     styled_clean,
     thinking_level,
+    writer_vocabulary,
 )
-from eval.redteam_batch import (DRAFT_STRETCH, FRAMINGS, GROUP_SCHEMA, borrowed_plan, restyle, revise_flagged,
-                                sample_prompt)
+from eval.redteam_batch import (DRAFT_STRETCH, FRAMINGS, GROUP_SCHEMA, borrowed_plan, plainer_words, restyle,
+                                revise_flagged, sample_prompt)
 from eval.tune_generation import LABELLED, TOKEN_FIELDS, StyleYardstick, style_examples, writer_shapes
 from opendetector.env import load_env
 from opendetector.segment import count_words
@@ -61,7 +62,8 @@ PROMPTS = {
 
 
 def run_sample(model: str, prompt: str, system: str | None, api_key: str, temperature: float,
-               thinking: str, shapes: list | None = None, analyze=None, rounds: int = 0, clean=clean_essay) -> dict:
+               thinking: str, shapes: list | None = None, analyze=None, rounds: int = 0, clean=clean_essay,
+               vocabulary: set[str] | None = None) -> dict:
     """One sample: a draft, then with `shapes` that draft rewritten in the writer's sentences (restyle),
     then with `rounds` its flagged passages revised against the detector's `analyze` (revise_flagged)."""
     tokens, started = dict.fromkeys(TOKEN_FIELDS, 0), time.monotonic()
@@ -77,11 +79,16 @@ def run_sample(model: str, prompt: str, system: str | None, api_key: str, temper
 
     draft = clean(ask(prompt))
     text = restyle(draft, shapes, ask, clean) if shapes else draft
+    unfamiliar, before_plain = None, None
+    if vocabulary:
+        before_plain = text
+        text, *unfamiliar = plainer_words(text, vocabulary, ask, clean)
     history = None
     if rounds:
         text, history = revise_flagged(text, analyze, ask, clean, shapes or [], rounds)
     return {"text": text, "draft": draft if shapes else None, "seconds": round(time.monotonic() - started, 2),
-            "tokens": tokens, "rounds": history}
+            "tokens": tokens, "rounds": history, "unfamiliar": unfamiliar,
+            "before_plain": before_plain}
 
 
 def summary(samples: list[dict]) -> list[str]:
@@ -121,6 +128,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="rewrite each draft passage by passage in the writer's sentences, as the page does")
     parser.add_argument("--revise", type=int, default=0, metavar="N",
                         help="rewrite the passages the detector flags, up to N rounds")
+    parser.add_argument("--plain-words", action="store_true",
+                        help="replace the words the writer never uses (redteam_batch.plainer_words)")
     parser.add_argument("--examples", type=int, default=0, metavar="N", help="send N of the writer's own passages")
     parser.add_argument("--models", default="gemini-3.5-flash-lite")
     parser.add_argument("--thinking", default="low")
@@ -142,9 +151,10 @@ def main(argv: list[str] | None = None) -> int:
         style_examples(args.style, register, args.examples)
     system = None if args.no_style else style_instructions(profile, register, examples, checklist)
     shapes = writer_shapes(args.style, register) if args.plan or args.restyle else []
+    vocabulary = writer_vocabulary(args.style) if args.plain_words else None
     label = ("plain" if args.no_style else f"{args.style.stem}:{register}" if register else args.style.stem) + \
         f"+{args.framing}" + ("+plan" if args.plan else "") + ("+old-voice" if args.old_voice else "") + \
-        ("+restyle" if args.restyle else "") + \
+        ("+restyle" if args.restyle else "") + ("+plain-words" if args.plain_words else "") + \
         ("+examples" if examples else "") + (f"+revise{args.revise}" if args.revise else "")
     voice = OLD_VOICE if args.old_voice else ""
     done = {}
@@ -170,7 +180,8 @@ def main(argv: list[str] | None = None) -> int:
                     sample = run_sample(model, prompt, system, api_key, args.temperature, args.thinking,
                                         shapes if args.restyle else None,
                                         detector.analyze if detector else None, args.revise,
-                                        styled_clean(args.style, register) if not args.no_style else clean_essay)
+                                        styled_clean(args.style, register) if not args.no_style else clean_essay,
+                                        vocabulary)
                 except (QuotaExhausted, APIError) as exc:
                     print(f"  {model} failed, skipping it: {exc}")
                     break

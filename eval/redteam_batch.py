@@ -441,6 +441,46 @@ def rewrite_group(plan, group: list[dict], ask: Callable[[str, list[dict]], str]
     return texts, alone
 
 
+# Told to use plain words, a model doesn't: its vocabulary stayed about as varied whatever the prompt said
+# (MATTR 0.80 against the writer's 0.68). Shown which of its own words the writer never uses, it can replace them.
+# It does, but with wrong words ('printer' became 'bad machine'), so only eval/tune_prompts.py uses this.
+_LOWER_WORD = re.compile(r"(?<![\w'\u2019-])[a-z]{4,}(?![\w'\u2019-])")
+_ENDINGS = ("ing", "ed", "es", "ly", "s", "d")
+MOST_LISTED = 40
+PLAIN_WORDS = ("Below is a finished text and words in it that this writer never uses. Write the text again, changing "
+               "only those words: use a plain word the writer would use, and where you can, one already in the "
+               "text, repeating it rather than finding a new one. Keep the facts, the names, the sentences, the "
+               "spelling and the punctuation as they are, and keep a term when the subject has no other word for "
+               "it. Reply with the text only.\n\nWords to replace: {words}\n\nText:\n{text}")
+
+
+def unfamiliar_words(text: str, vocabulary: set[str]) -> list[str]:
+    """The text's lowercase words the writer has never written, in any common form, in order. Names are
+    capitalized, so they stay out."""
+    def known(word: str) -> bool:
+        stems = {word[:-len(end)] for end in _ENDINGS if word.endswith(end)}
+        return word in vocabulary or any(stem in vocabulary or stem + "e" in vocabulary for stem in stems)
+
+    return list(dict.fromkeys(word for word in _LOWER_WORD.findall(text) if not known(word)))
+
+
+def plainer_words(text: str, vocabulary: set[str], ask: Callable[[str], str],
+                  clean: Callable[[str], str]) -> tuple[str, int, int]:
+    """The text with the words the writer never uses replaced (one request), and how many there were before
+    and after. The reply is kept only if it has fewer of them and about the same length and sentences,
+    since a model asked to change words sometimes rewrites the whole text."""
+    before = unfamiliar_words(text, vocabulary)
+    if not vocabulary or not before:
+        return text, len(before), len(before)
+    new = clean(ask(PLAIN_WORDS.format(words=", ".join(before[:MOST_LISTED]), text=text)))
+    after = unfamiliar_words(new, vocabulary)
+    sentences = len(split_sentences(new)) / max(1, len(split_sentences(text)))
+    if len(after) >= len(before) or not 0.85 <= count_words(new) / count_words(text) <= 1.15 \
+            or not 0.85 <= sentences <= 1.15:
+        return text, len(before), len(before)
+    return new, len(before), len(after)
+
+
 def copied_row(row: dict) -> bool:
     """Whether a saved AI-labelled row is a copy of what it was meant to rewrite: by the words_kept it
     was saved with, or by the original the Red team page saves in its prompt."""
