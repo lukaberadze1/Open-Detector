@@ -113,8 +113,9 @@ DEFAULT_FALLBACK_MODELS = (
     "gemini-3.1-flash-lite",
     "gemini-3-flash-preview",
 )
-DOCUMENT_TYPES = ("md", "docx", "pptx")
+DOCUMENT_TYPES = ("txt", "md", "docx", "pptx")
 MIME_TYPES = {
+    ".txt": "text/plain",
     ".md": "text/markdown",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -505,9 +506,19 @@ def _setup(profile: str, conn: Connection) -> Plan:
                                       "the angle.")
     upload = persistent_upload(
         "Source document (optional)", "redteam:file", DOCUMENT_TYPES,
-        help="A Markdown, Word or PowerPoint file. Its text is context for the sample, and it lets you rewrite "
-             "its sections or fill its answer boxes. The file itself is never changed.",
+        help="A text, Markdown, Word or PowerPoint file. Its text is context for the sample, and it lets you "
+             "rewrite its sections or fill its answer boxes. The file itself is never changed.",
     )
+    if not upload:
+        pasted = st.text_area(
+            "Or paste the text to rewrite (optional)", key=keep("keep:redteam:pasted", ""), height=130,
+            help="Works like an uploaded text file: blocks are separated by blank lines, and you can rewrite one "
+                 "or all of them. The instructions above still tell the model what to do.",
+        )
+        if pasted.strip():
+            data = pasted.encode("utf-8")
+            # Named by its content, so a later paste is never taken for an earlier batch's source.
+            upload = Upload(f"Pasted text {hashlib.sha256(data).hexdigest()[:8]}.txt", data)
     sections, slots, blocks = [], [], []
     if upload:
         try:
@@ -534,8 +545,8 @@ def _setup(profile: str, conn: Connection) -> Plan:
                                      required=True, label_visibility="collapsed")
     st.caption(TASKS[plan.task][1])
     if not upload:
-        st.caption(":material/upload_file: Upload a Markdown, Word or PowerPoint document to rewrite a section, "
-                   "fill its answer boxes or rewrite every block.")
+        st.caption(":material/upload_file: Paste text, or upload a text, Markdown, Word or PowerPoint document, to "
+                   "rewrite a section or every block, or fill a document's answer boxes.")
     else:
         for task, reason in unavailable.items():
             st.caption(f":material/block: **{TASKS[task][0]}** isn't available for this file: {reason}")
@@ -558,7 +569,7 @@ def _setup(profile: str, conn: Connection) -> Plan:
         st.caption("The selected section is treated as the previous AI answer. The uploaded file stays unchanged.")
         plan.export_document = st.toggle("Also export a copy of the document with this section replaced",
                                          key=keep("keep:redteam:export", False),
-                                         help="Exports a new AI-labelled Markdown, DOCX or PPTX copy.")
+                                         help="Exports a new AI-labelled text, Markdown, DOCX or PPTX copy.")
     elif plan.task == "answers":
         plan.fill_answer_boxes = True
         with st.expander(f"Detected answer boxes · {len(slots)}", icon=":material/table_rows:"):
@@ -911,6 +922,12 @@ def _add_style_profile() -> None:
     st.session_state["redteam:style_notice"] = ("success", f"Added {name}, and picked it.")
 
 
+def _copy_suffix(upload: Upload) -> str:
+    """How a document copy's export name ends. A text file's copy would otherwise take the name of the
+    .txt summary saved beside it, and be overwritten by it."""
+    return "_copy.txt" if upload.suffix == ".txt" else upload.suffix
+
+
 def _unavailable_tasks(upload: Upload | None, sections: list, slots: list, blocks: list) -> dict[str, str]:
     """The document tasks the uploaded file doesn't support, with the reason for each. Without a file,
     none of them is available."""
@@ -934,7 +951,7 @@ def _unavailable_tasks(upload: Upload | None, sections: list, slots: list, block
 def _problem(plan: Plan, conn: Connection) -> str | None:
     """Why the plan can't run, if it can't."""
     if not plan.prompt.strip() and not plan.sections:
-        return "Write some instructions or upload a Markdown, Word or PowerPoint document first."
+        return "Write some instructions, paste some text or upload a document first."
     if plan.task == "section" and plan.target_section is None:
         return "Choose a document section to rewrite."
     if not conn.api_key and public():
@@ -1037,7 +1054,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
         document_bytes = upload.data
         for item in sorted(items, key=lambda value: value["target"].locator[0], reverse=True):
             document_bytes = replace_document_section(upload.name, document_bytes, item["target"], item["text"])
-        document_name = f"AI_REDTEAM_{tag}_{timestamp}_{source_hash}{upload.suffix}"
+        document_name = f"AI_REDTEAM_{tag}_{timestamp}_{source_hash}{_copy_suffix(upload)}"
         (store.exports / document_name).write_bytes(document_bytes)
         document_path = _shown(store.exports / document_name)
     except (ImportError, ValueError, IndexError, KeyError) as exc:
@@ -1708,7 +1725,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     if plan.export_document and upload and target_section:
         try:
             document_attachment = replace_document_section(upload.name, upload.data, target_section, essay)
-            document_filename = f"AI_REDTEAM_{mode_tag}_{timestamp}_{prompt_hash}{upload.suffix}"
+            document_filename = f"AI_REDTEAM_{mode_tag}_{timestamp}_{prompt_hash}{_copy_suffix(upload)}"
             document_export_path = store.exports / document_filename
             document_export_path.write_bytes(document_attachment)
             document_path = _shown(document_export_path)

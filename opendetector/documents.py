@@ -1,4 +1,4 @@
-"""Text extraction and section replacement for Markdown, Word, and PowerPoint files."""
+"""Text extraction and section replacement for plain text, Markdown, Word, and PowerPoint files."""
 
 from __future__ import annotations
 
@@ -31,9 +31,15 @@ def extract_document(filename: str, data: bytes) -> list[DocumentSection]:
             return _markdown_sections(data)
         except UnicodeDecodeError as exc:
             raise ValueError("The Markdown file must use UTF-8 encoding.") from exc
+    if suffix == "txt":
+        try:
+            return _text_sections(data)
+        except UnicodeDecodeError as exc:
+            raise ValueError("The text file must use UTF-8 encoding.") from exc
     readers = {"docx": _docx_sections, "pptx": _pptx_sections}
     if suffix not in readers:
-        raise ValueError("Upload a .md Markdown file, .docx Word document, or .pptx PowerPoint presentation.")
+        raise ValueError("Upload a .txt text file, .md Markdown file, .docx Word document, or .pptx PowerPoint "
+                         "presentation.")
     try:
         return readers[suffix](BytesIO(data))
     except ImportError:
@@ -60,6 +66,8 @@ def extract_answer_slots(filename: str, data: bytes) -> list[AnswerSlot]:
 
 
 def _answer_slots(suffix: str, data: bytes) -> list[AnswerSlot]:
+    if suffix == "txt":  # plain text has no tables or text boxes to pair
+        return []
     if suffix == "md":
         try:
             lines = data.decode("utf-8-sig").splitlines(keepends=True)
@@ -191,11 +199,13 @@ def _answer_slots(suffix: str, data: bytes) -> list[AnswerSlot]:
 
 
 def rewritable_blocks(filename: str, data: bytes) -> list[DocumentSection]:
-    """The prose blocks a whole-document rewrite changes: Markdown text blocks, Word body paragraphs
-    and PowerPoint text boxes. Headings, titles, questions, tables and PowerPoint question/answer box
-    pairs stay as they are; answer boxes have their own task."""
+    """The prose blocks a whole-document rewrite changes: plain text and Markdown text blocks, Word body
+    paragraphs and PowerPoint text boxes. Headings, titles, questions, tables and PowerPoint question/answer
+    box pairs stay as they are; answer boxes have their own task."""
     suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     sections = extract_document(filename, data)
+    if suffix == "txt":
+        return [section for section in sections if not _lone_question(section.text)]
     kept, questions = set(), set()
     if suffix == "md":
         kind = "markdown_block"
@@ -232,6 +242,14 @@ def rewritable_blocks(filename: str, data: bytes) -> list[DocumentSection]:
         and "?" not in section.text
         and not section.text.strip().casefold().startswith(("question:", "prompt:"))
     ]
+
+
+def _lone_question(text: str) -> bool:
+    """A plain text block that is only a question. With no markup to tell a question from prose, a paragraph
+    that merely contains a question mark still counts as prose."""
+    text = text.strip()
+    return (text.casefold().startswith(("question:", "prompt:"))
+            or (text.endswith("?") and not re.search(r"[.!?]\s", text)))
 
 
 def _markdown_cell_spans(line: str) -> list[tuple[int, int, str]]:
@@ -335,6 +353,23 @@ def _markdown_sections(data: bytes) -> list[DocumentSection]:
     return sections
 
 
+def _text_sections(data: bytes) -> list[DocumentSection]:
+    """Plain text has no markup, so a "#" or "|" means nothing: each run of non-blank lines is one block."""
+    lines = data.decode("utf-8-sig").splitlines(keepends=True)
+    sections = []
+    index = 0
+    while index < len(lines):
+        if not lines[index].strip():
+            index += 1
+            continue
+        start = index
+        while index < len(lines) and lines[index].strip():
+            index += 1
+        section_text = "\n".join(line.strip() for line in lines[start:index])
+        sections.append(DocumentSection(f"Text block at line {start + 1}", section_text, "text_block", (start, index)))
+    return sections
+
+
 def _is_table_header(question: str, answer: str) -> bool:
     q = question.strip().casefold()
     a = answer.strip().casefold()
@@ -402,7 +437,7 @@ def _pptx_sections(stream: BytesIO) -> list[DocumentSection]:
 def replace_document_section(filename: str, data: bytes, section: DocumentSection, text: str) -> bytes:
     """Return a copy of a supported document with one extracted text section replaced in place."""
     suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if suffix == "md":
+    if suffix in ("md", "txt"):
         had_bom = data.startswith(b"\xef\xbb\xbf")
         lines = data.decode("utf-8-sig").splitlines(keepends=True)
         if section.kind == "markdown_table_cell":
@@ -421,7 +456,7 @@ def replace_document_section(filename: str, data: bytes, section: DocumentSectio
             if not heading:
                 raise ValueError("The selected Markdown heading could not be found in the source file.")
             lines[line_index] = heading.group(1) + text.replace("\n", " ") + heading.group(3) + newline
-        elif section.kind == "markdown_block":
+        elif section.kind in ("markdown_block", "text_block"):
             start, end = section.locator
             old_lines = lines[start:end]
             newline = "\r\n" if any(line.endswith("\r\n") for line in old_lines) else "\n"
@@ -432,7 +467,7 @@ def replace_document_section(filename: str, data: bytes, section: DocumentSectio
                 rendered += newline
             lines[start:end] = [rendered]
         else:
-            raise ValueError("The selected section cannot be replaced in this Markdown file.")
+            raise ValueError("The selected section cannot be replaced in this file.")
         encoded = "".join(lines).encode("utf-8")
         return (b"\xef\xbb\xbf" + encoded) if had_bom else encoded
 

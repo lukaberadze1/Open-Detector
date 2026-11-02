@@ -64,9 +64,9 @@ def test_a_pptx_table_reads_as_question_and_answer_pairs():
     assert (slot.question, slot.previous_answer, slot.target.locator) == ("x", "y", (0, 1, 0, 1))
 
 
-@pytest.mark.parametrize("name", ["essay.txt", "no_extension"])
+@pytest.mark.parametrize("name", ["essay.rtf", "no_extension"])
 def test_unsupported_types_are_rejected(name):
-    with pytest.raises(ValueError, match=r"Upload a \.md"):
+    with pytest.raises(ValueError, match=r"Upload a \.txt"):
         extract_document(name, b"text")
 
 
@@ -118,6 +118,30 @@ def test_rewriting_markdown_keeps_headings_questions_and_tables():
     assert [block.text for block in rewritable_blocks("notes.md", text.encode())] == [
         "Bees make honey.", "They sting.",
     ]
+
+
+def test_plain_text_blocks_have_no_markup_and_a_paragraph_with_a_question_is_prose():
+    text = ("# not a heading, just text\n\nWhy keep bees? Honey is one reason.\nThe garden is another.\n\n"
+            "a | b is a pipe, not a table.\n\nWhat do bees eat?\n\nQuestion: and in winter\n")
+    assert [block.text for block in rewritable_blocks("notes.txt", text.encode())] == [
+        "# not a heading, just text",
+        "Why keep bees? Honey is one reason.\nThe garden is another.",
+        "a | b is a pipe, not a table.",
+    ]
+    assert extract_answer_slots("notes.txt", text.encode()) == []
+
+
+def test_replacing_a_plain_text_block_keeps_the_rest_byte_for_byte():
+    data = b"\xef\xbb\xbfFirst block.\r\n\r\nSecond block\r\nruns on.\r\n\r\nThird block."
+    (_, second, _) = rewritable_blocks("notes.txt", data)
+    assert second.text == "Second block\nruns on."
+    assert replace_document_section("notes.txt", data, second, "New one.") == (
+        b"\xef\xbb\xbfFirst block.\r\n\r\nNew one.\r\n\r\nThird block.")
+
+
+def test_a_plain_text_file_must_be_utf8():
+    with pytest.raises(ValueError, match="text file must use UTF-8"):
+        extract_document("notes.txt", "caf\u00e9".encode("latin-1"))
 
 
 def _bytes(document) -> bytes:

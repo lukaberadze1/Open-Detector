@@ -621,6 +621,28 @@ def test_a_block_written_alone_that_comes_back_as_the_original_is_asked_once_mor
     assert {row["target_section"] for row in rows} == {"Paragraph 2", "Paragraph 4", None}, "the second try counts"
 
 
+def test_pasted_text_can_be_rewritten_block_by_block_and_exports_its_own_copy(stub_model, tmp_path):
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.run()
+    assert at.segmented_control(key="keep:redteam:task").options == ["Create a challenge sample"]
+
+    at.text_area(key="keep:redteam:pasted").set_value(
+        "Bees need a dry hive and a nearby source of water.\n\nThey live on nectar and pollen from flowers.\n").run()
+    assert "Generate block challenges" in at.segmented_control(key="keep:redteam:task").options
+    assert "Create a section challenge" in at.segmented_control(key="keep:redteam:task").options
+    at.segmented_control(key="keep:redteam:task").set_value("blocks").run()
+    button(at, "Generate 2 block challenges").click()
+    at.run()
+    level, message = run_until_batch_ends(at)
+    assert level == "success" and "All 2 blocks of Pasted text" in message
+
+    exports = list(tmp_path.rglob("AI_REDTEAM_*"))
+    assert len(exports) == 2, "the copy and the summary don't share a name"
+    (copy,) = [path for path in exports if path.name.endswith("_copy.txt")]
+    assert "\n\n" in copy.read_text() and "Bees need a dry hive" not in copy.read_text()
+
+
 def test_block_prompts_start_with_the_same_document():
     """A local model keeps a prompt's start cached, so every block's prompt opens with the document."""
     from eval.redteam_batch import block_prompt

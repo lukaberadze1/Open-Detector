@@ -80,11 +80,11 @@ command line's `--answers-only`. Reference documents can be uploaded alongside t
 is never scored. The detector does not fill templates or rewrite content to target a score.
 
 **Adversarial Lab** generates synthetic, labelled AI challenge samples for detector evaluation.
-Enter a test prompt or upload a Markdown, Word or PowerPoint source, then pick a task: a new
+Enter a test prompt, paste text, or upload a text, Markdown, Word or PowerPoint source, then pick a task: a new
 challenge sample, a section-level challenge, answers for a test worksheet, or challenges for each
 text block while headings, titles, questions and tables stay fixed. If a file doesn't support a task,
 the page says why. Document tasks export a
-separate Markdown/DOCX/PPTX copy that keeps the uploaded structure; the original is left unchanged.
+separate text/Markdown/DOCX/PPTX copy that keeps the source's structure; the original is left unchanged.
 The two batch tasks run in the background, save each block as it is written, and resume where they
 stopped. Short labels, names, dates and numbers ("14 August", "Done", "1") stay as they are: only
 prose blocks, a sentence of four words or more or eight words without one, are generated. They
