@@ -37,8 +37,10 @@ style-imitating essays separately.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import random
 import re
 import sys
 import threading
@@ -46,7 +48,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
+from itertools import count
 from pathlib import Path
 
 import pandas as pd
@@ -73,15 +76,17 @@ HUMANIZE = ("For this detector-evasion benchmark condition, revise the AI-genera
             "likelihood that an AI-text detector flags it. Preserve its claims and approximate length. "
             "This output is synthetic evaluation data and remains labelled AI. "
             "Reply with the revised sample only.\n\n{essay}")
-STYLE_INTRO = ("Write in the style of the writer profiled below. Follow every rule exactly. The spelling slips, "
-               "missing apostrophes, stray capitals and spacing quirks are part of the style: keep them, don't "
-               "correct them. The reference section is the measured style the rules come from.")
+# Told to keep a writer's slips, a model writes them everywhere: 8 times the writer's spaces before punctuation.
+SLIPS_ARE_RARE = ("Slips are the exception: nearly every word, comma and full stop is spelled and spaced normally. "
+                  "A slip is something the writer did now and then, not a rule. Work out how many a text this long "
+                  "gets from its rate; when that comes to less than one, leave it out.")
+STYLE_INTRO = ("Write in the style of the writer profiled below. Follow its rules. " + SLIPS_ARE_RARE +
+               " The reference section is the measured style the rules come from.")
 # For a profile with registers: one register is sent, so its habits can't leak into another.
 REGISTER_INTRO = ("Write in the style of the writer profiled below, in their {register} register. Every habit, "
                   "pattern and slip has a rate measured from their own text: use each about that often, scattered "
                   "unevenly, never clustered and never in every sentence. A habit whose status is 'once' was seen a "
-                  "single time: use it at most once in a long text, or not at all. Keep the slips, missing "
-                  "apostrophes, stray capitals and spacing quirks; don't correct them.")
+                  "single time: use it at most once in a long text, or not at all. " + SLIPS_ARE_RARE)
 REGISTER_NAMES = {"finalized": "finished work", "notes": "quick notes"}
 # Real passages show what a description can't; without the warning a model borrows their content.
 EXAMPLES_INTRO = ("Real passages the writer wrote, unedited. Write like them: their sentence lengths, their few "
@@ -133,18 +138,29 @@ def profile_registers(profile: dict) -> list[str]:
     return list(registers) if isinstance(registers, dict) else []
 
 
+def _for_register(shared: dict, name: str, others: Iterable[str]) -> dict:
+    """What every register shares, less the words tagged as another register's or as seen once. A word
+    the writer uses in essays is no habit of their notes, and one seen once is no habit at all."""
+    tagged = re.compile("|".join([*(rf"\({re.escape(other)}\b" for other in others), r"\(.*\bonce\b"]))
+    vocabulary = [word for word in shared.get("signature_vocabulary") or [] if not tagged.search(word)]
+    return {**shared, "signature_vocabulary": vocabulary} if "signature_vocabulary" in shared else shared
+
+
 def style_instructions(profile: dict, register: str | None = None, examples: Sequence[str] = (),
                        checklist: Sequence[str] = ()) -> str:
     """The system prompt for a style profile. With registers: how to use the profile, the chosen
     register (the first when `register` is None or unknown) with its golden rule first, and what holds
-    in every register; the other register is left out. Otherwise the overall rule, the hard rules,
-    then the measurements as reference; profiles without system_prompt_overrides are all reference.
+    in every register; the other register is left out, and so is any habit seen only once. Otherwise the
+    overall rule, the hard rules, then the measurements as reference; profiles without
+    system_prompt_overrides are all reference.
     `examples` (the writer's own passages) and `checklist` (their measured counts) come last, from
     eval.tune_generation.style_examples."""
     if registers := profile_registers(profile):
         name = register if register in registers else registers[0]
         chosen = dict(profile["registers"][name])
         golden = chosen.pop("golden_rule", None)
+        if "habits" in chosen:
+            chosen["habits"] = [habit for habit in chosen["habits"] if habit.get("status") != "once"]
         lines = [REGISTER_INTRO.format(register=REGISTER_NAMES.get(name, name))]
         if golden:
             lines += ["", golden]
@@ -152,7 +168,8 @@ def style_instructions(profile: dict, register: str | None = None, examples: Seq
             lines += ["", "# How to use this profile", profile["how_to_use"]]
         lines += ["", f"# The {REGISTER_NAMES.get(name, name)} register", *_render(chosen, 2)]
         if profile.get("shared"):
-            lines += ["", "# In every register", *_render(profile["shared"], 2)]
+            others = [other for other in registers if other != name]
+            lines += ["", "# In every register", *_render(_for_register(profile["shared"], name, others), 2)]
     else:
         rules = dict(profile.get("system_prompt_overrides") or {})
         golden = rules.pop("golden_transformation_rule", None)
@@ -171,6 +188,143 @@ def style_instructions(profile: dict, register: str | None = None, examples: Seq
     if checklist:
         lines += ["", "# Counts to check", CHECKLIST_INTRO, *(f"- {line}" for line in checklist)]
     return "\n".join(lines)
+
+
+# Spacing slips a model can't keep to a rate, however it is told: (name, pattern, what replaces one).
+_QUIRKS = (
+    ("space_before_punctuation", re.compile(r"(?<=\w)[ \t]+(?=[.,;:!?](?:\s|$))"), ""),
+    ("double_space", re.compile(r"(?<=\S) {2,}(?=\S)"), " "),
+    ("lowercase_i", re.compile(r"(?<![\w'\u2019(])i(?![\w'\u2019]|\.\w)"), "I"),
+)
+_SPACED_BRACKET = re.compile(r"\([ \t]+([^()\n]*?)[ \t]*\)|\(([^()\n]*?)[ \t]+\)")
+# Per 1,000 words, for a profile with no measurements beside it: about what the writers measured do.
+DEFAULT_QUIRK_RATES = {"space_before_punctuation": 1.0, "double_space": 1.0, "lowercase_i": 0.2}
+
+
+def quirk_rates(profile_path: Path, register: str | None = None) -> dict[str, float]:
+    """How often the profile's writer makes each spacing slip, per 1,000 words, from the measurements.json
+    beside the profile: their finished pieces for finished work, all their notes otherwise. Numbers only,
+    so this holds in public mode too."""
+    path = profile_path.parent / profile_path.stem.removesuffix("_profile") / "measurements.json"
+    try:
+        measured = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return dict(DEFAULT_QUIRK_RATES)
+    per_1000 = (measured.get("finalized_own" if register == "finalized" else "stacked")
+                or (measured.get(register) or {}).get("whole") or {}).get("per_1000_words") or {}
+    return {name: float(per_1000.get(name, rate)) for name, rate in DEFAULT_QUIRK_RATES.items()}
+
+
+def _kept(text: str, spots: int, expected: float, name: str) -> set[int]:
+    """Which of `spots` slips stay: `expected` of them, the fraction settled by a hash so that short
+    blocks come out right on average, spread by the same hash."""
+    digest = hashlib.sha256(f"{name}:{text}".encode()).digest()
+    budget = int(expected) + (digest[0] / 256 < expected - int(expected))
+    return set(random.Random(digest).sample(range(spots), min(budget, spots)))
+
+
+def temper_quirks(text: str, rates: dict[str, float]) -> str:
+    """The text with its spacing slips cut back to the writer's own rate. Only ever removes slips: a text
+    with fewer than the writer's is left alone."""
+    words = len(text.split())
+    for name, pattern, fixed in _QUIRKS:
+        keep = _kept(text, len(pattern.findall(text)), rates.get(name, 0.0) * words / 1000, name)
+        spot = count()
+        text = pattern.sub(lambda match, keep=keep, spot=spot, fixed=fixed:
+                           match.group() if next(spot) in keep else fixed, text)
+    # A spaced bracket counts two of the space_before_punctuation kind, as a writer's '( x )' would.
+    keep = _kept(text, len(_SPACED_BRACKET.findall(text)),
+                 rates.get("space_before_punctuation", 0.0) / 2 * words / 1000, "bracket")
+    spot = count()
+
+    def closed_up(match: re.Match) -> str:
+        return match.group() if next(spot) in keep else f"({(match.group(1) or match.group(2) or '').strip()})"
+
+    return _SPACED_BRACKET.sub(closed_up, text)
+
+
+# 'collumns' for columns (8), or 'Micronutreits' and 'Macronutreits' for micronutrients and macronutrients.
+_SLIP_ITEM = re.compile(r"^'([^']+)'(?: and '([^']+)')? for ([^(]+?)\s*(?:\(|$)")
+DEFAULT_SLIP_SHARE = 0.1  # of a word's uses, for a slip the writing beside the profile doesn't show
+
+
+def _writer_text(profile_path: Path, register: str | None) -> str:
+    """The writing beside a profile, to count from: finished pieces for finished work, otherwise notes."""
+    import update_style_profile as usp
+
+    folder = profile_path.parent / profile_path.stem.removesuffix("_profile")
+    if register == usp.FINALIZED and (folder / usp.FINALIZED).is_dir():
+        return "\n\n".join(usp.finished_pieces(folder / usp.FINALIZED))
+    corpus = folder / "corpus.jsonl"
+    return "\n\n".join(entry["text"] for entry in usp.load_corpus(corpus) if "superseded" not in entry)
+
+
+def misspelling_shares(profile_path: Path, register: str | None = None) -> list[tuple[str, str, float]]:
+    """The profile's recurring misspellings as (misspelling, word, share): how many of the word's uses the
+    writer misspells, counted from their own writing. A share, not a rate per 1,000 words: an essay on
+    Caesar names him far more than the writer's notes do, so that rate would correct nearly every use."""
+    profile = load_style_profile(profile_path)
+    registers = profile_registers(profile)
+    if not registers:
+        return []
+    items = ((profile["registers"][register if register in registers else registers[0]].get("slips") or {})
+             .get("recurring_misspellings") or [])
+    pairs = []
+    for item in items:
+        if match := _SLIP_ITEM.match(item):
+            first, second, right = match.groups()
+            pairs += zip([first, *([second] if second else [])], right.split(" and "), strict=False)
+    if not pairs:
+        return []
+    writing = _writer_text(profile_path, register if register in registers else registers[0])
+    shares = []
+    for wrong, right in pairs:
+        slips = _uses(wrong, writing)
+        total = slips + _uses(right, writing)
+        shares.append((wrong, right, slips / total if total else DEFAULT_SLIP_SHARE))
+    return shares
+
+
+def _uses(word: str, text: str) -> int:
+    return len(re.findall(rf"\b{re.escape(word)}\b", text, re.I))
+
+
+def temper_misspellings(text: str, shares: Iterable[tuple[str, str, float]]) -> str:
+    """The text with the writer's recurring misspellings cut back to the share of uses they misspell.
+    Only ever corrects: it never puts a misspelling in."""
+    for wrong, right, share in shares:
+        pattern = re.compile(rf"\b{re.escape(wrong)}\b", re.I)
+        spots = len(pattern.findall(text))
+        if not spots:
+            continue
+        keep, spot = _kept(text, spots, share * (spots + _uses(right, text)), wrong), count()
+
+        def corrected(match: re.Match, keep=keep, spot=spot, right=right) -> str:
+            if next(spot) in keep:
+                return match.group()
+            return right[0].upper() + right[1:] if match.group()[0].isupper() else right
+
+        text = pattern.sub(corrected, text)
+    return text
+
+
+# 'Another. piece of evidence': a sentence cut after a word or two to fit a plan, its rest in lowercase.
+_CUT_SHORT = re.compile(r"(?:^|(?<=[.!?] ))([^\W\d_]+(?: [^\W\d_]+)?)\. +(?=[a-z])", re.M)
+
+
+def styled_clean(profile_path: Path | None, register: str | None = None) -> Callable[[str], str]:
+    """clean_essay for samples in a style profile: also cuts spacing slips and recurring misspellings back
+    to how often the writer makes them, and rejoins sentences cut off to fit a sentence plan."""
+    if profile_path is None:
+        return clean_essay
+    registers = profile_registers(load_style_profile(profile_path))
+    register = (register if register in registers else registers[0]) if registers else register
+    rates, shares = quirk_rates(profile_path, register), misspelling_shares(profile_path, register)
+
+    def clean(reply: str) -> str:
+        return temper_misspellings(temper_quirks(_CUT_SHORT.sub(r"\1 ", clean_essay(reply)), rates), shares)
+
+    return clean
 
 
 _RULE = re.compile(r"^ {0,3}([-*_])(?: *\1){2,} *$")
@@ -601,11 +755,13 @@ def main() -> int:
     done = {json.loads(line)["id"] for line in out.read_text().splitlines() if line.strip()} if out.exists() else set()
     template = PROMPTS["student" if args.style == "student" else "plain"]
 
+    clean = styled_clean(args.style_profile, args.register)
+
     def write_essay(base_url: str, key: str, model: str, prompt: str) -> str:
         timeout = LOCAL_TIMEOUT if is_local(base_url) else REMOTE_TIMEOUT
-        essay = clean_essay(chat(base_url, key, model, prompt, args.temperature, system=system, timeout=timeout))
+        essay = clean(chat(base_url, key, model, prompt, args.temperature, system=system, timeout=timeout))
         if args.style == "humanize":
-            essay = clean_essay(chat(base_url, key, model, HUMANIZE.format(essay=essay), args.temperature,
+            essay = clean(chat(base_url, key, model, HUMANIZE.format(essay=essay), args.temperature,
                                      system=system, timeout=timeout))
         return essay
 

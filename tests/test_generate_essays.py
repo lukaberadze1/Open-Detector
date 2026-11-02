@@ -531,7 +531,7 @@ REGISTERED = {
             {"habit": "Start with However.", "rate": "10%", "status": "established", "seen": "essays", "example": "x"}],
             "golden_rule": "Argue hard and plainly."},
         "notes": {"covers": "Lesson captures.", "habits": [
-            {"habit": "Russian terms in Latin letters.", "rate": "rare", "status": "once", "seen": "2026-W44",
+            {"habit": "Russian terms in Latin letters.", "rate": "rare", "status": "emerging", "seen": "2026-W44",
              "example": "tavar"}], "golden_rule": "Write fast for yourself."},
     },
     "shared": {"never": ["Em-dashes."], "banned_ai_cliches": ["delve"]},
@@ -561,3 +561,85 @@ def test_the_writers_passages_and_counts_come_last(profile):
         "", "# The writer's own passages", generate_essays.EXAMPLES_INTRO,
         "", "Passage 1:", "first passage", "", "Passage 2:", "second passage",
         "", "# Counts to check", generate_essays.CHECKLIST_INTRO, "- About 5 sentences per 100 words."]
+
+
+def test_a_slip_stays_at_the_writers_rate():
+    sloppy = " ".join(f"The word{i} goes here , and it stops there ." for i in range(100))
+    rates = {"space_before_punctuation": 2.0, "double_space": 2.0, "lowercase_i": 0.0}
+    tempered = generate_essays.temper_quirks(sloppy, rates)
+    # 900 words at 2 per 1,000 is 2 slips, out of the 200 the model wrote; the words don't change.
+    assert 1 <= sum(tempered.count(mark) for mark in (" ,", " .")) <= 2
+    assert tempered.replace(" ,", ",").replace(" .", ".") == sloppy.replace(" ,", ",").replace(" .", ".")
+    assert generate_essays.temper_quirks(sloppy, rates) == tempered, "the same text keeps the same slips"
+
+
+def test_tempering_only_removes_slips_and_leaves_normal_text_alone():
+    text = "However i think its fine, i.e. it works (as planned).  Then it stopped ( for good )."
+    assert generate_essays.temper_quirks(text, dict.fromkeys(("space_before_punctuation", "double_space",
+                                                              "lowercase_i"), 0.0)) == \
+        "However I think its fine, i.e. it works (as planned). Then it stopped (for good)."
+    clean = "It works, and it stops. Then (as planned) it ends."
+    assert generate_essays.temper_quirks(clean, dict.fromkeys(("space_before_punctuation", "double_space"), 500.0)) \
+        == clean
+
+
+def test_slip_rates_come_from_the_measurements_beside_the_profile(tmp_path):
+    profile = tmp_path / "me_profile.json"
+    assert generate_essays.quirk_rates(profile) == generate_essays.DEFAULT_QUIRK_RATES, "nothing measured"
+    (tmp_path / "me").mkdir()
+    (tmp_path / "me/measurements.json").write_text(json.dumps({
+        "finalized_own": {"per_1000_words": {"space_before_punctuation": 2.0}},
+        "stacked": {"per_1000_words": {"space_before_punctuation": 9.0}}}))
+    assert generate_essays.quirk_rates(profile, "finalized")["space_before_punctuation"] == 2.0
+    assert generate_essays.quirk_rates(profile, "notes")["space_before_punctuation"] == 9.0
+    (tmp_path / "me/measurements.json").write_text(json.dumps({
+        "finalized": {"whole": {"per_1000_words": {"space_before_punctuation": 0.4}}}}))  # the built-in profile's shape
+    assert generate_essays.quirk_rates(profile, "finalized")["space_before_punctuation"] == 0.4
+
+
+def test_a_habit_seen_once_and_another_registers_words_stay_out_of_the_prompt():
+    profile = {"format": "registers-v2", "registers": {
+        "finalized": {"habits": [
+            {"habit": "Say clearly.", "rate": "2", "status": "established", "seen": "x", "example": "x"},
+            {"habit": "Odd aside.", "rate": "1", "status": "once", "seen": "x", "example": "x"}]},
+        "notes": {"habits": []}},
+        "shared": {"signature_vocabulary": ["clearly (finalized: 5x)", "famously (notes: 16x)",
+                                            "However (both registers)", "whatever (notes; once, 2026-W44)"]}}
+    finished = generate_essays.style_instructions(profile, "finalized")
+    assert "Say clearly." in finished and "Odd aside." not in finished
+    assert "clearly (finalized" in finished and "However" in finished
+    assert "famously" not in finished and "whatever" not in finished
+    notes = generate_essays.style_instructions(profile, "notes")
+    assert "famously" in notes and "clearly (finalized" not in notes and "whatever" not in notes
+
+
+def test_a_recurring_misspelling_stays_at_the_share_the_writer_misspells():
+    text = " ".join(["The soliders marched."] * 20)
+    tempered = generate_essays.temper_misspellings(text, [("soliders", "soldiers", 0.1)])
+    assert tempered.count("soliders") == 2 and tempered.count("soldiers") == 18
+    assert generate_essays.temper_misspellings(text, [("soliders", "soldiers", 1.0)]) == text, "their only spelling"
+    assert generate_essays.temper_misspellings("Cesar came.", [("cesar", "Caesar", 0.0)]) == "Caesar came."
+    assert generate_essays.temper_misspellings("Teh end.", [("teh", "the", 0.0)]) == "The end.", "keeps the capital"
+    clean = "The soldiers marched."
+    assert generate_essays.temper_misspellings(clean, [("soliders", "soldiers", 1.0)]) == clean, "never adds one"
+
+
+def test_misspelling_shares_are_counted_from_the_writing_beside_the_profile(tmp_path):
+    profile = tmp_path / "me_profile.json"
+    slips = {"recurring_misspellings": [
+        "'soliders' for soldiers (3)", "'aswell' for as well", "'eg' and 'ie' with no full stops",
+        "'Micronutreits' and 'Macronutreits' for micronutrients and macronutrients (reports)"]}
+    profile.write_text(json.dumps({"format": "registers-v2", "registers": {"notes": {"slips": slips}}}))
+    (tmp_path / "me").mkdir()
+    (tmp_path / "me/corpus.jsonl").write_text(json.dumps({"text": "soliders and soldiers, soldiers, soldiers aswell."}))
+    shares = {wrong: (right, share) for wrong, right, share in generate_essays.misspelling_shares(profile, "notes")}
+    assert shares["soliders"] == ("soldiers", 0.25)
+    assert shares["aswell"] == ("as well", 1.0), "written no other way"
+    assert shares["Macronutreits"] == ("macronutrients", generate_essays.DEFAULT_SLIP_SHARE), "not in the writing"
+    assert "eg" not in shares, "no word to put back"
+
+
+def test_a_sentence_cut_off_to_fit_a_plan_is_joined_again():
+    assert generate_essays._CUT_SHORT.sub(r"\1 ", "It fell. Another. piece of evidence.") == \
+        "It fell. Another piece of evidence."
+    assert generate_essays._CUT_SHORT.sub(r"\1 ", "Rome fell. Then it ended.") == "Rome fell. Then it ended."

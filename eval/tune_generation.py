@@ -61,6 +61,7 @@ from eval.generate_essays import (
     load_style_profile,
     profile_registers,
     style_instructions,
+    styled_clean,
     takes_temperature,
     thinking_level,
 )
@@ -78,7 +79,7 @@ from eval.generation_settings import (
     scores,
 )
 from eval.redteam_batch import (
-    AGAIN,
+    again_note,
     GROUP_SCHEMA,
     STRUCTURES,
     block_prompt,
@@ -403,6 +404,7 @@ def run_trial(trial: dict, jobs: list[dict], plan, system: str | None, api_key: 
     model, thinking, size = trial["model"], trial["thinking"], trial["group_size"]
     temperature = trial.get("temperature", temperature)
     seconds, requests, retried, tokens, texts = 0.0, 0, 0, Counter(), {}
+    clean = getattr(plan, "clean", clean_essay)
 
     def ask(prompt: str, **options) -> str:
         nonlocal seconds, requests, retried
@@ -437,14 +439,14 @@ def run_trial(trial: dict, jobs: list[dict], plan, system: str | None, api_key: 
         alone = group
         if len(group) > 1:
             written, alone = rewrite_group(plan, group, lambda prompt, jobs: ask(
-                prompt, json_schema=GROUP_SCHEMA, timeout=60 + 15 * len(jobs)), clean_essay)
+                prompt, json_schema=GROUP_SCHEMA, timeout=60 + 15 * len(jobs)), clean)
             texts.update(written)
             left_out += len(alone)
         for job in alone:  # as the page does: on its own, and once more if it comes back as the original
             prompt = block_prompt(plan, job)
-            texts[job["key"]] = follow_original(plan, job, clean_essay(ask(prompt, timeout=60)))
-            if copied(job["previous"], texts[job["key"]]):
-                texts[job["key"]] = follow_original(plan, job, clean_essay(ask(f"{prompt}\n\n{AGAIN}", timeout=60)))
+            texts[job["key"]] = follow_original(plan, job, clean(ask(prompt, timeout=60)))
+            if note := again_note(plan, job, texts[job["key"]]):
+                texts[job["key"]] = follow_original(plan, job, clean(ask(f"{prompt}\n\n{note}", timeout=60)))
     measured = [rewrite_measures(job["previous"], texts[job["key"]]) for job in jobs]
     return {**trial, "blocks": len(jobs), "text": "\n\n".join(texts[job["key"]] for job in jobs),
             "seconds": round(seconds, 2), "requests": requests, "retried": retried, "left_out": left_out,
@@ -696,6 +698,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.structure == "writer":  # skeletons from the profile's writer, with or without the profile itself
             plan.shapes = writer_shapes(args.style, args.register)
         profile = load_style_profile(args.style)
+        if not args.no_style:
+            plan.clean = styled_clean(args.style, args.register)
         examples, checklist = ([], []) if args.no_style or not args.examples else \
             style_examples(args.style, args.register, args.examples)
         system = None if args.no_style else style_instructions(profile, args.register, examples, checklist)

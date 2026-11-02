@@ -229,7 +229,10 @@ FOLLOW = {
     "writer": "Write it in the sentence plan given with it, taken from a passage of the writer's own: one "
               "sentence for each numbered line, in that order, each within a few words of its length and with "
               "the punctuation listed. Fit the original's meaning into those sentences, merging, splitting or "
-              "reordering its points as the plan needs, in new words. Leave out the numbers.",
+              "reordering its points as the plan needs, in new words. Every sentence is a whole sentence that "
+              "reads naturally, and a long line is one long sentence, its clauses joined by commas and 'and'; "
+              "when a point won't fit, go over the length rather than cut a sentence off or leave a lone word. "
+              "Leave out the numbers.",
     "light": "Edit the original lightly, sentence by sentence: keep every numbered sentence in its order, with "
              "its length, its punctuation and most of its words, and change about one word or phrase in four. "
              "Keep its casing, spacing and spelling as they are.",
@@ -245,6 +248,12 @@ _WORDS = re.compile(r"[^\W\d_]+(?:['\u2019][^\W\d_]+)*")
 _NUMBERED = re.compile(r"^[ \t]*\d+\.[ \t]+(?:\(\d+ words?\)[ \t]*)?", re.M)
 
 
+MIN_PLANNED = 3  # words: under this a line of the writer's isn't a sentence ('4.', '"..."', 'Luka writes:')
+OFF_PLAN = 0.7  # of a plan's words, or of its sentences' length, under which a rewrite is asked for again
+_CUT_OFF = re.compile(r"\b(?:the|a|an|of|and|their|which)\.(?=\s|$)")
+ALL_OF_PLAN = ("That came back short of its sentence plan. Write it again with every line at its full length, each "
+               "a whole sentence: join clauses with commas and 'and' to reach the length, and never end a sentence "
+               "on a word like 'the' or leave a word on its own.")
 MARK_NAMES = ((",", "comma"), ("(", "bracket pair"), (";", "semicolon"), (":", "colon"), ("?", "question mark"))
 
 
@@ -267,12 +276,18 @@ def paragraph_shapes(paragraphs: Iterable[str]) -> list[list[tuple[int, str]]]:
     return [[sentence_shape(text[s.start:s.end]) for s in split_sentences(text)] for text in paragraphs]
 
 
+def _sentences_only(shapes: list[list[tuple[int, str]]]) -> list[list[tuple[int, str]]]:
+    """Shapes with what the splitter took for a sentence left out: a list number, a quotation cut to
+    '"..."', a label. Their one-word lines in a plan had models write 'Veterans.' and 'Power.'"""
+    return [[shape for shape in paragraph if shape[0] >= MIN_PLANNED] for paragraph in shapes]
+
+
 def borrowed_skeleton(shapes: list[list[tuple[int, str]]], words: int, key: str) -> list[tuple[int, str]] | None:
     """A run of consecutive sentences from one of the writer's paragraphs, `words` long in all to within a
     quarter, picked by the block's `key` so a block keeps its plan when it is written again. None when
     nothing the writer wrote fits."""
     fits = []
-    for paragraph in shapes:
+    for paragraph in _sentences_only(shapes):
         for start in range(len(paragraph)):
             total = 0
             for end in range(start, len(paragraph)):
@@ -284,6 +299,31 @@ def borrowed_skeleton(shapes: list[list[tuple[int, str]]], words: int, key: str)
     return fits[int(hashlib.sha256(key.encode()).hexdigest(), 16) % len(fits)] if fits else None
 
 
+def _skeleton(plan, job: dict) -> list[tuple[int, str]]:
+    """The sentence plan of a "writer" rewrite: borrowed from the writer, or the block's own when the
+    writer has nothing that fits."""
+    words = round(count_words(job["previous"]) * getattr(plan, "stretch", 1.0))
+    return (borrowed_skeleton(getattr(plan, "shapes", None) or [], words, job.get("key", job["label"]))
+            or paragraph_shapes([job["previous"]])[0])
+
+
+def off_plan(plan, job: dict, text: str) -> bool:
+    """Whether a "writer" rewrite came back short of its plan: too few words, sentences well under the
+    plan's length, or one cut off ('...the fall of the.'). Models write about half of a plan's words."""
+    if structure(plan) != "writer" or job["kind"] == "answer_box" or not text.strip():
+        return False
+    skeleton = _skeleton(plan, job)
+    planned, words = sum(length for length, _ in skeleton), count_words(text)
+    sentences = len(split_sentences(text)) or 1
+    return bool(_CUT_OFF.search(text) or words < OFF_PLAN * planned
+                or words / sentences < OFF_PLAN * planned / len(skeleton))
+
+
+def again_note(plan, job: dict, text: str) -> str:
+    """What to tell the model when a block is to be written again: nothing when it needn't be."""
+    return AGAIN if copied(job["previous"], text) else ALL_OF_PLAN if off_plan(plan, job, text) else ""
+
+
 def original_text(plan, job: dict) -> str:
     """A text block's original as the prompt shows it. When the rewrite follows it, its sentences are
     numbered with their lengths, a blank line between paragraphs, so the model can match each one. In
@@ -292,9 +332,7 @@ def original_text(plan, job: dict) -> str:
     if structure(plan) == "free" or job["kind"] == "answer_box":
         return job["previous"]
     if structure(plan) == "writer":
-        words = round(count_words(job["previous"]) * getattr(plan, "stretch", 1.0))
-        skeleton = (borrowed_skeleton(getattr(plan, "shapes", None) or [], words, job.get("key", job["label"]))
-                    or paragraph_shapes([job["previous"]])[0])
+        skeleton = _skeleton(plan, job)
         lines = [f"{number}. {length} word{'s' if length != 1 else ''}" + (f", {marks}" if marks else "")
                  for number, (length, marks) in enumerate(skeleton, 1)]
         return job["previous"] + "\n\nSentence plan:\n" + "\n".join(lines)
@@ -377,22 +415,29 @@ def rewrite_group(plan, group: list[dict], ask: Callable[[str, list[dict]], str]
     handed back as their originals once more, together and told so (AGAIN_ALL): at most two requests,
     where asking for each copy on its own would send the profile and the document again per block. Gives
     each written block's text by key, a copy included if it comes back twice (it is never saved as AI),
-    and the blocks a reply left out, to be written on their own."""
-    texts, alone, pending = {}, [], group
+    a block short of its plan asked for again too (off_plan), and the blocks a reply left out, to be
+    written on their own."""
+    texts, alone, pending, notes = {}, [], group, ""
     for attempt in range(2):
-        prompt = group_prompt(plan, pending) + (f"\n\n{AGAIN_ALL}" if attempt else "")
+        prompt = group_prompt(plan, pending) + notes
         parsed = parse_group_reply(ask(prompt, pending), [f"B{number}" for number in range(1, len(pending) + 1)])
-        copies = []
+        copies, short = [], []
         for number, job in enumerate(pending, 1):
             if not (text := follow_original(plan, job, clean(parsed.get(f"B{number}", "")))):
-                alone.append(job)
+                if job["key"] not in texts:
+                    alone.append(job)
                 continue
+            if attempt and off_plan(plan, job, text) and count_words(text) < count_words(texts[job["key"]]):
+                continue  # asked again and came back shorter: the first was nearer the plan
             texts[job["key"]] = text
             if copied(job["previous"], text):
                 copies.append(job)
-        if not copies:
+            elif off_plan(plan, job, text):
+                short.append(job)
+        if not copies and not short:
             break
-        pending = copies
+        pending = copies + short
+        notes = (f"\n\n{AGAIN_ALL}" if copies else "") + (f"\n\n{ALL_OF_PLAN}" if short else "")
     return texts, alone
 
 
@@ -411,6 +456,7 @@ def borrowed_plan(shapes: list[list[tuple[int, str]]], words: int, key: str) -> 
     """A whole piece's sentence plan borrowed from the writer: consecutive paragraphs from one place in
     their writing, cut at the sentence that brings it to `words` words, picked by `key`. None when the
     writer has nothing that long."""
+    shapes = _sentences_only(shapes)
     starts = [index for index in range(len(shapes))
               if sum(length for paragraph in shapes[index:] for length, _ in paragraph) >= words]
     if not starts:

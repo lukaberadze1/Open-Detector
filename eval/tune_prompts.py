@@ -36,6 +36,7 @@ from eval.generate_essays import (
     load_style_profile,
     profile_registers,
     style_instructions,
+    styled_clean,
     thinking_level,
 )
 from eval.redteam_batch import (DRAFT_STRETCH, FRAMINGS, GROUP_SCHEMA, borrowed_plan, restyle, revise_flagged,
@@ -60,7 +61,7 @@ PROMPTS = {
 
 
 def run_sample(model: str, prompt: str, system: str | None, api_key: str, temperature: float,
-               thinking: str, shapes: list | None = None, analyze=None, rounds: int = 0) -> dict:
+               thinking: str, shapes: list | None = None, analyze=None, rounds: int = 0, clean=clean_essay) -> dict:
     """One sample: a draft, then with `shapes` that draft rewritten in the writer's sentences (restyle),
     then with `rounds` its flagged passages revised against the detector's `analyze` (revise_flagged)."""
     tokens, started = dict.fromkeys(TOKEN_FIELDS, 0), time.monotonic()
@@ -74,11 +75,11 @@ def run_sample(model: str, prompt: str, system: str | None, api_key: str, temper
             tokens[field] += usage.get(field, 0)
         return reply
 
-    draft = clean_essay(ask(prompt))
-    text = restyle(draft, shapes, ask, clean_essay) if shapes else draft
+    draft = clean(ask(prompt))
+    text = restyle(draft, shapes, ask, clean) if shapes else draft
     history = None
     if rounds:
-        text, history = revise_flagged(text, analyze, ask, clean_essay, shapes or [], rounds)
+        text, history = revise_flagged(text, analyze, ask, clean, shapes or [], rounds)
     return {"text": text, "draft": draft if shapes else None, "seconds": round(time.monotonic() - started, 2),
             "tokens": tokens, "rounds": history}
 
@@ -166,7 +167,8 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     sample = run_sample(model, prompt, system, api_key, args.temperature, args.thinking,
                                         shapes if args.restyle else None,
-                                        detector.analyze if detector else None, args.revise)
+                                        detector.analyze if detector else None, args.revise,
+                                        styled_clean(args.style, register) if not args.no_style else clean_essay)
                 except (QuotaExhausted, APIError) as exc:
                     print(f"  {model} failed, skipping it: {exc}")
                     break

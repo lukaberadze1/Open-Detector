@@ -98,6 +98,18 @@ the measurements where they exist (`per_1000_words`, `sentence_openers_pct`, `me
 the script doesn't count, count them in `new_this_week.md` and the earlier evidence and give the
 count with the words it came from ("13 in 37,867 words").
 
+### A slip is an exception, never a rule
+Most of what the writer writes is spelled, spaced and punctuated normally, and the prompt says so. Models
+overdo whatever the profile names: told about spaces before punctuation they wrote 8 times the writer's
+rate. So:
+- Give a slip's rate as the overall figure and what it means in a 300-word text ("0 or 1"), never a
+  range stretched to one unusual note or essay. Name an outlier as an outlier.
+- Examples show only the habit they are for. Clean every other slip out of them: an example of a short
+  sentence is 'Therefore she is lonely.', without the space before the full stop.
+- `always` is for what the counts show nearly every time. Give the share for each register.
+- `eval/generate_essays.py` drops `once` habits and words from the prompt, and `temper_quirks` cuts spacing
+  slips back to `measurements.json`'s rates, so a word tagged `(finalized`, `(notes` or `once` is safe to keep.
+
 ### Slips by their counts
 - **recurring_misspellings**: a misspelling seen 3 or more times (`most_common_unknown` in
   `all_time_unweighted`), with the word it stands for and its count. Update the counts each week.

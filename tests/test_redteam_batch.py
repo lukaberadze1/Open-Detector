@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from eval import redteam_batch
 from eval.redteam_batch import (
     BatchWorker,
     Checkpoint,
@@ -397,13 +398,14 @@ def test_only_flagged_passages_are_revised_and_a_worse_revision_is_dropped():
         return SimpleNamespace(text=current, ai_probability=0.9 if "Flagged" in current else 0.1, sentences=sentences)
 
     asked = []
+    plainer = " ".join(["A plainer passage, with the bus I missed in it."] * 6)
 
     def ask(prompt, pending):
         asked.append(prompt)
-        return json.dumps({"blocks": [{"id": "B1", "text": "A plainer passage, with the bus I missed in it."}]})
+        return json.dumps({"blocks": [{"id": "B1", "text": plainer}]})
 
     revised, history = revise_flagged(text, analyze, ask, str.strip, [[(9, "1 comma")]], rounds=3)
-    assert revised == f"{fine}\n\nA plainer passage, with the bus I missed in it.", "only the flagged passage changes"
+    assert revised == f"{fine}\n\n{plainer}", "only the flagged passage changes"
     assert history == [0.9, 0.1] and len(asked) == 1, "stops once under the target"
     assert REVISE in asked[0] and "Sentence plan:" in asked[0] and fine not in asked[0].split("Blocks:")[1]
 
@@ -437,3 +439,43 @@ def test_each_revised_passage_is_kept_only_if_it_helps():
     revised, history = revise_flagged(text, analyze, ask, str.strip, [], rounds=1)
     assert revised == f"A plain passage about the bus.\n\n{second}\n\nAnd a line of my own.\n\nAnd one more."
     assert history == pytest.approx([0.9, 0.4]), "the good passage is kept though the other one hurt"
+
+
+def _writer_plan():
+    return SimpleNamespace(prompt="", context_text="x", blocks=[], answer_slots=[], match_existing_lengths=True,
+                           answer_words=100, structure="writer", shapes=[[(20, ""), (1, ""), (20, ""), (2, "")]])
+
+
+def test_a_plan_leaves_out_what_only_looks_like_a_sentence():
+    assert redteam_batch.borrowed_skeleton([[(20, ""), (1, ""), (20, ""), (2, "")]], 40, "k") == [(20, ""), (20, "")]
+    assert redteam_batch.borrowed_plan([[(20, ""), (1, "")], [(20, "")]], 40, "k") == [[(20, "")], [(20, "")]]
+
+
+def test_a_rewrite_short_of_its_plan_is_asked_for_again_once():
+    plan = _writer_plan()
+    job = {"kind": "text_block", "label": "Passage 1", "question": "", "key": "1", "previous": " ".join(["word"] * 40)}
+    full = "A sentence that keeps going " + " ".join(["on"] * 34) + "."
+    assert redteam_batch.off_plan(plan, job, full) is False
+    assert redteam_batch.off_plan(plan, job, "Far too short here.") is True
+    assert redteam_batch.off_plan(plan, job, full[:-1] + " of the.") is True, "a sentence cut off"
+    prompts = []
+
+    def ask(prompt, jobs):
+        prompts.append(prompt)
+        return json.dumps({"blocks": [{"id": "B1", "text": full if len(prompts) > 1 else "Far too short here."}]})
+
+    written, alone = redteam_batch.rewrite_group(plan, [job], ask, str)
+    assert written == {"1": full} and not alone and len(prompts) == 2
+    assert redteam_batch.ALL_OF_PLAN in prompts[1] and redteam_batch.ALL_OF_PLAN not in prompts[0]
+
+
+def test_asked_again_a_shorter_rewrite_doesnt_replace_a_longer_one():
+    plan = _writer_plan()
+    job = {"kind": "text_block", "label": "Passage 1", "question": "", "key": "1", "previous": " ".join(["word"] * 40)}
+    replies = iter(["Short but the longer of the two replies.", "Shorter still."])
+
+    def ask(prompt, jobs):
+        return json.dumps({"blocks": [{"id": "B1", "text": next(replies)}]})
+
+    written, _ = redteam_batch.rewrite_group(plan, [job], ask, str)
+    assert written == {"1": "Short but the longer of the two replies."}

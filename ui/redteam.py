@@ -39,7 +39,6 @@ from eval.generate_essays import (
     THINKING_LEVELS,
     APIError,
     answer_token_limit,
-    clean_essay,
     generate_with_fallback,
     is_local,
     load_style_profile,
@@ -47,12 +46,13 @@ from eval.generate_essays import (
     profile_registers,
     local_model_problem,
     style_instructions,
+    styled_clean,
     unload_local_model,
 )
 from eval import generation_settings
 from eval.generation_settings import MAX_POINTS, MEASURES
 from eval.redteam_batch import (
-    AGAIN,
+    again_note,
     DRAFT_STRETCH,
     GROUP_SCHEMA,
     STRUCTURES,
@@ -1297,6 +1297,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
     # answers one request at a time anyway.
     group_size = 1 if plan.evasion else plan.group_size
     workers = 1 if plan.evasion or is_local(conn.base_url) else plan.parallel
+    clean = styled_clean(plan.style_path, plan.register)
 
     def words(key: str) -> int:
         return target_words(plan, by_key[key])
@@ -1404,11 +1405,11 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
             status["note"] = None
         else:
             answer, used_model, model_errors = write(prompt, max_tokens)
-            if copied(job["previous"], follow_original(plan, job, clean_essay(answer))):
-                wrote_with(used_model, model_errors)  # handed back the original: once more, in new words
-                answer, used_model, model_errors = write(f"{prompt}\n\n{AGAIN}", max_tokens)
+            if note := again_note(plan, job, follow_original(plan, job, clean(answer))):
+                wrote_with(used_model, model_errors)  # handed back the original, or short of its plan: once more
+                answer, used_model, model_errors = write(f"{prompt}\n\n{note}", max_tokens)
         wrote_with(used_model, model_errors)
-        return follow_original(plan, job, clean_essay(answer)), used_model
+        return follow_original(plan, job, clean(answer)), used_model
 
     def generate_group(group: list[str]) -> Iterator[tuple[str, str, str]]:
         """Write a group of blocks in one request, and any it hands back as the original once more together
@@ -1424,7 +1425,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
                 models.update(dict.fromkeys((job["key"] for job in jobs), used_model))
                 return reply
 
-            written, again = rewrite_group(plan, group_jobs, ask, clean_essay)
+            written, again = rewrite_group(plan, group_jobs, ask, clean)
             for job in group_jobs:
                 if job["key"] in written:
                     yield job["key"], written[job["key"]], models[job["key"]]
@@ -1539,6 +1540,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     drafts: dict[str, str] = {}  # every draft written, with the model that wrote it
     reports: dict = {}  # the detector's report on each draft robustness mode scored
     revise_history: list = []  # with plan.revise, the AI likelihood before and after each round
+    clean = styled_clean(plan.style_path, plan.register)
 
     def generate(prompt: str) -> str:
         nonlocal model, model_errors
@@ -1547,7 +1549,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
             0.95 if plan.evasion else plan.temperature,
             system, conn.local_url, conn.local_model, answer_token_limit(plan.words), thinking=plan.thinking,
         )
-        text = clean_essay(reply)
+        text = clean(reply)
         drafts[text] = model
         return text
 
@@ -1602,14 +1604,14 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
                 essay = generate(user_prompt)
             if plan.restyle and plan.shapes and not target_section:
                 with st.spinner("Rewriting it in the writer's sentences…"):
-                    essay = restyle(essay, plan.shapes, restyle_ask, clean_essay)
+                    essay = restyle(essay, plan.shapes, restyle_ask, clean)
                 drafts[essay] = model
             if plan.revise:
                 if conn.local_model and model == conn.local_model:
                     unload_local_model(conn.local_url, conn.local_model)  # the detector needs the memory it holds
                 with st.spinner("Revising the passages the detector flags…"):
                     essay, revise_history = revise_flagged(
-                        essay, models.get_detector(plan.profile).analyze, restyle_ask, clean_essay,
+                        essay, models.get_detector(plan.profile).analyze, restyle_ask, clean,
                         plan.shapes or [], plan.revise)
                 drafts[essay] = model
     except APIError as exc:
