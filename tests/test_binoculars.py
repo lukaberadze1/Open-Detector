@@ -76,3 +76,34 @@ def test_span_scores_are_ratios_over_tokens_in_span():
     scores = eng.span_scores(TEXT, [(a, b), (0, 5)])
     assert scores[0] == np.float64(expected)
     assert np.isnan(scores[1]), "spans with too few tokens get NaN"
+
+
+def test_fast_detect_and_perplexity_match_their_definitions():
+    eng = engine(64, 32)
+    _, extras = eng.scan(TEXT, [(0, len(TEXT))])
+    ids = FakeTokenizer()(TEXT)["input_ids"]
+    log_q = torch.log_softmax(eng.observer.table[torch.tensor(ids[:-1])], -1)
+    q = log_q.exp()
+    logp = log_q.gather(-1, torch.tensor(ids[1:])[:, None]).squeeze(-1)
+    mean = (q * log_q).sum(-1)
+    var = (q * log_q.square()).sum(-1) - mean.square()
+    assert abs(extras["perp_doc"] + logp.mean().item()) < 1e-4
+    assert abs(extras["fast_doc"] - ((logp - mean).mean() / var.mean().sqrt()).item()) < 1e-4
+
+
+def test_text_the_model_expects_scores_higher_on_fast_detect():
+    eng = engine(64, 32)
+    ids = FakeTokenizer()(TEXT)["input_ids"]
+    likely = [ids[0]]
+    for _ in range(200):
+        likely.append(int(eng.observer.table[likely[-1]].argmax()))
+    tok = eng.tokenizer
+    eng.tokenizer = lambda text, **_: {"input_ids": likely, "offset_mapping": [(i, i + 1) for i in range(len(likely))]}
+    expected = eng.scan("x" * len(likely), [(0, len(likely))])[1]["fast_doc"]
+    eng.tokenizer = tok
+    assert expected > eng.scan(TEXT, [(0, len(TEXT))])[1]["fast_doc"]
+
+
+def test_too_short_text_has_no_whole_text_readings():
+    _, extras = engine(64, 32).scan("one two three", [(0, 13)])
+    assert np.isnan(extras["fast_doc"]) and np.isnan(extras["perp_doc"])

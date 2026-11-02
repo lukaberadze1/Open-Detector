@@ -264,8 +264,12 @@ def _details(result: dict) -> None:
     thresholds = report.thresholds
     st.markdown(f"**Cut-offs:** needs review above {thresholds['review']:.1%}, likely AI above {thresholds['ai']:.1%}.")
     if report.features:
-        st.dataframe([{"Feature": name, "Value": round(value, 4)} for name, value in report.features.items()],
-                     hide_index=True)
+        used = result.get("contributions") or {}
+        st.dataframe([{"Feature": name, "Value": round(value, 4), "In the score": name in used}
+                      for name, value in report.features.items()], hide_index=True)
+        st.caption("burst: how much sentence lengths vary. fast: Fast-DetectGPT, higher is more AI-like. perp: raw "
+                   "perplexity, lower is more AI-like, but it also runs low on plain writing. Only the features "
+                   "marked as in the score change the result.")
     norm = report.normalization
     st.caption(f"Normalization removed {norm.invisible_chars} hidden characters and {norm.homoglyphs} look-alike "
                f"letters, and folded {norm.compatibility_chars} compatibility characters.")

@@ -11,7 +11,7 @@ import numpy as np
 from .combiner import Combiner
 from .config import DetectorConfig
 from .normalize import NormalizationReport, normalize
-from .segment import Sentence, Window, count_words, looks_like_prose, sentence_windows, split_sentences
+from .segment import Sentence, Window, burstiness, count_words, looks_like_prose, sentence_windows, split_sentences
 
 # Used only when no combiner has been fitted yet: a plain average of the classifiers'
 # probabilities, with conservative cut-offs. The app labels these results uncalibrated.
@@ -90,7 +90,9 @@ class Detector:
         names = [f"{c.name}_{stat}" for c in self.classifiers for stat in ("mean", "max")]
         if self.binoculars is not None:
             names += ["bino_doc", "bino_min"]
-        return names
+            if hasattr(self.binoculars, "scan"):
+                names += ["fast_doc", "perp_doc"]
+        return [*names, "burst_cv", "burst_adj"]
 
     @property
     def missing_features(self) -> list[str]:
@@ -99,18 +101,22 @@ class Detector:
 
     # -- scoring --------------------------------------------------------------------
 
-    def _engine_scores(self, text: str, windows: list[Window]) -> tuple[dict[str, np.ndarray], float]:
-        """Raw score of every engine on every window, plus Binoculars on the whole text."""
+    def _engine_scores(self, text: str, windows: list[Window]) -> tuple[dict[str, np.ndarray], dict[str, float]]:
+        """Raw score of every engine on every window, plus the language-model readings of the whole text."""
         chunks = [text[w.start : w.end] for w in windows]
         scores = {c.name: np.asarray(c.window_logits(chunks), dtype=float) for c in self.classifiers}
-        bino_doc = math.nan
+        whole = {}
         if self.binoculars is not None:
             spans = [(0, len(text))] + [(w.start, w.end) for w in windows]
-            bino = np.asarray(self.binoculars.span_scores(text, spans), dtype=float)
-            bino_doc, scores["bino"] = float(bino[0]), bino[1:]
-        return scores, bino_doc
+            scan = getattr(self.binoculars, "scan", None)
+            bino, whole = scan(text, spans) if scan else (self.binoculars.span_scores(text, spans), {})
+            bino = np.asarray(bino, dtype=float)
+            whole = {"bino_doc": float(bino[0]), **whole}
+            scores["bino"] = bino[1:]
+        return scores, whole
 
-    def _doc_features(self, scores: dict[str, np.ndarray], windows: list[Window], bino_doc: float) -> dict[str, float]:
+    def _doc_features(self, scores: dict[str, np.ndarray], windows: list[Window],
+                      whole: dict[str, float]) -> dict[str, float]:
         weights = np.array([w.words for w in windows], dtype=float)
         feats = {}
         for c in self.classifiers:
@@ -119,8 +125,8 @@ class Detector:
             feats[f"{c.name}_max"] = float(logits.max())
         if self.binoculars is not None:
             bino = scores["bino"]
-            feats["bino_doc"] = bino_doc
-            feats["bino_min"] = float(np.nanmin(bino)) if not np.isnan(bino).all() else bino_doc
+            feats.update(whole)
+            feats["bino_min"] = float(np.nanmin(bino)) if not np.isnan(bino).all() else whole["bino_doc"]
         return feats
 
     def _window_features(self, scores: dict[str, np.ndarray], k: int) -> dict[str, float]:
@@ -166,8 +172,8 @@ class Detector:
             return {name: math.nan for name in self.feature_names}
         cfg = self.config
         windows = sentence_windows(sentences, cfg.doc_window_words, cfg.doc_stride_words)
-        scores, bino_doc = self._engine_scores(clean, windows)
-        return self._doc_features(scores, windows, bino_doc)
+        scores, whole = self._engine_scores(clean, windows)
+        return {**self._doc_features(scores, windows, whole), **burstiness(clean, sentences)}
 
     def score(self, text: str) -> float:
         return float(self._probabilities([self.features(text)])[0])
@@ -186,12 +192,12 @@ class Detector:
         doc_windows = sentence_windows(sents, cfg.doc_window_words, cfg.doc_stride_words)
         local_windows = (sentence_windows(sents, cfg.local_window_words, cfg.local_stride_words,
                                           cfg.local_min_paragraph_words) if sentences else [])
-        scores, bino_doc = self._engine_scores(clean, doc_windows + local_windows)
+        scores, whole = self._engine_scores(clean, doc_windows + local_windows)
         nd = len(doc_windows)
         doc_scores = {k: v[:nd] for k, v in scores.items()}
         local_scores = {k: v[nd:] for k, v in scores.items()}
 
-        feats = self._doc_features(doc_scores, doc_windows, bino_doc)
+        feats = {**self._doc_features(doc_scores, doc_windows, whole), **burstiness(clean, sents)}
         p = float(self._probabilities([feats])[0])
 
         engines = {c.name: _sigmoid(feats[f"{c.name}_mean"]) for c in self.classifiers}

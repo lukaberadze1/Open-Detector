@@ -1,6 +1,14 @@
 import itertools
+import math
 
-from opendetector.segment import Sentence, looks_like_prose, paragraph_blocks, sentence_windows, split_sentences
+from opendetector.segment import (
+    Sentence,
+    burstiness,
+    looks_like_prose,
+    paragraph_blocks,
+    sentence_windows,
+    split_sentences,
+)
 
 
 def texts(text):
@@ -88,3 +96,18 @@ def test_short_text_is_one_window_and_long_sentence_stands_alone():
     windows = sentence_windows(fake_sentences([10, 500, 10]), 100, 50)
     assert any(w.first == w.last == 1 for w in windows)
     assert set().union(*(range(w.first, w.last + 1) for w in windows)) == {0, 1, 2}
+
+
+def test_burstiness_is_zero_for_even_sentences_and_higher_for_uneven_ones():
+    even = "One two three four five six. " * 6
+    uneven = "Yes indeed. " + "This one keeps going for a good while longer than the one before it. " + "Right. " * 2 \
+        + "Then another long sentence arrives and it carries on for quite some time too. "
+    flat = burstiness(even, split_sentences(even))
+    assert flat["burst_cv"] == 0 and flat["burst_adj"] == 0
+    varied = burstiness(uneven, split_sentences(uneven))
+    assert varied["burst_cv"] > 0.3 and varied["burst_adj"] > 0.3
+
+
+def test_burstiness_needs_enough_sentences():
+    text = "Only two sentences here. And another one."
+    assert all(math.isnan(v) for v in burstiness(text, split_sentences(text)).values())

@@ -11,11 +11,17 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_ROOT = Path(os.environ["OPENDETECTOR_HOME"]).expanduser() if os.environ.get("OPENDETECTOR_HOME") else ROOT
 
 
+# A RoBERTa classifier trained on ChatGPT and human answers. Off by default: no shipped combiner uses it yet,
+# so loading it would cost about 500 MB for no change in the score. eval.featurize turns it on to measure it.
+ROBERTA_MODEL = "Hello-SimpleAI/chatgpt-detector-roberta"
+
+
 @dataclass
 class DetectorConfig:
     # Engines; set any model id to None to disable that engine.
     glyph_model: str | None = "ogmatrixllm/glyph-v1.1"
     desklib_model: str | None = "desklib/ai-text-detector-v1.01"
+    roberta_model: str | None = None
     # Binoculars needs a base/instruct pair sharing one tokenizer. The paper uses
     # tiiuae/falcon-7b + falcon-7b-instruct (~28 GB); the 0.5B Qwen pair fits an 8 GB
     # laptop. Swap in Qwen/Qwen2.5-1.5B(-Instruct) or larger if you have the memory.

@@ -38,7 +38,8 @@ def make(min_words=40, combiner=None):
 def test_feature_names_and_values():
     det = make()
     feats = det.features(HUMAN * 6 + AI * 6)
-    assert set(feats) == {"fake_mean", "fake_max", "bino_doc", "bino_min"} == set(det.feature_names)
+    assert set(feats) == {"fake_mean", "fake_max", "bino_doc", "bino_min", "burst_cv", "burst_adj"} == set(
+        det.feature_names)
     assert feats["fake_max"] > feats["fake_mean"]
     assert feats["bino_min"] == 0.7
 
@@ -107,3 +108,24 @@ def test_hidden_characters_are_reported():
     report = make().analyze((HUMAN * 6).replace("bees", "be​es"))
     assert report.normalization.invisible_chars == 6
     assert "be​es" not in report.text
+
+
+class ScanningBinoculars(LengthBinoculars):
+    def __init__(self):
+        self.calls = 0
+
+    def scan(self, text, spans):
+        self.calls += 1
+        return self.span_scores(text, spans), {"fast_doc": 1.5, "perp_doc": 3.0}
+
+
+def test_language_model_readings_reach_the_report_without_moving_the_score():
+    config = DetectorConfig(min_words=40, doc_window_words=120, doc_stride_words=60, local_window_words=40,
+                            local_stride_words=20)
+    text = HUMAN * 6 + AI * 6
+    plain = Detector([KeywordClassifier()], LengthBinoculars(), None, config).analyze(text)
+    bino = ScanningBinoculars()
+    report = Detector([KeywordClassifier()], bino, None, config).analyze(text)
+    assert report.features["fast_doc"] == 1.5 and report.features["perp_doc"] == 3.0
+    assert "burst_cv" in report.features and bino.calls == 1, "one language-model pass per analysis"
+    assert report.ai_probability == plain.ai_probability

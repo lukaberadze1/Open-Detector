@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import bisect
 import itertools
+import math
 import re
 import statistics
 from dataclasses import dataclass
+
+MIN_BURST_SENTENCES = 5
 
 _ABBREVIATIONS = {
     "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "e.g", "i.e", "al",
@@ -95,6 +98,17 @@ def split_sentences(text: str) -> list[Sentence]:
 
 def count_words(text: str) -> int:
     return len(_WORD_RE.findall(text))
+
+
+def burstiness(text: str, sentences: list[Sentence]) -> dict[str, float]:
+    """How much sentence lengths vary. `burst_cv` is their spread over their mean, `burst_adj` the mean jump
+    between neighbouring sentences over the mean. NaN under MIN_BURST_SENTENCES, too few to measure."""
+    lengths = [n for n in (count_words(text[s.start : s.end]) for s in sentences) if n]
+    if len(lengths) < MIN_BURST_SENTENCES:
+        return {"burst_cv": math.nan, "burst_adj": math.nan}
+    mean = statistics.fmean(lengths)
+    jumps = [abs(b - a) for a, b in itertools.pairwise(lengths)]
+    return {"burst_cv": statistics.pstdev(lengths) / mean, "burst_adj": statistics.fmean(jumps) / mean}
 
 
 def _unwrap(lines: list[str]) -> list[str]:

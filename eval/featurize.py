@@ -17,6 +17,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from opendetector import Detector, DetectorConfig
+from opendetector.config import ROBERTA_MODEL
 from opendetector.normalize import normalize
 from opendetector.segment import count_words, looks_like_prose
 
@@ -49,7 +50,8 @@ def main() -> None:
     parser.add_argument("--min-words", type=int, default=DetectorConfig().min_words,
                         help="skip shorter texts; the detector abstains on them anyway")
     parser.add_argument("--engines", default="glyph,desklib,bino",
-                        help="comma-separated engines to run (e.g. desklib for the slim profile)")
+                        help="comma-separated engines to run (e.g. desklib for the slim profile); roberta "
+                             "is measured only when asked for")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--dtype", default="auto", help="auto, float32 or bfloat16; match the deployment's")
     parser.add_argument("--seed", type=int, default=0)
@@ -57,9 +59,9 @@ def main() -> None:
                         help="only add the prose flag to an existing --out cache (no scoring)")
     args = parser.parse_args()
     engines = [e.strip() for e in args.engines.split(",") if e.strip()]
-    unknown = sorted(set(engines) - {"glyph", "desklib", "bino"})
+    unknown = sorted(set(engines) - {"glyph", "desklib", "roberta", "bino"})
     if unknown:
-        parser.error(f"unknown engines: {', '.join(unknown)} (choose from glyph, desklib, bino)")
+        parser.error(f"unknown engines: {', '.join(unknown)} (choose from glyph, desklib, roberta, bino)")
 
     df = load(args)
     long_enough = df["text"].map(lambda t: count_words(t) if isinstance(t, str) else 0) >= args.min_words
@@ -82,7 +84,8 @@ def main() -> None:
 
     from opendetector.engines import ENGINE_NAMES, build_engine, free_memory
 
-    config = DetectorConfig(device=args.device, dtype=args.dtype)
+    config = DetectorConfig(device=args.device, dtype=args.dtype,
+                            roberta_model=ROBERTA_MODEL if "roberta" in engines else None)
     texts = {row.id: row.text if isinstance(row.text, str) else "" for row in todo.itertuples(index=False)}
     features: dict[str, dict] = {i: {} for i in texts}
     # One engine at a time, so peak memory is a single model; each pass resumes on its own.

@@ -27,7 +27,9 @@ from .datasets import COLUMNS
 
 META = set(COLUMNS) | {"words", "prose"}
 # Each engine's headline feature, oriented so that higher = more AI-like.
-SINGLE_ENGINE = {"GLYPH": ("glyph_mean", 1), "Desklib": ("desklib_mean", 1), "Binoculars": ("bino_doc", -1)}
+SINGLE_ENGINE = {"GLYPH": ("glyph_mean", 1), "Desklib": ("desklib_mean", 1), "RoBERTa": ("roberta_mean", 1),
+                 "Binoculars": ("bino_doc", -1), "Fast-DetectGPT": ("fast_doc", 1), "Raw perplexity": ("perp_doc", -1),
+                 "Burstiness": ("burst_cv", -1)}
 FOLDS = 5
 
 
@@ -132,7 +134,8 @@ def main() -> None:
 
     y = test.label.values
     p = combiner.predict_matrix(test[features].values)
-    scores = {name: sign * test[col].values for name, (col, sign) in SINGLE_ENGINE.items() if col in test}
+    scores = {name: sign * test[col].values for name, (col, sign) in SINGLE_ENGINE.items()
+              if col in test and test[col].notna().any()}
     scores["Combined"] = p
     flagged = p > combiner.thresholds["ai"]
     review = p > combiner.thresholds["review"]

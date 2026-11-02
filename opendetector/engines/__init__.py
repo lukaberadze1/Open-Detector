@@ -8,7 +8,7 @@ import torch
 
 from ..config import DetectorConfig
 from .binoculars import BinocularsEngine
-from .classifier import ClassifierEngine, load_desklib, load_glyph
+from .classifier import ClassifierEngine, load_desklib, load_glyph, load_roberta
 
 
 def resolve_device(preference: str = "auto") -> str:
@@ -27,7 +27,7 @@ def resolve_dtype(preference: str, device: str) -> torch.dtype:
     return torch.bfloat16 if device in ("mps", "cuda") else torch.float32
 
 
-ENGINE_NAMES = ("glyph", "desklib", "bino")
+ENGINE_NAMES = ("glyph", "desklib", "roberta", "bino")
 
 
 def build_engine(name: str, config: DetectorConfig) -> ClassifierEngine | BinocularsEngine | None:
@@ -38,6 +38,8 @@ def build_engine(name: str, config: DetectorConfig) -> ClassifierEngine | Binocu
         return load_glyph(config.glyph_model, device, dtype, config.batch_size) if config.glyph_model else None
     if name == "desklib":
         return load_desklib(config.desklib_model, device, dtype, config.batch_size) if config.desklib_model else None
+    if name == "roberta":
+        return load_roberta(config.roberta_model, device, dtype, config.batch_size) if config.roberta_model else None
     if name == "bino":
         if config.binoculars_observer and config.binoculars_performer:
             return BinocularsEngine(config.binoculars_observer, config.binoculars_performer, device, dtype)
@@ -56,7 +58,7 @@ def free_memory() -> None:
 
 def build_engines(config: DetectorConfig) -> tuple[list[ClassifierEngine], BinocularsEngine | None]:
     engines = {name: build_engine(name, config) for name in ENGINE_NAMES}
-    classifiers = [engines[n] for n in ("glyph", "desklib") if engines[n] is not None]
+    classifiers = [engines[n] for n in ("glyph", "desklib", "roberta") if engines[n] is not None]
     return classifiers, engines["bino"]
 
 

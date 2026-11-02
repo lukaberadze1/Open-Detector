@@ -1,4 +1,4 @@
-"""Fine-tuned classifiers (GLYPH, Desklib) that score whole windows of text."""
+"""Fine-tuned classifiers (GLYPH, Desklib, RoBERTa) that score whole windows of text."""
 
 from __future__ import annotations
 
@@ -62,6 +62,22 @@ def load_glyph(model_id: str, device: str, dtype: torch.dtype, batch_size: int) 
         return logits[:, 1] - logits[:, 0]  # LABEL_1 = AI
 
     return ClassifierEngine("glyph", tokenizer, model, log_odds, device, 512, batch_size)
+
+
+def load_roberta(model_id: str, device: str, dtype: torch.dtype, batch_size: int) -> ClassifierEngine:
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForSequenceClassification.from_pretrained(model_id, dtype=dtype)
+    labels = {label.lower(): i for i, label in model.config.id2label.items()}
+    # The ChatGPT detector says ChatGPT/Human, OpenAI's GPT-2 output detector Fake/Real.
+    ai, human = labels.get("chatgpt", labels.get("fake")), labels.get("human", labels.get("real"))
+    if ai is None or human is None:
+        raise ValueError(f"{model_id}: can't tell which label is AI in {sorted(labels)}")
+
+    def log_odds(m, enc):
+        logits = m(input_ids=enc["input_ids"], attention_mask=enc["attention_mask"]).logits
+        return logits[:, ai] - logits[:, human]
+
+    return ClassifierEngine("roberta", tokenizer, model, log_odds, device, 512, batch_size)
 
 
 class DesklibAIDetectionModel(PreTrainedModel):
