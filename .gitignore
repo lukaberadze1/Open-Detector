@@ -210,3 +210,6 @@ __marimo__/
 eval/cache/
 leaderboard/
 data/
+
+# A separate clone of the original project, not part of this one
+Open-Detector/

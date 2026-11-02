@@ -4,8 +4,26 @@
     {
       "name": "streamlit",
       "runtimeExecutable": ".venv/bin/streamlit",
-      "runtimeArgs": ["run", "app.py", "--server.headless", "true", "--server.port", "8502"],
-      "port": 8502
+      "runtimeArgs": ["run", "app.py", "--server.headless", "true", "--server.port", "8503"],
+      "port": 8503
+    },
+    {
+      "name": "streamlit-8504",
+      "runtimeExecutable": ".venv/bin/streamlit",
+      "runtimeArgs": ["run", "app.py", "--server.headless", "true", "--server.port", "8504"],
+      "port": 8504
+    },
+    {
+      "name": "streamlit-public",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["OPENDETECTOR_PUBLIC=on", "OPENDETECTOR_PROFILE=slim", ".venv/bin/streamlit", "run", "app.py", "--server.headless", "true", "--server.port", "8506"],
+      "port": 8506
+    },
+    {
+      "name": "streamlit-8505",
+      "runtimeExecutable": ".venv/bin/streamlit",
+      "runtimeArgs": ["run", "app.py", "--server.headless", "true", "--server.port", "8505"],
+      "port": 8505
     }
   ]
 }
