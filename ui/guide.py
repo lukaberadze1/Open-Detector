@@ -1,7 +1,8 @@
 """The Guide page: how to use the app, written for someone who has never set up anything like it, and
 a place to save the Gemini API key the Adversarial Lab uses. app.py opens it first the first time
 the app runs on a computer. On a public deploy it saves nothing: it explains where a visitor's key goes
-instead, since they paste it in the Adversarial Lab's sidebar (ui/redteam.py, ui/device_storage.py)."""
+instead, since they paste it in the Adversarial Lab under Model & connection (ui/redteam.py,
+ui/device_storage.py)."""
 
 from __future__ import annotations
 
@@ -99,7 +100,7 @@ def _public_key_panel() -> None:
             "challenge samples for detector evaluation, with your own free key:\n\n"
             f"1. Open [aistudio.google.com/apikey]({KEY_PAGE}) and sign in with a Google account.\n"
             "2. Press **Create API key**, then copy the key it shows.\n"
-            "3. Open **Adversarial Lab** and paste it in the sidebar, under **Text model**.\n\n"
+            "3. Open **Adversarial Lab** and paste it under **Model & connection**.\n\n"
             "**Where your key goes.** It is used only for your own requests: this site's server sends it to "
             "Google in each request, never in a link, and never writes it down, in a file or a log. No other "
             "visitor can see it. You choose how long it lasts:\n\n"
@@ -125,7 +126,7 @@ def render() -> None:
     with first, st.container(key="od-panel-guide-check"):
         st.subheader("1 · Check a text")
         st.markdown(
-            "1. Open **Detect** at the top of the window.\n"
+            "1. Open **Detect** in the menu on the left.\n"
             "2. Paste at least 150 words, or choose **Upload a file** for a Word, PowerPoint or Markdown file.\n"
             "3. Press **Analyze**.\n\n"
             + ("The first check after the site has been asleep takes a minute or two while the detector loads; "
@@ -151,7 +152,7 @@ def render() -> None:
     with st.container(key="od-panel-guide-more"):
         st.subheader("Good to know")
         st.markdown(
-            "- **Look:** Glass or Instrument, under **Settings** at the bottom of the sidebar"
+            "- **Look:** Glass or Instrument, under **Settings** at the bottom of the menu on the left"
             + (" (this site doesn't remember it between visits)" if public else "") + ". For light or dark, "
             "use the **⋮** menu at the top right, then **Settings**.\n"
             + ("- **This site runs Slim,** the strongest single engine, which scores as well as Full on the "
@@ -159,7 +160,7 @@ def render() -> None:
                "- **Slim or Full:** Slim, the strongest single engine, scores as well as Full on the project's "
                "tests and needs about 1.5 GB of memory. Full adds two more engines, needs about 3.5 GB and "
                f"downloads about {models.download_gb('full') - models.download_gb('slim'):.1f} GB more.\n")
-            + "- **This guide** stays under **Guide** at the top of the window."
+            + "- **This guide** stays under **Guide** in the menu on the left."
         )
 
     if st.button("Start checking texts", type="primary", icon=":material/arrow_forward:"):

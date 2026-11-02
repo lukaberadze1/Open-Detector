@@ -36,7 +36,7 @@ text as human work, for evading a school's, employer's or publisher's rules, or 
 person on a score alone.
 
 Try both pages at https://open-detector.streamlit.app. In the Adversarial Lab, paste your own Gemini
-key in the sidebar. Samples are written in the built-in human style profile, measured from 1,750
+key under Model & connection. Samples are written in the built-in human style profile, measured from 1,750
 texts by different people, unless you add a profile of your own; your key and profile are kept only
 for your browser session.
 

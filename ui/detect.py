@@ -39,18 +39,20 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def _settings(profile: str) -> tuple[list[str], bool]:
-    """The page's sidebar: which engines to run and whether to score sentences."""
-    available = models.engines_of(profile)
-    with st.sidebar:
-        st.subheader("Analysis")
+def _engines(profile: str) -> tuple[list[str], bool]:
+    """The Engines panel, right above Analyze: the build, which of its engines run, and whether to score
+    sentences. The build is shared with the Adversarial Lab."""
+    with style.group("Engines", "02"):
+        models.profile_picker()
+        available = models.engines_of(profile)
         enabled = available
         if len(available) > 1:
-            enabled = [
-                name for name in available
-                if st.toggle(models.ENGINES[name][0], key=keep(f"keep:detect:engine:{name}", True),
-                             help=models.ENGINES[name][1])
-            ]
+            with st.container(horizontal=True, gap="medium"):
+                enabled = [
+                    name for name in available
+                    if st.toggle(models.ENGINES[name][0], key=keep(f"keep:detect:engine:{name}", True),
+                                 help=models.ENGINES[name][1])
+                ]
             if "bino" in enabled and models.RAM_GB < 12:
                 st.caption("Binoculars takes about 2 GB of the 3.5 GB. If this computer slows down, switch "
                            "it off.")
@@ -279,13 +281,10 @@ def _results(result: dict, digest: str) -> None:
                 "and gives unreliable scores on these, so it doesn't score them (Turnitin skips poetry, scripts "
                 "and lists too).", icon=":material/format_list_bulleted:")
     else:
-        left, right = st.columns([3, 2], gap="medium", vertical_alignment="top")
-        with left:
-            foot = (f"{report.words:,} words · " + ("calibrated" if report.calibrated else "uncalibrated")
-                    + f" · cut-offs at {report.thresholds['review']:.0%} and {report.thresholds['ai']:.0%}")
-            verdict_card(report.verdict, report.ai_probability, report.thresholds, report.calibrated, foot)
-        with right:
-            _engine_readings(report, result["bands"])
+        foot = (f"{report.words:,} words · " + ("calibrated" if report.calibrated else "uncalibrated")
+                + f" · cut-offs at {report.thresholds['review']:.0%} and {report.thresholds['ai']:.0%}")
+        verdict_card(report.verdict, report.ai_probability, report.thresholds, report.calibrated, foot)
+        _engine_readings(report, result["bands"])
 
     names = (["Highlights"] if report.ai_probability is not None else []) \
         + (["Sentences"] if report.sentences else []) + (["Sections"] if result["sections"] else []) + ["Details"]
@@ -304,7 +303,7 @@ def _results(result: dict, digest: str) -> None:
                                "it, so sentences next to a strongly AI-like passage get pulled toward it. "
                                "Highlights show where to look; the document score is the number to go by.")
                 else:
-                    st.caption("Sentence highlights are off. Switch them on in the sidebar and analyze again.")
+                    st.caption("Sentence highlights are off. Switch them on under Engines and analyze again.")
             elif name == "Sentences":
                 st.caption("Each bar is one sentence, as wide as its word count, in reading order. The dashed "
                            "lines are the document's cut-offs; sentence scores aren't calibrated on their own.")
@@ -323,41 +322,41 @@ def _results(result: dict, digest: str) -> None:
             else:
                 _details(result)
 
-    st.caption(":material/balance: A detector score is statistical evidence, not proof of authorship. Don't use "
-               "it as the only basis for an academic integrity decision.")
 
 
 def render() -> None:
     profile = models.active_profile()
-    enabled, sentences = _settings(profile)
-
     names = [models.ENGINES[name][0] for name in models.engines_of(profile)]
-    if profile == "slim":
-        lede = ("The Desklib classifier scores overlapping windows of the whole text, and a calibrated model turns "
-                "those scores into one AI likelihood.")
-    else:
-        lede = ("Two fine-tuned classifiers and the Binoculars zero-shot detector score overlapping windows of the "
-                "whole text, and a calibrated model combines them into one AI likelihood.")
-    style.hero(f"{models.PROFILE_LABELS[profile]} build · {len(enabled)} of {len(names)} engines online",
-               "Detect AI-generated text", lede,
-               [" · ".join(names), "Calibrated at 1% / 5% FPR", f"{MIN_WORDS}+ words", "Strips hidden characters"])
+    on = sum(st.session_state.get(f"keep:detect:engine:{name}", True) for name in models.engines_of(profile)) \
+        if len(names) > 1 else len(names)
+    style.page_header("Check a text", "Paste text or upload a document, then press Analyze.",
+                      f"{models.PROFILE_LABELS[profile]} build · {on} of {len(names)} engines on", ready=on > 0)
 
-    with st.container(key="od-panel-input"):
-        text, source, sections = _input()
-        words = count_words(text) if text.strip() else 0
-        with st.container(horizontal=True, vertical_alignment="center"):
-            clicked = st.button("Analyze", type="primary", icon=":material/search:")
+    setup, output = st.columns([1, 1.45], gap="large")
+    with setup:
+        with style.group("Source", "01"):
+            text, source, sections = _input()
+            words = count_words(text) if text.strip() else 0
             if words:
                 st.caption(f"{words:,} words" + ("" if words >= MIN_WORDS else
                                                  f" · a verdict needs at least {MIN_WORDS}"))
+        enabled, sentences = _engines(profile)
+        clicked = st.button("Analyze", type="primary", icon=":material/search:", width="stretch")
+        st.caption(":material/balance: A detector score is statistical evidence, not proof of authorship. Don't "
+                   "use it as the only basis for an academic integrity decision.")
 
-    if clicked or st.session_state.pop(AUTORUN, False):
-        if not text.strip():
-            st.warning("Paste some text or upload a file first.")
-        elif not enabled:
-            st.warning("Switch on at least one engine in the sidebar.")
+    with output:
+        if clicked or st.session_state.pop(AUTORUN, False):
+            if not text.strip():
+                st.warning("Paste some text or upload a file first.")
+            elif not enabled:
+                st.warning("Switch on at least one engine under Engines.")
+            else:
+                _analyze(text, source, sections, profile, enabled, sentences)
+
+        if result := st.session_state.get(RESULT):
+            _results(result, _digest(text))
         else:
-            _analyze(text, source, sections, profile, enabled, sentences)
-
-    if result := st.session_state.get(RESULT):
-        _results(result, _digest(text))
+            st.html('<div class="od-empty"><b>No result yet</b>Paste at least 150 words of prose or upload a '
+                    "document on the left, then press Analyze. The verdict, each engine's reading and the "
+                    "sentences that drive the score appear here.</div>")

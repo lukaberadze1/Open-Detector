@@ -131,6 +131,28 @@ def logo_paths() -> tuple[str, str]:
     return str(ASSETS / f"logo{suffix}{tone}.svg"), str(ASSETS / f"mark{suffix}.svg")
 
 
+def page_header(title: str, subtitle: str, status: str | None = None, ready: bool = True) -> None:
+    """The top of a page: its title and one line on what it is for, and on the right one status pill
+    (the detector build, the text model) when the page has one."""
+    import html
+
+    pill = (f'<span class="od-status{"" if ready else " off"}"><i aria-hidden="true"></i>{html.escape(status)}</span>'
+            if status else "")
+    st.html(f'<header class="od-page"><div><h1>{html.escape(title)}</h1><p>{html.escape(subtitle)}</p></div>'
+            f"{pill}</header>")
+
+
+def group(title: str, step: str | None = None):
+    """A bordered panel that opens with a small title, for one group of related settings or results.
+    Returns the container, to fill with `with`."""
+    import html
+
+    box = st.container(border=True)
+    number = f'<span class="od-step">{html.escape(step)}</span>' if step else ""
+    box.html(f'<div class="od-group">{number}{html.escape(title)}</div>')
+    return box
+
+
 def hero(eyebrow: str, title: str, lede: str, chips: list[str]) -> None:
     """The page's opening: a small status line, the title, one line on what it does, and fact chips."""
     import html
@@ -154,12 +176,44 @@ BASE_CSS = """
 .stApp, .stApp p, .stApp label, .stApp li, .stApp input, .stApp textarea, .stApp button {
   font-family: 'Geist', 'Inter', -apple-system, system-ui, sans-serif; }
 [data-testid="stHeader"] { background: transparent !important; }
-[data-testid="stMainBlockContainer"] { padding-top: 4.2rem; max-width: 1240px; }
+[data-testid="stMainBlockContainer"] { padding-top: 3rem; max-width: 1400px; }
 [data-testid="stSidebar"] { background: var(--od-panel) !important; border-right: 1px solid var(--od-hair) !important;
   -webkit-backdrop-filter: blur(28px) saturate(170%); backdrop-filter: blur(28px) saturate(170%); }
 [data-testid="stSidebar"] h3 { font-size: 0.72rem !important; font-weight: 600 !important; letter-spacing: 0.12em;
   text-transform: uppercase; color: var(--od-muted) !important; padding-top: 1.1rem !important; }
 [data-testid="stSidebarHeader"] { padding-top: 1.4rem; }
+/* The sidebar is the app's navigation: the pages at the top, Settings at the foot. */
+[data-testid="stSidebar"][data-collapsed="false"] { width: 236px !important; min-width: 236px !important;
+  max-width: 236px !important; }
+[data-testid="stSidebarNav"] { padding-top: 0.4rem; }
+[data-testid="stSidebarNavLink"] { border-radius: 12px !important; padding: 0.5rem 0.8rem !important;
+  margin: 0.1rem 0; }
+[data-testid="stSidebarNavLink"]:hover { background: var(--od-track) !important; }
+[data-testid="stSidebarNavLink"][aria-current="page"] {
+  background: color-mix(in srgb, var(--od-accent) 16%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--od-accent) 40%, transparent); }
+[data-testid="stSidebarNavLink"][aria-current="page"] span { color: var(--od-ink) !important; font-weight: 600; }
+[data-testid="stSidebarNavSeparator"] { display: none; }
+
+/* Page header and grouped panels */
+.od-page { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 0.8rem 1.2rem;
+  padding-bottom: 1rem; margin-bottom: 0.3rem; border-bottom: 1px solid var(--od-hair); }
+.od-page h1 { font-size: 1.75rem !important; font-weight: 650 !important; letter-spacing: -0.02em;
+  line-height: 1.15 !important; margin: 0 !important; padding: 0 !important; color: var(--od-ink); }
+.od-page p { margin: 0.3rem 0 0; font-size: 0.93rem; color: var(--od-muted); }
+.od-status { display: inline-flex; align-items: center; gap: 0.55rem; font-size: 0.82rem; font-weight: 500;
+  padding: 0.4rem 0.85rem; border-radius: 999px; color: var(--od-ink); background: var(--od-panel);
+  border: 1px solid var(--od-edge); white-space: nowrap; }
+.od-status i { width: 8px; height: 8px; border-radius: 50%; background: var(--od-accent-2);
+  box-shadow: 0 0 8px var(--od-accent-2); }
+.od-status.off i { background: var(--od-muted); box-shadow: none; }
+.od-group { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--od-muted); }
+.od-step { color: var(--od-accent); margin-right: 0.6rem; font-variant-numeric: tabular-nums; }
+.od-empty { border: 1px dashed var(--od-edge); border-radius: var(--od-radius); padding: 3rem 1.5rem;
+  text-align: center; color: var(--od-muted); font-size: 0.95rem; line-height: 1.6; }
+.od-empty b { display: block; color: var(--od-ink); font-size: 1.05rem; margin-bottom: 0.3rem; }
+
 /* Each page link is its own pill. The nav keeps Streamlit's width: it measures that width to decide which
    links fit, so shrinking it to its contents folds every link into the "more" menu. */
 [data-testid="stTopNavLink"] { border-radius: 999px !important; padding: 0.3rem 0.95rem !important;
@@ -261,6 +315,11 @@ INSTRUMENT_CSS = """
 [data-testid="stCaptionContainer"] {
   font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, monospace !important; }
 [data-testid="stTab"] p { text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.78rem !important; }
+.od-group, .od-status, .od-page p { font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, monospace !important; }
+.od-page p { font-size: 0.82rem; }
+[data-testid="stSidebarNavLink"], [data-testid="stSidebarNavLink"][aria-current="page"] {
+  border-radius: 4px !important; }
+.od-status, .od-empty { border-radius: 4px; }
 [data-testid="stTopNavLink"] span:not([data-testid="stIconMaterial"]) { font-family: 'JetBrains Mono',
   monospace !important;
   text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.78rem; }

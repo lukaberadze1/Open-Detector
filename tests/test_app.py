@@ -189,7 +189,7 @@ def test_red_team_sample_is_recorded_as_ai_with_its_score(stub_model, tmp_path):
     at.run()
     assert not at.exception, at.exception
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
-    button(at, "Generate challenge sample").click()
+    button(at, "Generate").click()
     at.run()
     assert not at.exception, at.exception
 
@@ -221,7 +221,7 @@ def robustness_page(monkeypatch, replies, until_target):
     at.session_state["keep:redteam:evasion"] = True
     at.run()
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
-    button(at, "Generate challenge sample").click()
+    button(at, "Generate").click()
     at.run()
     assert not at.exception, at.exception
     return at
@@ -280,7 +280,7 @@ def test_robustness_mode_turns_scoring_on(stub_model, tmp_path, monkeypatch):
     at.session_state["keep:redteam:score"] = False  # robustness mode needs scores, so it scores anyway
     at.run()
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
-    button(at, "Generate challenge sample").click()
+    button(at, "Generate").click()
     at.run()
     assert not at.exception, at.exception
     assert len(scores) == 1 and scores[0] is not None, "each draft was scored"
@@ -302,7 +302,7 @@ def test_a_profile_with_registers_writes_in_the_register_picked(stub_model, tmp_
     assert at.segmented_control(key="keep:redteam:register").value == "finalized"
     at.segmented_control(key="keep:redteam:register").set_value("notes").run()
     at.text_area(key="keep:redteam:prompt").input("Notes on Roman taxes.")
-    button(at, "Generate challenge sample").click()
+    button(at, "Generate").click()
     at.run()
     assert not at.exception, at.exception
     assert "Write as in notes." in stub_model.systems[-1] and "finalized writing" not in stub_model.systems[-1]
@@ -330,7 +330,7 @@ def test_the_model_sees_the_writers_own_passages_unless_switched_off(stub_model,
     assert not at.toggle(key="keep:redteam:examples").value, "offered when the writing is there, off by default"
     at.toggle(key="keep:redteam:examples").set_value(True).run()
     at.text_area(key="keep:redteam:prompt").input("Notes on Roman taxes.")
-    button(at, "Generate challenge sample").click()
+    button(at, "Generate").click()
     at.run()
     assert not at.exception, at.exception
     system = stub_model.systems[-1]
@@ -339,7 +339,7 @@ def test_the_model_sees_the_writers_own_passages_unless_switched_off(stub_model,
     assert json.loads((tmp_path / "local_redteam.jsonl").read_text().splitlines()[-1])["examples"] == 3
 
     at.toggle(key="keep:redteam:examples").set_value(False).run()
-    button(at, "Generate challenge sample").click()
+    button(at, "Generate").click()
     at.run()
     assert "Passage 1:" not in stub_model.systems[-1]
     assert json.loads((tmp_path / "local_redteam.jsonl").read_text().splitlines()[-1])["examples"] == 0
@@ -364,7 +364,7 @@ def test_red_team_writes_in_the_style_profile_picked(stub_model, tmp_path):
     assert (picker.options, picker.value) == (["alexandria_profile", "friend"], "alexandria_profile")
     picker.select("friend")
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
-    button(at, "Generate challenge sample").click()
+    button(at, "Generate").click()
     at.run()
     assert not at.exception, at.exception
 
@@ -390,7 +390,8 @@ def word_document_page():
     at = AppTest.from_function(red_team_page, default_timeout=60)
     at.session_state["profile"] = "slim"
     at.session_state["upload:redteam:file"] = Upload("bees.docx", essay_docx())
-    at.session_state["keep:redteam:task"] = "blocks"
+    at.session_state["keep:redteam:mode"] = "regenerate"
+    at.session_state["keep:redteam:scope"] = "blocks"
     at.run()
     return at
 
@@ -405,7 +406,7 @@ def test_writers_sentences_give_each_block_a_skeleton_from_the_writer(stub_model
     at = word_document_page()
     at.segmented_control(key="keep:redteam:structure").set_value("writer").run()
     at.segmented_control(key="keep:redteam:register").set_value("notes").run()
-    button(at, "Generate 2 block challenges").click()
+    button(at, "Regenerate 2 blocks").click()
     at.run()
     run_until_batch_ends(at)
     (prompt,) = stub_model.prompts
@@ -419,10 +420,10 @@ def test_writers_sentences_give_each_block_a_skeleton_from_the_writer(stub_model
 def test_red_team_rewrites_every_block_of_a_word_document(stub_model, tmp_path):
     at = word_document_page()
     assert not at.exception, at.exception
-    assert any("Populate a test worksheet** isn't available for this file: found no question/answer pairs"
+    assert any("Answer boxes only** isn't available for this file: found no question/answer pairs"
                in caption.value for caption in at.caption)
 
-    button(at, "Generate 2 block challenges").click()
+    button(at, "Regenerate 2 blocks").click()
     at.run()
     assert run_until_batch_ends(at) == ("success", "All 2 blocks of bees.docx are done and exported.")
     assert [toast.value for toast in at.toast] == ["All 2 blocks of bees.docx are done and exported."]
@@ -455,12 +456,12 @@ def test_red_team_rewrites_every_block_of_a_word_document(stub_model, tmp_path):
 def test_a_running_batch_takes_over_the_page_with_a_countdown(stub_model, tmp_path):
     stub_model.gate.clear()  # hold the first block until the end of the test
     at = word_document_page()
-    button(at, "Generate 2 block challenges").click()
+    button(at, "Regenerate 2 blocks").click()
     at.run()
     assert not at.exception, at.exception
 
     def progress_shown():
-        return any("Writing bees.docx** · Generate block challenges" in m.value for m in at.markdown)
+        return any("Writing bees.docx** · Whole document" in m.value for m in at.markdown)
 
     assert progress_shown()
     assert {m.label: m.value for m in at.metric} == {
@@ -470,7 +471,7 @@ def test_a_running_batch_takes_over_the_page_with_a_countdown(stub_model, tmp_pa
 
     # Whatever the page is set to, it shows only the running batch.
     at.session_state["keep:redteam:match"] = False
-    at.session_state["keep:redteam:task"] = "sample"
+    at.session_state["keep:redteam:mode"] = "generate"
     at.run()
     assert progress_shown()
     assert [b.label for b in at.button] == ["Stop"]
@@ -513,13 +514,13 @@ def test_public_mode_writes_only_with_the_visitors_own_key(stub_model, monkeypat
     assert not any(t.key == "keep:redteam:base_url" for t in at.text_input), "no visitor-chosen API address"
     assert not any(t.key == "keep:redteam:evasion" for t in at.toggle), "no detector-guided drafting for strangers"
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
-    button(at, "Generate challenge sample").click()
+    button(at, "Generate").click()
     at.run()
-    assert [e.value for e in at.error] == ["Paste your Gemini API key in the sidebar first."]
+    assert [e.value for e in at.error] == ["Paste your Gemini API key under Model & connection first."]
     assert stub_model.prompts == []
 
     at.text_input(key="keep:redteam:api_key").input("visitor-key")
-    button(at, "Generate challenge sample").click()
+    button(at, "Generate").click()
     at.run()
     assert not at.exception, at.exception
     assert (stub_model.keys, stub_model.urls, stub_model.local_models) == (["visitor-key"], [GEMINI_API_URL], [""])
@@ -536,7 +537,7 @@ def test_public_visitors_see_only_their_own_profiles_and_samples(stub_model, mon
     assert at.selectbox(key="keep:redteam:style_name").options == ["friend"]
     at.text_input(key="keep:redteam:api_key").input("visitor-key")
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
-    button(at, "Generate challenge sample").click()
+    button(at, "Generate").click()
     at.run()
     assert not at.exception, at.exception
     assert "tone: breezy" in stub_model.systems[-1]
@@ -559,14 +560,15 @@ def test_public_visitors_dont_see_each_others_batches(stub_model, monkeypatch):
     at.session_state["redteam:visitor"] = "a"
     at.session_state["keep:redteam:api_key"] = "visitor-key"
     at.session_state["upload:redteam:file"] = Upload("bees.docx", essay_docx())
-    at.session_state["keep:redteam:task"] = "blocks"
+    at.session_state["keep:redteam:mode"] = "regenerate"
+    at.session_state["keep:redteam:scope"] = "blocks"
     at.run()
-    button(at, "Generate 2 block challenges").click()
+    button(at, "Regenerate 2 blocks").click()
     at.run()
     assert [b.label for b in at.button] == ["Stop"]
 
     other = public_page("b")
-    assert "Generate challenge sample" in [b.label for b in other.button], "another visitor's batch doesn't take over"
+    assert "Generate" in [b.label for b in other.button], "another visitor's batch doesn't take over"
     stub_model.gate.set()
     assert run_until_batch_ends(at)[0] == "success"
 
@@ -594,7 +596,7 @@ def test_a_block_handed_back_as_the_original_is_asked_again_and_never_saved_as_a
     original = "Bees need a dry hive and a nearby source of water."
     stub_model.echo = {"B1": original}  # every grouped reply hands back the first block
     at = word_document_page()
-    button(at, "Generate 2 block challenges").click()
+    button(at, "Regenerate 2 blocks").click()
     at.run()
     run_until_batch_ends(at)
     group, again = stub_model.prompts
@@ -612,7 +614,7 @@ def test_a_block_written_alone_that_comes_back_as_the_original_is_asked_once_mor
     stub_model.drop = {"B1"}  # the grouped reply leaves the first block out, so it is written alone
     stub_model.echo_alone = [original]  # and handed back as the original the first time
     at = word_document_page()
-    button(at, "Generate 2 block challenges").click()
+    button(at, "Regenerate 2 blocks").click()
     at.run()
     run_until_batch_ends(at)
     _, alone, again = stub_model.prompts
@@ -625,14 +627,16 @@ def test_pasted_text_can_be_rewritten_block_by_block_and_exports_its_own_copy(st
     at = AppTest.from_function(red_team_page, default_timeout=60)
     at.session_state["profile"] = "slim"
     at.run()
-    assert at.segmented_control(key="keep:redteam:task").options == ["Create a challenge sample"]
+    at.segmented_control(key="keep:redteam:mode").set_value("regenerate").run()
+    assert not any(box.key == "keep:redteam:scope" for box in at.selectbox), "nothing to rewrite without a text"
+    assert "Upload a document or paste text under Input to regenerate it." in [info.value for info in at.info]
 
     at.text_area(key="keep:redteam:pasted").set_value(
         "Bees need a dry hive and a nearby source of water.\n\nThey live on nectar and pollen from flowers.\n").run()
-    assert "Generate block challenges" in at.segmented_control(key="keep:redteam:task").options
-    assert "Create a section challenge" in at.segmented_control(key="keep:redteam:task").options
-    at.segmented_control(key="keep:redteam:task").set_value("blocks").run()
-    button(at, "Generate 2 block challenges").click()
+    assert "Whole document" in at.selectbox(key="keep:redteam:scope").options
+    assert "One section" in at.selectbox(key="keep:redteam:scope").options
+    at.selectbox(key="keep:redteam:scope").set_value("blocks").run()
+    button(at, "Regenerate 2 blocks").click()
     at.run()
     level, message = run_until_batch_ends(at)
     assert level == "success" and "All 2 blocks of Pasted text" in message
@@ -668,7 +672,7 @@ def test_a_local_model_too_big_for_the_machine_is_left_out(stub_model, monkeypat
     monkeypatch.setattr(models, "RAM_GB", 8.0)
     monkeypatch.setattr(redteam, "SMALL_MACHINE_LOCAL_CONTEXT", 4096)  # smaller than any prompt's window
     at = word_document_page()
-    button(at, "Generate 2 block challenges").click()
+    button(at, "Regenerate 2 blocks").click()
     at.run()
     run_until_batch_ends(at)
     assert stub_model.local_models == [""], "gemma3:4b, the page's default, is never offered"
@@ -682,7 +686,7 @@ def test_a_batch_waits_out_busy_models_and_drops_only_spent_ones(stub_model, mon
     at = word_document_page()
     at.session_state["keep:redteam:group_size"] = 1
     at.session_state["keep:redteam:parallel"] = 1
-    button(at, "Generate 2 block challenges").click()
+    button(at, "Regenerate 2 blocks").click()
     at.run()
     assert run_until_batch_ends(at)[0] == "success"
     assert len(stub_model.prompts) == 4, "the first block is asked three times, the second once"
@@ -696,7 +700,7 @@ def test_a_batch_waits_out_busy_models_and_drops_only_spent_ones(stub_model, mon
 def test_a_block_a_grouped_reply_leaves_out_is_written_on_its_own(stub_model, tmp_path):
     stub_model.drop = {"B2"}
     at = word_document_page()
-    button(at, "Generate 2 block challenges").click()
+    button(at, "Regenerate 2 blocks").click()
     at.run()
     assert run_until_batch_ends(at)[0] == "success"
     assert len(stub_model.prompts) == 2
@@ -713,7 +717,7 @@ def test_the_thinking_level_picked_reaches_the_model(stub_model):
     at.run()
     at.select_slider(key="keep:redteam:thinking").set_value("minimal")
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
-    button(at, "Generate challenge sample").click()
+    button(at, "Generate").click()
     at.run()
     assert not at.exception, at.exception
     assert stub_model.options == [{"thinking": "minimal"}]
@@ -723,7 +727,7 @@ def test_robustness_mode_batches_draft_one_block_per_request(stub_model):
     at = word_document_page()
     at.toggle(key="keep:redteam:evasion").set_value(True)
     at.run()
-    button(at, "Generate 2 block challenges").click()
+    button(at, "Regenerate 2 blocks").click()
     at.run()
     assert run_until_batch_ends(at)[0] == "success"
     assert stub_model.prompts and not any(options.get("json_schema") for options in stub_model.options)
@@ -751,12 +755,13 @@ def test_labels_stay_and_your_originals_are_saved_once_beside_their_rewrites(stu
     at = AppTest.from_function(red_team_page, default_timeout=60)
     at.session_state["profile"] = "slim"
     at.session_state["upload:redteam:file"] = Upload("bees.docx", labelled_docx())
-    at.session_state["keep:redteam:task"] = "blocks"
+    at.session_state["keep:redteam:mode"] = "regenerate"
+    at.session_state["keep:redteam:scope"] = "blocks"
     at.run()
     assert any("so do 2 short labels, names, dates and numbers" in c.value for c in at.caption)
     at.toggle(key="keep:redteam:human_source").set_value(True).run()
     for _ in range(2):  # the same document twice
-        button(at, "Generate 2 block challenges").click()
+        button(at, "Regenerate 2 blocks").click()
         at.run()
         assert run_until_batch_ends(at)[0] == "success"
     assert re.findall(r"^\[(B\d+)\]", stub_model.prompts[0], re.MULTILINE) == ["B1", "B2"], (
@@ -808,7 +813,7 @@ def test_points_pick_the_batch_settings(stub_model, monkeypatch):
         at.button(key="redteam:more:speed").click().run()
     assert at.button(key="redteam:more:speed").disabled, "six points is the most one priority takes"
     assert any("gemini-3.5-flash-lite" in m.value and "4 at once" in m.value for m in at.markdown)
-    button(at, "Generate 2 block challenges").click()
+    button(at, "Regenerate 2 blocks").click()
     at.run()
     assert run_until_batch_ends(at)[0] == "success"
     assert stub_model.options[0]["thinking"] == "minimal" and stub_model.temperatures[0] == 1.3
@@ -821,7 +826,7 @@ def test_settings_can_still_be_set_by_hand(stub_model, monkeypatch):
     at.toggle(key="keep:redteam:by_hand").set_value(True).run()
     assert at.slider(key="keep:redteam:group_size").value == 6
     at.select_slider(key="keep:redteam:thinking").set_value("high").run()
-    button(at, "Generate 2 block challenges").click()
+    button(at, "Regenerate 2 blocks").click()
     at.run()
     assert run_until_batch_ends(at)[0] == "success"
     assert stub_model.options[0]["thinking"] == "high" and stub_model.orders[0][0] == "gemini-3.8-flash"
@@ -863,7 +868,7 @@ def test_a_public_guide_explains_where_the_key_goes_and_saves_nothing(monkeypatc
     assert not prefs.PATH.exists(), "a public deploy remembers nothing, nor opens the Guide first"
     at = AppTest.from_function(guide_page, default_timeout=60).run()
     assert not at.exception, at.exception
-    assert len(at.text_input) == 0, "no key box: a visitor's key goes in the Adversarial Lab's sidebar"
+    assert len(at.text_input) == 0, "no key box: a visitor's key goes in the Adversarial Lab"
     text = " ".join(block.value for block in at.markdown)
     assert "never writes it down" in text and "Remember it on this device" in text
 
@@ -956,7 +961,7 @@ def test_the_built_in_human_profile_is_there_first_and_on_a_public_deploy_too(st
     picker = at.selectbox(key="keep:redteam:style_name")
     assert (picker.options, picker.value) == (["Human (built in)", "mine"], "human_default_profile")
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
-    button(at, "Generate challenge sample").click()
+    button(at, "Generate").click()
     at.run()
     assert not at.exception, at.exception
     assert "how people write" in stub_model.systems[-1] and "Write like a competent person" in stub_model.systems[-1]

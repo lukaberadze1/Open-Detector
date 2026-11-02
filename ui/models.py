@@ -60,20 +60,20 @@ def download_gb(profile: str, names: Iterable[str] | None = None) -> float:
 
 
 def active_profile() -> str:
-    """The profile chosen in the sidebar."""
+    """The build chosen on the Detect page."""
     return PINNED_PROFILE or st.session_state.get("profile") or DEFAULT_PROFILE
 
 
 def profile_picker() -> None:
-    """The sidebar's detector choice, shared by both pages."""
-    st.subheader("Detector")
+    """The detector build, shared by both pages. Drawn in the Detect page's Engines panel; app.py keeps
+    the choice while the other page is open."""
     if PINNED_PROFILE:
         st.caption("Slim build: Desklib alone, the strongest single engine, on the CPU to fit this host."
                    if PINNED_PROFILE == "slim" else "Full build: every engine.")
         return
     st.session_state.setdefault("profile", DEFAULT_PROFILE)
-    profile = st.segmented_control("Build", PROFILES, format_func=PROFILE_LABELS.get, key="profile",
-                                   required=True, label_visibility="collapsed")
+    profile = st.segmented_control("Build", PROFILES, format_func=lambda name: f"{PROFILE_LABELS[name]} build",
+                                   key="profile", required=True, label_visibility="collapsed")
     if profile == "slim":
         st.caption("Desklib alone on the CPU, about 1.5 GB. Scores as well as the full build on the "
                    "held-out test.")

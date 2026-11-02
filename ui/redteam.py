@@ -120,17 +120,24 @@ MIME_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
-TASKS = {
-    "sample": ("Create a challenge sample", "Generate a labelled AI sample from your test instructions, with any "
-                                              "uploaded document as source material."),
-    "section": ("Create a section challenge", "Generate a replacement sample for one section of the uploaded "
-                                               "test document, with the rest as context."),
-    "answers": ("Populate a test worksheet", "Generate labelled AI answers for the right-hand answer boxes of "
-                                               "the document's question/answer tables or slides, then export a "
-                                               "test copy."),
-    "blocks": ("Generate block challenges", "Generate a labelled AI challenge for each text block, keeping "
-                                              "headings, titles, questions and tables, then export a test copy."),
+# The page asks two things: Generate (new text from instructions) or Regenerate (rewrite a document's own
+# text), and, to regenerate, what to rewrite. Both pick one of these tasks.
+MODES = {"generate": "Generate", "regenerate": "Regenerate"}
+MODE_NOTES = {
+    "generate": "Writes new text from your instructions. A document or pasted text is only source material: it "
+                "is never changed.",
+    "regenerate": "Rewrites the text inside your document or pasted text. Headings, questions, tables and layout "
+                  "stay as they are, and a test copy is exported.",
 }
+TASKS = {
+    "sample": ("Generate", "A new labelled AI sample from your instructions."),
+    "blocks": ("Whole document", "Rewrites every text block. Headings, titles, questions and tables stay as they "
+                                 "are."),
+    "section": ("One section", "Rewrites one section, with the rest of the document as context."),
+    "answers": ("Answer boxes only", "Writes the right-hand answer boxes of the document's question/answer tables "
+                                     "or slides, for a worksheet."),
+}
+SCOPES = ("blocks", "section", "answers")
 RESULT = "last_generated_result"
 IMPROVE_TEXT = "redteam:improve_text"
 IMPROVE_BATCH = "redteam:improve_batch"
@@ -151,7 +158,7 @@ SMALL_MACHINE_LOCAL_CONTEXT = 8192
 BUSY_RETRIES, BUSY_WAIT = 5, 30
 
 
-# Checked on every rerun to show in the sidebar, so the answer is kept for a few seconds.
+# Checked on every rerun to show under Model & connection, so the answer is kept for a few seconds.
 local_fallback_problem = st.cache_data(ttl=15, show_spinner=False)(local_model_problem)
 
 
@@ -255,6 +262,7 @@ class Plan:
     style_path: Path | None = None
     score: bool = True
     evasion: bool = False
+    blocked: str = ""  # why the page can't run yet, when the settings themselves say so
 
     @property
     def batch(self) -> bool:
@@ -392,47 +400,45 @@ def candidate_metrics(text: str, profile: str, style_path: Path | None,
 
 
 def _connection() -> Connection:
-    """The sidebar: which text models to use, and whether they can run."""
-    with st.sidebar:
-        st.subheader("Text model")
-        if public():
-            return _public_connection()
-        status = st.container()
-        with st.expander("Connection", icon=":material/settings:"):
-            base_url = st.text_input("API URL", key=keep("keep:redteam:base_url", GEMINI_API_URL),
-                                     help="Gemini uses its Interactions API. Any OpenAI-compatible endpoint "
-                                          "works too.")
-            model = st.text_input("Model", key=keep("keep:redteam:model", DEFAULT_MODEL))
-            fallback_text = st.text_area(
-                "Fallback models, in order", key=keep("keep:redteam:fallbacks", "\n".join(DEFAULT_FALLBACK_MODELS)),
-                height=130,
-                help="Gemini uses these current text models after quota or temporary errors. Models unavailable "
-                     "to your account are skipped. Edit or clear this list for another OpenAI-compatible provider.",
-            )
-            local_model = st.text_input(
-                "Local fallback model (Ollama)",
-                key=keep("keep:redteam:local_model", "" if packaged() else LOCAL_MODEL),
-                help="Used after every model above fails. Runs on this computer with no key or quota; needs "
-                     "`ollama serve` running and the model fetched with `ollama pull`. Clear to turn it off.",
-            ).strip()
-            local_url = st.text_input("Local fallback URL", key=keep("keep:redteam:local_url", LOCAL_URL)).strip()
-            api_key_env = st.text_input("API key environment variable",
-                                        key=keep("keep:redteam:key_env", "GEMINI_API_KEY"))
-        fallback_models = [line.strip() for line in fallback_text.replace(",", "\n").splitlines() if line.strip()]
-        api_key = os.environ.get(api_key_env, "")
-        with status:
-            st.caption(f":material/smart_toy: **{model}**, then {len(fallback_models)} fallback models"
-                       + (f" and {local_model} locally." if local_model else "."))
-            if api_key:
-                st.caption(f":material/key: Using your key in {api_key_env}.")
+    """Model & connection, at the foot of the settings: which text models to use, and whether they can
+    run. Drawn into the current container."""
+    if public():
+        return _public_connection()
+    status = st.container()
+    base_url = st.text_input("API URL", key=keep("keep:redteam:base_url", GEMINI_API_URL),
+                             help="Gemini uses its Interactions API. Any OpenAI-compatible endpoint "
+                                  "works too.")
+    model = st.text_input("Model", key=keep("keep:redteam:model", DEFAULT_MODEL))
+    fallback_text = st.text_area(
+        "Fallback models, in order", key=keep("keep:redteam:fallbacks", "\n".join(DEFAULT_FALLBACK_MODELS)),
+        height=130,
+        help="Gemini uses these current text models after quota or temporary errors. Models unavailable "
+             "to your account are skipped. Edit or clear this list for another OpenAI-compatible provider.",
+    )
+    local_model = st.text_input(
+        "Local fallback model (Ollama)",
+        key=keep("keep:redteam:local_model", "" if packaged() else LOCAL_MODEL),
+        help="Used after every model above fails. Runs on this computer with no key or quota; needs "
+             "`ollama serve` running and the model fetched with `ollama pull`. Clear to turn it off.",
+    ).strip()
+    local_url = st.text_input("Local fallback URL", key=keep("keep:redteam:local_url", LOCAL_URL)).strip()
+    api_key_env = st.text_input("API key environment variable",
+                                key=keep("keep:redteam:key_env", "GEMINI_API_KEY"))
+    fallback_models = [line.strip() for line in fallback_text.replace(",", "\n").splitlines() if line.strip()]
+    api_key = os.environ.get(api_key_env, "")
+    with status:
+        st.caption(f":material/smart_toy: **{model}**, then {len(fallback_models)} fallback models"
+                   + (f" and {local_model} locally." if local_model else "."))
+        if api_key:
+            st.caption(f":material/key: Using your key in {api_key_env}.")
+        else:
+            st.caption(f":material/key_off: No {api_key_env} yet. Local endpoints work without a key.")
+            st.page_link(nav.guide_page(), label="Add your Gemini API key", icon=":material/key:")
+        if local_model:
+            if problem := local_fallback_problem(local_url, local_model):
+                st.caption(f":orange[:material/cloud_off: The local fallback can't run: {problem}]")
             else:
-                st.caption(f":material/key_off: No {api_key_env} yet. Local endpoints work without a key.")
-                st.page_link(nav.guide_page(), label="Add your Gemini API key", icon=":material/key:")
-            if local_model:
-                if problem := local_fallback_problem(local_url, local_model):
-                    st.caption(f":orange[:material/cloud_off: The local fallback can't run: {problem}]")
-                else:
-                    st.caption(f":material/check_circle: Local fallback ready: {local_model}.")
+                st.caption(f":material/check_circle: Local fallback ready: {local_model}.")
     return Connection(base_url, model, fallback_models, local_model, local_url, api_key_env, api_key)
 
 
@@ -455,7 +461,7 @@ def _forget_key() -> None:
 
 
 def _public_connection() -> Connection:
-    """The sidebar on a public deploy: Gemini only, with the visitor's own key, the host's own keys never
+    """Model & connection on a public deploy: Gemini only, with the visitor's own key, the host's own keys never
     used. The key lives in this browser session's memory and is gone when the tab closes, unless the
     visitor asks this browser to keep it on their device (ui/device_storage.py). The server never writes it
     anywhere."""
@@ -481,13 +487,12 @@ def _public_connection() -> Connection:
     elif remember and api_key and stored == "" and action != "store":
         st.caption(":orange[This browser isn't keeping it, so it lasts only while this tab is open (a private "
                    "window, or site data turned off).]")
-    with st.expander("Models", icon=":material/settings:"):
-        model = st.text_input("Model", key=keep("keep:redteam:model", DEFAULT_MODEL))
-        fallback_text = st.text_area(
-            "Fallback models, in order", key=keep("keep:redteam:fallbacks", "\n".join(DEFAULT_FALLBACK_MODELS)),
-            height=130, help="Used in turn after quota or temporary errors. Models unavailable to your key are "
-                             "skipped.",
-        )
+    model = st.text_input("Model", key=keep("keep:redteam:model", DEFAULT_MODEL))
+    fallback_text = st.text_area(
+        "Fallback models, in order", key=keep("keep:redteam:fallbacks", "\n".join(DEFAULT_FALLBACK_MODELS)),
+        height=130, help="Used in turn after quota or temporary errors. Models unavailable to your key are "
+                         "skipped.",
+    )
     fallback_models = [line.strip() for line in fallback_text.replace(",", "\n").splitlines() if line.strip()]
     if api_key:
         st.caption(f":material/key: Writing with **{model}** and your key, then {len(fallback_models)} fallback "
@@ -498,20 +503,30 @@ def _public_connection() -> Connection:
     return Connection(GEMINI_API_URL, model, fallback_models, "", "", "GEMINI_API_KEY", api_key)
 
 
-def _setup(profile: str, conn: Connection) -> Plan:
-    """The left-hand column: source, task, length, style and scoring."""
-    st.markdown("##### :material/edit_note: Source")
-    prompt = st.text_area("Instructions", key=keep("keep:redteam:prompt", ""), height=130,
-                          placeholder="Describe what the sample should cover: the assignment, the audience, "
-                                      "the angle.")
+def _mode() -> str:
+    """Generate or Regenerate: the page's first choice."""
+    mode = st.segmented_control("Mode", list(MODES), format_func=MODES.get, key=keep("keep:redteam:mode", "generate"),
+                                required=True, label_visibility="collapsed", width="stretch")
+    st.caption(MODE_NOTES[mode])
+    return mode
+
+
+def _source(regenerate: bool) -> tuple[str, Upload | None, list, list, list]:
+    """The Input panel: instructions, and the document or pasted text."""
+    prompt = st.text_area(
+        "Instructions" + (" (optional)" if regenerate else ""), key=keep("keep:redteam:prompt", ""), height=120,
+        placeholder="Anything the rewrite should keep in mind: the assignment, the audience, the angle."
+        if regenerate else "Describe what the sample should cover: the assignment, the audience, the angle.")
     upload = persistent_upload(
-        "Source document (optional)", "redteam:file", DOCUMENT_TYPES,
-        help="A text, Markdown, Word or PowerPoint file. Its text is context for the sample, and it lets you "
-             "rewrite its sections or fill its answer boxes. The file itself is never changed.",
+        "Document to rewrite" if regenerate else "Source document (optional)", "redteam:file", DOCUMENT_TYPES,
+        help="A text, Markdown, Word or PowerPoint file. To generate, its text is context for the sample. To "
+             "regenerate, its sections, text blocks or answer boxes are rewritten. The file itself is never "
+             "changed.",
     )
     if not upload:
         pasted = st.text_area(
-            "Or paste the text to rewrite (optional)", key=keep("keep:redteam:pasted", ""), height=130,
+            "Or paste the text to rewrite" if regenerate else "Or paste source text (optional)",
+            key=keep("keep:redteam:pasted", ""), height=110,
             help="Works like an uploaded text file: blocks are separated by blank lines, and you can rewrite one "
                  "or all of them. The instructions above still tell the model what to do.",
         )
@@ -533,33 +548,37 @@ def _setup(profile: str, conn: Connection) -> Plan:
                 for section in sections:
                     st.markdown(f"**{section.label}**")
                     st.text(section.text)
-    plan = Plan(prompt, upload, sections, slots, blocks, "sample", profile)
+    return prompt, upload, sections, slots, blocks
 
-    st.markdown("##### :material/task_alt: Task")
-    unavailable = _unavailable_tasks(upload, sections, slots, blocks)
-    options = [task for task in TASKS if task not in unavailable]
-    task_key = keep("keep:redteam:task", "sample")
-    if st.session_state[task_key] not in options:
-        st.session_state[task_key] = "sample"
-    plan.task = st.segmented_control("Task", options, format_func=lambda task: TASKS[task][0], key=task_key,
-                                     required=True, label_visibility="collapsed")
+
+def _scope(plan: Plan) -> None:
+    """To regenerate: what to rewrite, and the choices that go with it. Without a document there is
+    nothing to rewrite yet, and the plan says why it can't run."""
+    unavailable = _unavailable_tasks(plan.upload, plan.sections, plan.answer_slots, plan.blocks)
+    options = [task for task in SCOPES if task not in unavailable]
+    if not options:
+        plan.blocked = "Upload a document or paste text under Input to regenerate it."
+        st.info(plan.blocked if not plan.upload else
+                f"Nothing in {plan.upload.name} can be rewritten: {unavailable['blocks']}",
+                icon=":material/upload_file:")
+        return
+    scope_key = keep("keep:redteam:scope", "blocks")
+    if st.session_state[scope_key] not in options:
+        st.session_state[scope_key] = options[0]
+    plan.task = st.selectbox("What to rewrite", options, format_func=lambda task: TASKS[task][0], key=scope_key,
+                             help="; ".join(f"{TASKS[task][0]}: {TASKS[task][1]}" for task in SCOPES))
     st.caption(TASKS[plan.task][1])
-    if not upload:
-        st.caption(":material/upload_file: Paste text, or upload a text, Markdown, Word or PowerPoint document, to "
-                   "rewrite a section or every block, or fill a document's answer boxes.")
-    else:
-        for task, reason in unavailable.items():
-            st.caption(f":material/block: **{TASKS[task][0]}** isn't available for this file: {reason}")
+    for task, reason in unavailable.items():
+        st.caption(f":material/block: **{TASKS[task][0]}** isn't available for this file: {reason}")
 
-    plan.context_sections = sections
     if plan.task == "section":
-        labels = [section.label for section in sections]
+        labels = [section.label for section in plan.sections]
         section_key = keep("keep:redteam:section", labels[0])
         if st.session_state[section_key] not in labels:
             st.session_state[section_key] = labels[0]
         target_label = st.selectbox("Section to rewrite", labels, key=section_key)
-        plan.target_section = next(section for section in sections if section.label == target_label)
-        others = [section for section in sections if section.label != target_label]
+        plan.target_section = next(section for section in plan.sections if section.label == target_label)
+        others = [section for section in plan.sections if section.label != target_label]
         context_labels = st.multiselect(
             "Other sections to give as context", [section.label for section in others],
             default=[section.label for section in others], key=f"redteam:context:{target_label}",
@@ -572,18 +591,19 @@ def _setup(profile: str, conn: Connection) -> Plan:
                                          help="Exports a new AI-labelled text, Markdown, DOCX or PPTX copy.")
     elif plan.task == "answers":
         plan.fill_answer_boxes = True
-        with st.expander(f"Detected answer boxes · {len(slots)}", icon=":material/table_rows:"):
-            for slot in slots:
+        with st.expander(f"Detected answer boxes · {len(plan.answer_slots)}", icon=":material/table_rows:"):
+            for slot in plan.answer_slots:
                 st.markdown(f"**{slot.label}**")
                 st.write(f"Question: {slot.question}")
                 st.write(f"Current answer: {slot.previous_answer or '(blank)'}")
     elif plan.task == "blocks":
         plan.rewrite_all_blocks = plan.export_document = True
+        slots = plan.answer_slots
         if slots:
             plan.fill_answer_boxes = st.toggle(f"Also fill the {len(slots)} answer boxes",
                                                key=keep("keep:redteam:also_answers", False))
-        prose = [block for block in blocks if worth_rewriting(block.text)]
-        skipped = len(blocks) - len(prose)
+        prose = [block for block in plan.blocks if worth_rewriting(block.text)]
+        skipped = len(plan.blocks) - len(prose)
         st.caption(f"Rewrites {len(prose)} text blocks. Headings, titles, questions and tables stay as they are"
                    + (" unless you fill the answer boxes too" if slots else "")
                    + (f", and so do {skipped} short labels, names, dates and numbers, which a rewrite would only "
@@ -602,16 +622,17 @@ def _setup(profile: str, conn: Connection) -> Plan:
                  "passage of the style profile's writer, for an original that is AI-written or someone else's "
                  "(it needs a style profile with the writer's writing beside it). A light edit also keeps most of "
                  "the original's words. A free rewrite keeps only the meaning and length of each block.")
-    if plan.task in ("section", "answers", "blocks"):
-        plan.human_source = st.toggle(
-            "This document is my own writing", key=keep("keep:redteam:human_source", False),
-            help="Also saves each original block as human-written (label 0), paired with its rewrite under the "
-                 "same source, so the detector can learn the difference between you and an AI imitating you on "
-                 "the same content. Leave it off for a document that is AI-written or someone else's: a wrong "
-                 "human label teaches the detector the wrong thing.",
-        )
+    plan.human_source = st.toggle(
+        "This document is my own writing", key=keep("keep:redteam:human_source", False),
+        help="Also saves each original block as human-written (label 0), paired with its rewrite under the "
+             "same source, so the detector can learn the difference between you and an AI imitating you on "
+             "the same content. Leave it off for a document that is AI-written or someone else's: a wrong "
+             "human label teaches the detector the wrong thing.",
+    )
 
-    st.markdown("##### :material/tune: Length, style and scoring")
+
+def _writing(plan: Plan) -> None:
+    """The Writing panel: length and style profile."""
     if plan.batch:
         plan.match_existing_lengths = st.toggle("Match the length of the existing text",
                                                 key=keep("keep:redteam:match", True))
@@ -644,16 +665,21 @@ def _setup(profile: str, conn: Connection) -> Plan:
         _writer_shapes(plan)
     else:
         st.caption("No style profile yet, so samples use the model's own style. Add one below to write in it.")
-    st.file_uploader(
-        "Add your own style profile", type="json", key="redteam:style_upload", on_change=_add_style_profile,
-        help="A JSON style profile of one writer, in the format of style_profile_template.json, for samples "
-             "that read like that writer rather than people in general. "
-             + ("It is kept only for this browser session." if public() else "It is saved in data/styles/."),
-    )
+    with st.expander("Add your own style profile", icon=":material/upload:"):
+        st.file_uploader(
+            "Style profile (.json)", type="json", key="redteam:style_upload", on_change=_add_style_profile,
+            help="A JSON style profile of one writer, in the format of style_profile_template.json, for samples "
+                 "that read like that writer rather than people in general. "
+                 + ("It is kept only for this browser session." if public() else "It is saved in data/styles/."),
+        )
     if style_notice := st.session_state.pop("redteam:style_notice", None):
         getattr(st, style_notice[0])(style_notice[1])
+
+
+def _scoring(plan: Plan, profile: str) -> None:
+    """The Detector panel: scoring, and the modes that use the score."""
     plan.score = st.toggle("Score with the detector", key=keep("keep:redteam:score", True),
-                           help=f"Uses the {models.PROFILE_LABELS[profile]} build chosen in the sidebar. The "
+                           help=f"Uses the {models.PROFILE_LABELS[profile]} build picked on the Detect page. The "
                                 "first score loads its models.")
     if not public():  # the packaged app allows labelled robustness samples, but public deploys do not
         evasion = st.toggle(
@@ -680,8 +706,34 @@ def _setup(profile: str, conn: Connection) -> Plan:
         st.caption("Every draft is saved as AI-labelled evaluation data; the kept one records the mode and scores. "
                    + (" In a batch, each block is drafted and scored on its own, one at a time." if plan.batch
                       else ""))
-    _priorities(plan, conn)
-    return plan
+
+
+def _setup(profile: str) -> tuple[Plan, Connection]:
+    """The settings column, top to bottom: Mode, Input, Rewrite (to regenerate), Writing, Detector, then
+    Advanced (priorities) and Model & connection folded away. The priorities need the connection, so the
+    two folded panels are laid out first and filled in that order."""
+    with style.group("Mode", "01"):
+        regenerate = _mode() == "regenerate"
+    with style.group("Input", "02"):
+        prompt, upload, sections, slots, blocks = _source(regenerate)
+    plan = Plan(prompt, upload, sections, slots, blocks, "sample", profile)
+    plan.context_sections = sections
+    steps = iter(("03", "04", "05"))
+    if regenerate:
+        with style.group("Rewrite", next(steps)):
+            _scope(plan)
+    with style.group("Writing", next(steps)):
+        _writing(plan)
+    with style.group("Detector", next(steps)):
+        _scoring(plan, profile)
+    advanced_box = st.expander("Advanced · priorities and generation settings", icon=":material/tune:")
+    key_missing = public() and not st.session_state.get(PUBLIC_KEY, "").strip()
+    with st.expander("Model & connection" + (" · add your Gemini key" if key_missing else ""),
+                     icon=":material/key:", expanded=key_missing):
+        conn = _connection()
+    with advanced_box:
+        _priorities(plan, conn)
+    return plan, conn
 
 
 def _register(plan: Plan) -> None:
@@ -789,7 +841,6 @@ def _priorities(plan: Plan, conn: Connection) -> None:
     """What the run favours. Points spread over the detector, the style profile, speed and quota pick
     a setting from the measured table (eval/generation_settings.py); without one, or by choice, the
     thinking level, blocks per request and requests at once are set by hand."""
-    st.markdown("##### :material/joystick: Priorities")
     table = generation_settings.load_table()
     models_on_offer = [name for name in (conn.model, *conn.fallback_models) if name]
     if table is None:
@@ -825,7 +876,7 @@ def _priorities(plan: Plan, conn: Connection) -> None:
             with readout:
                 _readout(plan, table, setting, blocks)
             return
-        st.caption("None of the measured settings uses the models in the sidebar, so set them by hand.")
+        st.caption("None of the measured settings uses the models under Model & connection, so set them by hand.")
     plan.temperature = st.slider(
         "Creativity", 0.0, 1.5, step=0.1, key=keep("keep:redteam:temperature", Plan.temperature),
         help="The model's temperature: higher writes less predictably. Gemini 3.6, 3.7 and 3.8 Flash use their own.",
@@ -950,12 +1001,14 @@ def _unavailable_tasks(upload: Upload | None, sections: list, slots: list, block
 
 def _problem(plan: Plan, conn: Connection) -> str | None:
     """Why the plan can't run, if it can't."""
+    if plan.blocked:
+        return plan.blocked
     if not plan.prompt.strip() and not plan.sections:
         return "Write some instructions, paste some text or upload a document first."
     if plan.task == "section" and plan.target_section is None:
         return "Choose a document section to rewrite."
     if not conn.api_key and public():
-        return "Paste your Gemini API key in the sidebar first."
+        return "Paste your Gemini API key under Model & connection first."
     if not conn.api_key and not conn.base_url.strip().startswith(("http://localhost", "http://127.0.0.1")):
         return "Add your Gemini API key on the Guide page, or use a local model endpoint."
     return None
@@ -1296,7 +1349,7 @@ def _saved_progress(plan: Plan, jobs: list[dict], checkpoint: Checkpoint) -> Non
 
 
 def _model_order(plan: Plan, conn: Connection) -> list[str]:
-    """The models to try in turn: the one the priorities picked, then the sidebar's."""
+    """The models to try in turn: the one the priorities picked, then those under Model & connection."""
     return list(dict.fromkeys(name for name in (plan.model, conn.model, *conn.fallback_models) if name))
 
 
@@ -1828,7 +1881,7 @@ def _show_result(result: dict, profile: str) -> None:
     row = result.get("row") or {}
     with st.container(border=True):
         with st.container(horizontal=True, vertical_alignment="center"):
-            st.markdown("**Latest challenge sample**")
+            st.markdown("**Latest result**")
             if row.get("model"):
                 st.badge(row["model"], icon=":material/smart_toy:", color="gray")
             if row.get("attack"):
@@ -1885,21 +1938,11 @@ def _show_result(result: dict, profile: str) -> None:
                 column_config={"AI likelihood": st.column_config.ProgressColumn(
                     format="percent", min_value=0, max_value=1, color=style.tokens()["accent"])},
             )
-            if not public() and result.get("checkpoint_path"):
-                st.button("Run another adaptive round", icon=":material/refresh:",
-                          help="Use these samples as the next benchmark starting point, then compare up to three "
-                               "labelled candidates per block using detector likelihood and style-profile match.",
-                          on_click=_queue_batch_improvement, args=(result["checkpoint_path"],),
-                          key="redteam:improve_batch_result")
-        elif not public():
-            st.button("Run another adaptive round", icon=":material/refresh:",
-                      help="Use this sample as the next benchmark starting point, then compare up to three labelled "
-                           "candidates by detector likelihood and style-profile match.",
-                      on_click=_queue_sample_improvement, args=(result["essay"],),
-                      key="redteam:improve_sample_result")
 
         st.html(f'<div class="od-text od-sample">{html.escape(result["essay"])}</div>')
-        with st.container(horizontal=True):
+        # One row of actions: the files on the left, what to do next on the right.
+        files, next_steps = st.columns([1, 1], vertical_alignment="center")
+        with files, st.container(horizontal=True):
             st.download_button("Text file", result["attachment"], file_name=result["filename"], mime="text/plain",
                                icon=":material/download:", key="download_latest_redteam_sample")
             if result.get("document_attachment"):
@@ -1907,6 +1950,19 @@ def _show_result(result: dict, profile: str) -> None:
                 st.download_button(f"Document copy ({suffix})", result["document_attachment"],
                                    file_name=result["document_filename"], mime=MIME_TYPES.get(suffix),
                                    icon=":material/download:", key="download_latest_redteam_document")
+        with next_steps, st.container(horizontal=True, horizontal_alignment="right"):
+            if not public() and result.get("batch_answers") and result.get("checkpoint_path"):
+                st.button("Another adaptive round", icon=":material/refresh:",
+                          help="Use these samples as the next benchmark starting point, then compare up to three "
+                               "labelled candidates per block using detector likelihood and style-profile match.",
+                          on_click=_queue_batch_improvement, args=(result["checkpoint_path"],),
+                          key="redteam:improve_batch_result")
+            elif not public() and not result.get("batch_answers"):
+                st.button("Another adaptive round", icon=":material/refresh:",
+                          help="Use this sample as the next benchmark starting point, then compare up to three "
+                               "labelled candidates by detector likelihood and style-profile match.",
+                          on_click=_queue_sample_improvement, args=(result["essay"],),
+                          key="redteam:improve_sample_result")
             if st.button("Analyze in Detect", icon=":material/search:", type="primary"):
                 _open_in_detect(result.get("detect_text") or result["essay"])
         if public():
@@ -2044,16 +2100,12 @@ def _improve_batch(plan: Plan, jobs: list[dict], previous_path: Path) -> tuple[P
 def render() -> None:
     load_env()
     profile = models.active_profile()
-    conn = _connection()
     _restore_last_result()
 
-    style.hero("Adversarial evaluation · " + ("public mode" if public() else "local"), "Challenge Lab",
-               "Generate synthetic, labelled AI challenge samples and measure this detector's response. "
-               "Style-conditioned generation and detector-guided candidate selection are explicit test conditions; "
-               "every output is saved as AI-labelled evaluation data. Results support the next detector update "
-               "and benchmark round.",
-               ["Your own Gemini key" if public() or packaged() else "Gemini, then a local fallback",
-                "Profile-conditioned trials", "Multi-block batches", "Recorded detector feedback"])
+    style.page_header(
+        "Adversarial Lab",
+        "Make labelled AI test text: generate it from instructions, or regenerate a document's own text.",
+        f"Scored with the {models.PROFILE_LABELS[profile]} build" + (" · public mode" if public() else ""))
     _finish_ended_batches()
     running = [worker for worker in _own_batches().values() if worker.is_alive()]
     if running:
@@ -2065,14 +2117,12 @@ def render() -> None:
         for worker in running:
             _batch_progress(worker)
         return
-    st.caption(":material/science: Evaluation use only. Outputs are AI-generated challenge data and should remain "
-               "labelled as such when shared or analyzed.")
 
-    generate_tab, saved_tab = st.tabs(["Generate challenges", "Challenge results"])
-    with generate_tab:
-        setup, output = st.columns([1.1, 1], gap="large")
+    create_tab, saved_tab = st.tabs(["Create", "Saved samples"])
+    with create_tab:
+        setup, output = st.columns([1, 1.2], gap="large")
         with setup:
-            plan = _setup(profile, conn)
+            plan, conn = _setup(profile)
             jobs = _batch_jobs(plan) if plan.batch else []
             path = _checkpoint_path(plan) if plan.batch else None
             checkpoint = Checkpoint.load(path) if plan.batch else None
@@ -2085,12 +2135,12 @@ def render() -> None:
                 _saved_progress(plan, jobs, checkpoint)
                 saved = len(checkpoint.generated([job["key"] for job in jobs]))
                 label, icon = f"Resume · {saved} of {len(jobs)} blocks saved", ":material/play_arrow:"
-            elif plan.rewrite_all_blocks:
-                label, icon = f"Generate {len(jobs)} block challenges", ":material/auto_awesome:"
-            elif plan.fill_answer_boxes:
-                label, icon = f"Generate {len(jobs)} answer challenges", ":material/auto_awesome:"
+            elif plan.batch:
+                label, icon = f"Regenerate {len(jobs)} block{'s' * (len(jobs) != 1)}", ":material/autorenew:"
+            elif plan.task == "section":
+                label, icon = "Regenerate section", ":material/autorenew:"
             else:
-                label, icon = "Generate challenge sample", ":material/auto_awesome:"
+                label, icon = "Generate", ":material/auto_awesome:"
             clicked = st.button(label, type="primary", icon=icon, width="stretch")
             problem = _problem(plan, conn) if clicked else None
             if problem:
@@ -2103,6 +2153,8 @@ def render() -> None:
                 except (OSError, ValueError) as exc:
                     st.error(f"Could not load the style profile: {exc}")
                     clicked = False
+            st.caption(":material/science: Evaluation use only. Everything made here is AI-generated test data and "
+                       "should stay labelled as such when shared or analyzed.")
 
         with output:
             if clicked and not problem:
@@ -2114,8 +2166,9 @@ def render() -> None:
             if result := st.session_state.get(RESULT):
                 _show_result(result, profile)
             else:
-                st.info("Set up a sample on the left and generate it. It appears here with its detector score.",
-                        icon=":material/auto_awesome:")
+                st.html('<div class="od-empty"><b>Nothing made yet</b>Choose Generate or Regenerate, fill in the '
+                        "settings on the left and press the button. The text appears here with its detector "
+                        "score, ready to download or check in Detect.</div>")
 
     with saved_tab:
         _history()
