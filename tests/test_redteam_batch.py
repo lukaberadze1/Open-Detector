@@ -415,7 +415,7 @@ def test_only_flagged_passages_are_revised_and_a_worse_revision_is_dropped():
         spans = passage_spans(current)
         sentences = [SimpleNamespace(start=a, ai_probability=0.9 if "Flagged" in current[a:b] else 0.05)
                      for a, b in spans]
-        return SimpleNamespace(text=current, ai_probability=0.9 if "Flagged" in current else 0.1, sentences=sentences)
+        return SimpleNamespace(text=current, ai_probability=0.9 if "Flagged" in current else 0.08, sentences=sentences)
 
     asked = []
     plainer = " ".join(["A plainer passage, with the bus I missed in it."] * 6)
@@ -426,7 +426,7 @@ def test_only_flagged_passages_are_revised_and_a_worse_revision_is_dropped():
 
     revised, history = revise_flagged(text, analyze, ask, str.strip, [[(9, "1 comma")]], rounds=3)
     assert revised == f"{fine}\n\n{plainer}", "only the flagged passage changes"
-    assert history == [0.9, 0.1] and len(asked) == 1, "stops once under the target"
+    assert history == [0.9, 0.08] and len(asked) == 1, "stops once under the target"
     assert REVISE in asked[0] and "Sentence plan:" in asked[0] and fine not in asked[0].split("Blocks:")[1]
 
     def worse(current):
@@ -435,6 +435,145 @@ def test_only_flagged_passages_are_revised_and_a_worse_revision_is_dropped():
 
     kept, history = revise_flagged(text, worse, ask, str.strip, [], rounds=1)
     assert kept == text and history == [0.9, 0.9], "a revision scoring higher is dropped"
+
+
+def test_the_loop_keeps_going_at_the_bar_and_stops_under_it():
+    from eval.redteam_batch import WIN_BELOW, revise_flagged
+
+    text = " ".join(f"Sentence {n} reads like a tidy machine summary of things." for n in range(6))
+    scores = iter([WIN_BELOW, WIN_BELOW - 0.01])
+    asked = []
+
+    def analyze(current):
+        return SimpleNamespace(text=current, ai_probability=next(scores),
+                               sentences=[SimpleNamespace(start=0, ai_probability=0.9)])
+
+    def ask(prompt, pending):
+        asked.append(prompt)
+        return json.dumps({"blocks": [{"id": "B1", "text": "A plain passage about the bus."}]})
+
+    _, history = revise_flagged(text, analyze, ask, str.strip, [], rounds=4)
+    assert history == [WIN_BELOW, WIN_BELOW - 0.01] and len(asked) == 1
+
+
+def _document_detector(score_of):
+    """A stand-in for Detector.analyze over a document: every sentence of a block scored by its text."""
+    def analyze(current, sentences=True):
+        marks = []
+        if sentences:
+            start = 0
+            for part in current.split("\n\n"):
+                marks.append(SimpleNamespace(start=start, ai_probability=0.9 if "Tidy" in part else 0.02))
+                start += len(part) + 2
+        return SimpleNamespace(text=current, ai_probability=score_of(current), sentences=marks)
+    return analyze
+
+
+def test_a_document_is_revised_block_by_block_and_each_stays_in_its_place():
+    from eval.redteam_batch import revise_blocks
+
+    tidy = " ".join(f"Tidy sentence {n} offers a balanced overview of the topic." for n in range(3))
+    neat = " ".join(f"Tidy line {n} offers a balanced overview of the matter." for n in range(3))
+    fine = " ".join(f"Fine sentence {n} sounds like me on a slow afternoon at home." for n in range(3))
+    texts = {"a": fine, "b": tidy, "c": "Done.", "d": neat}
+
+    def score(current):
+        return 0.5 - 0.3 * ("bus" in current) + 0.2 * ("tidier" in current)
+
+    def ask(prompt, pending):
+        return json.dumps({"blocks": [{"id": "B1", "text": "A plain passage about the bus I missed."},
+                                      {"id": "B2", "text": "A tidier passage still, and worse for it."}]})
+
+    changed, history = revise_blocks(texts, _document_detector(score), ask, str.strip, [], rounds=1)
+    assert changed == {"b": "A plain passage about the bus I missed."}, "the flagged block that helped, nothing else"
+    assert history == pytest.approx([0.5, 0.2])
+
+
+def test_a_document_under_the_bar_is_left_alone_and_a_short_text_is_not_revised():
+    from eval.redteam_batch import WIN_BELOW, revise_blocks
+
+    def ask(prompt, pending):
+        raise AssertionError("no request when nothing needs revising")
+
+    text = {"a": "Tidy sentence one offers a balanced overview of the whole topic here today and more words."}
+    assert revise_blocks(text, _document_detector(lambda _: WIN_BELOW - 0.01), ask, str.strip, [], rounds=3) == (
+        {}, [WIN_BELOW - 0.01])
+    assert revise_blocks(text, _document_detector(lambda _: None), ask, str.strip, [], rounds=3) == ({}, [None])
+
+
+def test_a_revision_that_leaves_the_style_profile_is_dropped_however_well_it_scores():
+    from eval.redteam_batch import revise_blocks, style_guard
+
+    words = " ".join(["word"] * 20)
+    texts = {"a": f"Tidy {words}"}
+
+    def ask(prompt, pending):
+        return json.dumps({"blocks": [{"id": "B1", "text": "A plain passage about the bus I missed."}]})
+
+    def score(current):
+        return 0.5 - 0.3 * ("bus" in current)
+
+    far = style_guard(lambda text: 3.0 if "bus" in text else 1.0, texts["a"])
+    assert revise_blocks(texts, _document_detector(score), ask, str.strip, [], rounds=1, fits=far)[0] == {}
+    near = style_guard(lambda text: 1.04 if "bus" in text else 1.0, texts["a"])
+    assert revise_blocks(texts, _document_detector(score), ask, str.strip, [], rounds=1, fits=near)[0] == {
+        "a": "A plain passage about the bus I missed."}
+
+
+def test_the_style_guard_lets_through_what_it_cannot_measure():
+    from eval.redteam_batch import style_guard
+
+    assert style_guard(lambda text: None, "start")("anything")
+    assert style_guard(lambda text: None if text == "x" else 1.0, "start")("x")
+
+
+def test_a_block_reads_the_hottest_window_holding_most_of_it():
+    from eval.redteam_batch import window_heat
+
+    spans = {"a": (0, 100), "b": (100, 200), "c": (900, 950)}
+    windows = [(0, 150, 1.0), (50, 110, 9.0), (100, 300, -2.0)]
+    # 'a' is half inside the 9.0 window; 'b' barely touches it, so it reads the two holding at least half of it
+    assert window_heat(spans, windows) == {"a": 9.0, "b": 1.0, "c": float("-inf")}
+
+
+def test_the_hottest_window_chooses_what_is_revised_over_sentence_scores():
+    from eval.redteam_batch import revise_blocks
+
+    words = " ".join(["word"] * 20)
+    texts = {"a": f"Tidy {words}", "b": f"Fine {words}"}
+    asked = []
+
+    def ask(prompt, pending):
+        asked.extend(job["previous"] for job in pending)
+        return json.dumps({"blocks": [{"id": "B1", "text": "A plain passage about the bus I missed."}]})
+
+    def windows(text):  # the block the sentence scores call fine is in the hot window
+        middle = text.index("Fine")
+        return [(0, middle, -3.0), (middle, len(text), 4.0)]
+
+    def score(current):
+        return 0.5 - 0.3 * ("bus" in current)
+
+    with_windows = revise_blocks(texts, _document_detector(score), ask, str.strip, [], rounds=1, windows=windows)
+    assert asked[0] == texts["b"] and with_windows[0] == {"b": "A plain passage about the bus I missed."}
+
+
+def test_document_windows_only_read_the_detector():
+    from opendetector import Detector, DetectorConfig
+
+    from eval.redteam_batch import document_windows
+
+    class Engine:
+        name = "stub"
+
+        def window_logits(self, chunks):
+            return [float(len(chunk)) for chunk in chunks]
+
+    text = " ".join(f"Sentence number {n} has a few more words in it than most." for n in range(60))
+    detector = Detector([Engine()], config=DetectorConfig())
+    read = document_windows(detector)(text)
+    assert read and all(text[start:end] and score == end - start for start, end, score in read)
+    assert read[-1][1] == len(text), "windows are anchored to the end of the text"
 
 
 def test_each_revised_passage_is_kept_only_if_it_helps():

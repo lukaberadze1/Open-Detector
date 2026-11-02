@@ -69,7 +69,11 @@ from eval.redteam_batch import (
     person_instruction,
     rewrite_group,
     restyle,
+    REVISE_KEEPING,
+    WIN_BELOW,
+    revise_blocks,
     revise_flagged,
+    style_guard,
     rewrite_measures,
     sample_prompt,
     structure,
@@ -105,8 +109,9 @@ EXPORT_DIR = DATA_ROOT / "data/essays/exports"
 BATCH_DIR = DATA_ROOT / "data/essays/batches"
 VISITOR_DIR = DATA_ROOT / "data/visitors"  # a public deploy's per-visitor folders
 MAX_STYLE_BYTES = 500_000
-EVASION_TARGET = 0.05  # configured detector-challenge benchmark target
+EVASION_TARGET = WIN_BELOW  # configured detector-challenge benchmark target
 STYLE_FLOOR = 35  # minimum style-profile percentile used to rank challenge candidates
+REVISE_BY_DEFAULT = True  # measured on eval/tune_revise.py: 81% to 7% on an AI-written source
 REVISE_ROUNDS = 4  # "Revise what the detector flags": rounds at most, one request each, only while still flagged
 DEFAULT_FALLBACK_MODELS = (
     "gemini-3.5-flash-lite",
@@ -355,6 +360,12 @@ def score_text(text: str, profile: str) -> dict:
             "calibrated": analysis.calibrated,
         }
     return {**result, "detector_profile": profile}
+
+
+def _style_fits(plan: Plan, text: str):
+    """What keeps a revision of `text` as close to the plan's style profile as `text` is, if it has one."""
+    yardstick = _yardstick(text, plan.style_path, None, plan.register) if plan.style_path else None
+    return style_guard(yardstick.text_distance, text) if yardstick else None
 
 
 def _yardstick(text: str, profile_path: Path, cache: dict | None, register: str | None):
@@ -670,7 +681,10 @@ def _writing(plan: Plan) -> None:
              "reproduce a writer exactly.",
     )
     if styles:
-        style_key = keep("keep:redteam:style_name", DEFAULT_STYLE)
+        # A writer's own profile, where there is one, has read far more human than the built-in one in every
+        # measurement (eval/reports/style_profile_ab.md). A public deploy holds only what a visitor adds.
+        own = next((stem for stem in styles if stem not in BUILTIN_NAMES), None)
+        style_key = keep("keep:redteam:style_name", DEFAULT_STYLE if public() or own is None else own)
         if st.session_state[style_key] not in styles:
             st.session_state[style_key] = DEFAULT_STYLE if DEFAULT_STYLE in styles else next(iter(styles))
         name = st.selectbox("Style profile", list(styles), key=style_key, disabled=not use_style,
@@ -706,19 +720,20 @@ def _scoring(plan: Plan, profile: str) -> None:
             "Adaptive challenge mode · detector score + style profile", key=keep("keep:redteam:evasion", False),
             disabled=False,
             help="For adversarial evaluation, generate up to three labelled AI candidates and rank them using the "
-                 "detector score and selected style-profile measurement. The detector target is below 5%; the "
+                 "detector score and selected style-profile measurement. The detector target is below 10%; the "
                  "style-profile floor is 35%. Targets and candidate scores are recorded with the evaluation data. "
                  "This is a test procedure, not an authorship claim.",
         )
         plan.evasion = evasion
         if plan.evasion:
             plan.score = True
-        if not plan.batch and not plan.evasion:
+        if not plan.evasion:
             plan.revise = REVISE_ROUNDS if st.toggle(
-                "Revise what the detector flags", key=keep("keep:redteam:revise", False),
-                help=f"After writing, scores the sample sentence by sentence and rewrites only its most AI-like "
+                "Revise what the detector flags", key=keep("keep:redteam:revise", REVISE_BY_DEFAULT),
+                help=f"After writing, scores the text sentence by sentence and rewrites only its most AI-like "
                      f"passages, in new sentence shapes from the profile's writer, keeping a revision only when "
-                     f"the whole sample then scores lower: up to {REVISE_ROUNDS} rounds, one request each. "
+                     f"the whole text then scores lower and stays as close to the style profile: up to "
+                     f"{REVISE_ROUNDS} rounds, until it scores under {WIN_BELOW:.0%}, one request each. "
                      "Every revision is saved as AI-labelled evaluation data.") else 0
             if plan.revise:
                 plan.score = True
@@ -1102,6 +1117,7 @@ def _checkpoint_path(plan: Plan) -> Path:
     # rewrites, which every batch was before rewrites could follow the original.
     style = [plan.style_name] if plan.use_profile and plan.style_name != UNNAMED_STYLE else []
     follow = [structure(plan)] if plan.rewrite_all_blocks and structure(plan) != "free" else []
+    follow += [f"revise{plan.revise}"] if plan.revise else []
     return _store().batches / (
         batch_key(plan.source_hash, plan.fill_answer_boxes, plan.rewrite_all_blocks, plan.prompt.strip(),
                   plan.use_profile, plan.answer_words, plan.match_existing_lengths, *style, *follow) + ".json"
@@ -1134,7 +1150,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
         document_bytes = document_name = None
         st.warning(f"The answers are saved, but the document copy could not be exported: {exc}")
 
-    attack = f"{mode_tag}+{plan.style_name}"
+    attack = f"{mode_tag}+{plan.style_name}" + (f"+revise{plan.revise}" if plan.revise else "")
     rows = []
     # A block handed back as the uploaded original is the writer's text, not AI text: never saved as AI.
     copies = {item["key"] for item in items if copied(item["target"].text, item["text"])}
@@ -1192,6 +1208,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
             **_settings(plan),
             **{key: value for key, value in document_score.items() if key != "words"},
             **_followed(plan, items),
+            **({"revise_rounds": checkpoint.meta["revise_rounds"]} if "revise_rounds" in checkpoint.meta else {}),
         })
         checkpoint.meta["document_recorded"] = True
     if plan.human_source and rows:
@@ -1543,7 +1560,28 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
             checkpoint.save()
         status["note"] = None
 
+    def revise_document() -> None:
+        """Close the loop on a whole-document rewrite: revise the blocks the detector flags."""
+        def ask(prompt: str, group: list[dict]) -> str:
+            reply, used_model, model_errors = write(prompt, group_tokens(group), json_schema=GROUP_SCHEMA,
+                                                    timeout=60 + 15 * len(group))
+            wrote_with(used_model, model_errors)
+            return reply
+
+        status["note"] = "Revising the blocks the detector flags…"
+        texts = {key: checkpoint.blocks[key]["text"] for key in checkpoint.generated(keys)}
+        changed, history = revise_blocks(texts, models.get_detector(plan.profile).analyze, ask, clean,
+                                         plan.shapes or [], plan.revise, prompt=REVISE_KEEPING,
+                                         fits=_style_fits(plan, "\n\n".join(texts.values())))
+        for key, text in changed.items():
+            checkpoint.update(key, text=text, score=candidate_metrics(text, plan.profile, plan.style_path,
+                                                                      register=plan.register))
+        checkpoint.meta["revise_rounds"] = history
+        checkpoint.save()
+
     def score_document() -> None:
+        if plan.revise and "revise_rounds" not in checkpoint.meta:
+            revise_document()
         # Answer boxes are mostly under the detector's 150-word minimum, so the regenerated text is
         # also scored as one document: the verdict a reader of the whole file would get.
         whole = "\n\n".join(checkpoint.blocks[key]["text"] for key in checkpoint.generated(keys))
@@ -1702,7 +1740,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
                 with st.spinner("Revising the passages the detector flags…"):
                     essay, revise_history = revise_flagged(
                         essay, models.get_detector(plan.profile).analyze, restyle_ask, clean,
-                        plan.shapes or [], plan.revise)
+                        plan.shapes or [], plan.revise, prompt=REVISE_KEEPING, fits=_style_fits(plan, essay))
                 drafts[essay] = model
     except APIError as exc:
         st.error(str(exc), icon=":material/error:")

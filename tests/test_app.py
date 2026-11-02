@@ -129,6 +129,7 @@ def stub_model(monkeypatch, tmp_path):
                        ("BUILTIN_STYLE_DIR", tmp_path / "builtin")):
         monkeypatch.setattr(redteam, name, path)
     monkeypatch.setattr(redteam, "load_env", lambda: None)  # never read the real .env
+    monkeypatch.setattr(redteam, "REVISE_BY_DEFAULT", False)  # one request per block, unless a test turns it on
     monkeypatch.setattr(redteam.generation_settings, "load_table", lambda: None)  # settings by hand, unless a test
     # gives the priorities a table
     monkeypatch.setattr(redteam, "local_fallback_problem", lambda url, model: None)
@@ -983,6 +984,30 @@ def test_the_guide_saves_a_key_google_accepts_and_no_other(key_file):
     assert key_file.read_text() == ""
 
 
+def test_revising_is_on_by_default_with_the_profile_and_off_on_a_public_deploy(stub_model, monkeypatch, tmp_path):
+    from ui import redteam
+
+    monkeypatch.setattr(redteam, "REVISE_BY_DEFAULT", True)
+    (tmp_path / "styles").mkdir()
+    (tmp_path / "styles" / "mine.json").write_text(json.dumps({"tone": "mine"}))
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.run()
+    assert at.toggle(key="keep:redteam:revise").value is True
+    at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
+    button(at, "Generate").click()
+    at.run()
+    assert not at.exception, at.exception
+    assert all("mine" in system for system in stub_model.systems), "every revision is written in the profile"
+    assert "revise_rounds" in json.loads((tmp_path / "local_redteam.jsonl").read_text().splitlines()[-1])
+
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.run()
+    assert "keep:redteam:revise" not in [toggle.key for toggle in at.get("toggle")]
+
+
 def test_the_built_in_human_profile_is_there_first_and_on_a_public_deploy_too(stub_model, monkeypatch, tmp_path):
     from ui import redteam
 
@@ -993,7 +1018,8 @@ def test_the_built_in_human_profile_is_there_first_and_on_a_public_deploy_too(st
     at.session_state["profile"] = "slim"
     at.run()
     picker = at.selectbox(key="keep:redteam:style_name")
-    assert (picker.options, picker.value) == (["Human (built in)", "mine"], "human_default_profile")
+    assert (picker.options, picker.value) == (["Human (built in)", "mine"], "mine"), "the writer's own goes first"
+    picker.set_value("human_default_profile").run()
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
     button(at, "Generate").click()
     at.run()
