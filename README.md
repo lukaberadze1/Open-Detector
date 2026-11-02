@@ -74,14 +74,15 @@ drag the app to the Bin and delete those two folders.
 
 ## Download for Windows
 
-The same app for Windows 10 or 11 (64-bit), with about 4 GB of free space. It needs no administrator
+The same app for Windows 10 or 11 (64-bit), with about 6 GB of free space. It needs no administrator
 password and runs on the processor, not the graphics card.
 
 1. Download **[Open-Detector-Setup.exe](https://github.com/lukaberadze1/Open-Detector/releases/latest/download/Open-Detector-Setup.exe)**.
 2. Open the downloaded file. Windows may say it protected your PC, because this free app isn't
    registered with Microsoft: press **More info**, then **Run anyway**. You only do this once per download.
 3. Press **Install**, then open **Open Detector** from the Start menu.
-4. The app opens on its **Guide**, as on a Mac. Your first check downloads the detector, about 1.7 GB, once.
+4. The app opens on its **Guide**, as on a Mac. Your first check downloads the detector once: about 1.7 GB, or
+   4.4 GB on a computer with more than 8 GB of memory, which starts on every engine.
 
 The texts you check never leave your computer. Your key and samples are kept in
 `%LOCALAPPDATA%\Open Detector`, and the downloaded models in `%USERPROFILE%\.cache\huggingface`.
