@@ -4,8 +4,6 @@ name: Windows app
 
 on:
   workflow_dispatch:
-  push:
-    branches: [feat/windows-app]
   release:
     types: [published]
 
