@@ -105,9 +105,12 @@ def bundle_python(home: Path) -> None:
     """Put a Python of the app's own in `home`, with the app's packages, and only what they use."""
     uv = _uv()
     subprocess.run([uv, "python", "install", PYTHON], check=True)
-    found = subprocess.run([uv, "python", "find", "--managed-python", PYTHON], capture_output=True, text=True,
-                           check=True).stdout.strip()
-    shutil.copytree(Path(found).parent, home, ignore=shutil.ignore_patterns("__pycache__"))
+    # --system: never a .venv, which holds only a launcher that looks for its pyvenv.cfg.
+    found = subprocess.run([uv, "python", "find", "--managed-python", "--system", PYTHON], capture_output=True,
+                           text=True, check=True).stdout.strip()
+    prefix = subprocess.run([found, "-c", "import sys; print(sys.base_prefix)"], capture_output=True, text=True,
+                            check=True).stdout.strip()
+    shutil.copytree(prefix, home, ignore=shutil.ignore_patterns("__pycache__"))
     python = home / "python.exe"
     subprocess.run([uv, "pip", "install", "--python", str(python), "--link-mode", "copy", "--no-progress",
                     "-r", str(ROOT / "deploy/macos/requirements.txt"), "-c", str(CONSTRAINTS)], check=True)
