@@ -1,12 +1,16 @@
 """Measures revising a whole-document rewrite against the detector, with the page's prompts and settings.
 
-Each repeat writes one rewrite of a document's opening blocks (tune_generation.run_trial), then revises
-that same rewrite twice, up to `--rounds` rounds each (redteam_batch.revise_blocks): once choosing blocks by
-sentence scores and once by the hottest document window, so the two compare on the same start. Every text
-is logged as labelled AI data. The minimum over repeats, as the report's best of three, costs nothing to
-compute: any three independent repeats are three tries. Resumable (`--out`). Spends Gemini quota.
+Each repeat writes one rewrite of a document's opening blocks (tune_generation.run_trial), then revises it
+(redteam_batch.revise_blocks), by sentence scores or by the hottest document window. `--as-page` revises as
+the Red team page does: keeping names and numbers, and dropping what leaves the style profile. Several
+documents make it a pattern rather than one text's result: `--mage N` writes N AI-written documents from
+MAGE (other domains and generators, none in the evaluation's cached sample) beside the given folder. Every
+text is logged as labelled AI data. Resumable (`--out`), and it waits out an overloaded model. Spends quota.
+Writes `--report`, read again with no new runs by `--report-only`; `--full` also scores the finished texts
+with the full detector, which the revision never saw.
 
-    python -m eval.tune_revise data/essays/sources/claude_salamis.md --repeats 6
+    python -m eval.tune_revise --mage 8 data/essays/sources/revise
+    python -m eval.tune_revise data/essays/sources/claude_salamis.md data/essays/sources/revise/*.md --as-page
 """
 
 from __future__ import annotations
@@ -15,10 +19,10 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import statistics
 import sys
 import time
-from itertools import combinations
 from pathlib import Path
 
 from eval import generate_essays
@@ -26,14 +30,16 @@ from eval.generate_essays import (GEMINI_API_URL, APIError, QuotaExhausted, load
                                   styled_clean)
 from eval.redteam_batch import (GROUP_SCHEMA, REVISE, REVISE_KEEPING, WIN_BELOW, document_windows, revise_blocks,
                                 style_guard)
+from eval.text_attacks import CLAUSES, PIVOTS, attack_label, attack_name, run_attacks
 from eval.tune_generation import StyleYardstick, _log_labelled, run_trial, sample_jobs, writer_shapes
 from opendetector.env import load_env
-from opendetector.segment import count_words
+from opendetector.metrics import wilson_interval
+from opendetector.segment import count_words, split_sentences
 
 ROOT = Path(__file__).resolve().parents[1]
 GROUP = 8
 METHODS = ("sentences", "windows")
-BUSY_WAITS = (60, 120, 300, 300)  # seconds before writing a repeat again after Gemini is overloaded or times out
+BUSY_WAITS = (60, 120, 300, 300)  # seconds before writing a repeat again after a model is overloaded or times out
 # Instructions tried on top of the style profile, by name (--note); each is labelled in the attack.
 NOTES = {
     "active": "Prefer verbs to abstract nouns: write 'they decided' over 'they made a decision', and use the "
@@ -52,30 +58,106 @@ NOTES = {
                   "rather' or 'at least in most cases', or a minor side remark. Add no facts that aren't in the "
                   "original.",
 }
+_COMMON = {"The", "This", "That", "These", "Those", "There", "They", "Their", "When", "After", "While", "Although",
+           "However", "From", "With", "What", "Then", "Some", "Many", "Most", "Such", "Also", "Introduction",
+           "Conclusion", "Background", "Overall", "Furthermore", "Moreover", "Additionally", "Finally"}
 
 
-def _summary(rows: list[dict]) -> str:
-    starts = [row["start"] for row in rows]
-    lines = [f"{len(rows)} repeats, bar {WIN_BELOW:.0%}.",
-             f"written: mean {statistics.mean(starts):.3f}, range {min(starts):.3f}-{max(starts):.3f}, "
-             f"under the bar {sum(p < WIN_BELOW for p in starts)}"]
-    for method in METHODS:
-        ends = [row[method]["history"][-1] for row in rows if method in row]
-        if ends:
-            length = statistics.mean(row[method]["words"] / row["words"] for row in rows if method in row)
-            lines.append(f"revised by {method}: mean {statistics.mean(ends):.3f}, "
-                         f"range {min(ends):.3f}-{max(ends):.3f}, "
-                         f"under the bar {sum(p < WIN_BELOW for p in ends)} of {len(ends)}, length x{length:.2f}")
-            if len(ends) >= 3:
-                best = [min(trio) for trio in combinations(ends, 3)]
-                lines.append(f"  best of three, every trio: mean {statistics.mean(best):.3f}, "
-                             f"under the bar {sum(p < WIN_BELOW for p in best)} of {len(best)}")
-    return "\n".join(lines)
+def fact_terms(text: str) -> set[str]:
+    """What a rewrite should still say: the names (capitalized words, sentence openers mostly left out by
+    `_COMMON`) and the numbers of 2 digits or more."""
+    return set(re.findall(r"\b(?:[A-Z][a-z]{3,}|\d{2,})\b", text)) - _COMMON
+
+
+def facts_kept(source: str, text: str) -> float | None:
+    """The share of the source's names and numbers still in `text`, as a percentage."""
+    terms = fact_terms(source)
+    return round(100 * sum(term in text for term in terms) / len(terms), 1) if terms else None
+
+
+def mage_documents(folder: Path, count: int, seed: int = 11, words: int = 400, score_above: float = 0.8) -> list[Path]:
+    """Up to `count` AI-written documents from MAGE as Markdown files, one per domain and generator before any
+    repeats. Each is one the slim detector reads as AI, and none is in the evaluation's cached sample. MAGE keeps
+    no paragraph breaks, so sentences are grouped into paragraphs of three."""
+    from eval.datasets import load_mage
+    from opendetector import Detector, DetectorConfig
+
+    cached = ROOT / "eval/cache/mage.jsonl"
+    used = {json.loads(line)["id"] for line in cached.open(encoding="utf-8")} if cached.exists() else set()
+    frame = load_mage("test", n=20000, seed=seed)
+    frame = frame[(frame["label"] == 1) & (frame["attack"] == "none") & ~frame["id"].isin(used)]
+    frame = frame[frame["text"].map(count_words) >= words]
+    detector = Detector.from_config(DetectorConfig.for_profile("slim"))
+    folder.mkdir(parents=True, exist_ok=True)
+    written, domains, generators = [], set(), set()
+    for fresh in (True, False):
+        for _, row in frame.iterrows():
+            if len(written) >= count:
+                return written
+            if row["id"] in {path.stem for path in written}:
+                continue
+            if fresh and (row["domain"] in domains or row["model"] in generators):
+                continue
+            if detector.score(row["text"]) < score_above:
+                continue
+            sentences = [row["text"][s.start:s.end].strip() for s in split_sentences(row["text"])]
+            body = "\n\n".join(" ".join(sentences[at:at + 3]) for at in range(0, len(sentences), 3))
+            path = folder / f"{row['id']}.md"
+            path.write_text(body + "\n", encoding="utf-8")
+            written.append(path)
+            domains.add(row["domain"])
+            generators.add(row["model"])
+            print(f"{path.name}: {row['domain']}, {row['model']}, {count_words(body)} words", flush=True)
+    return written
+
+
+def report(rows: list[dict], method: str) -> str:
+    """The report over documents: each document's runs, then all of them. Runs of one document aren't independent,
+    so the per-document means count as much as the overall interval."""
+    done = [row for row in rows if method in row]
+    means = {}
+    for row in done:
+        means.setdefault(row["document"], []).append(row)
+    lines = ["# Revising rewrites against the detector", "",
+             f"{len(done)} runs on {len(means)} AI-written documents, revising by {method}. The bar is an AI "
+             f"likelihood under {WIN_BELOW:.0%}. Written by `python -m eval.tune_revise`. Brackets are Wilson 95% "
+             "intervals, which are too narrow in as far as runs of one document resemble each other.", "",
+             "| Document | Runs | Written % | Revised % | Range % | Under the bar | Full detector % | Style distance "
+             "before > after | Names, numbers kept % | Length |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+
+    def line(name: str, group: list[dict]) -> str:
+        ends = [row[method]["history"][-1] for row in group]
+        full = [row[method]["full"] for row in group if row[method].get("full") is not None]
+        before = [row["distance"] for row in group if row.get("distance") is not None]
+        after = [row[method]["distance"] for row in group if row[method].get("distance") is not None]
+        facts = [row[method]["facts"] for row in group if row[method].get("facts") is not None]
+        start = sum(row["start"] for row in group) / len(group)
+        return (f"| {name} | {len(group)} | {100 * start:.0f} | {100 * statistics.mean(ends):.0f} | "
+                f"{100 * min(ends):.0f}-{100 * max(ends):.0f} | {sum(end < WIN_BELOW for end in ends)} | "
+                + (f"{100 * statistics.mean(full):.0f}" if full else "-") + " | "
+                + (f"{statistics.mean(before):.2f} > {statistics.mean(after):.2f}" if before and after else "-") + " | "
+                + (f"{statistics.mean(facts):.0f}" if facts else "-") + " | "
+                f"x{statistics.mean(row[method]['words'] / row['words'] for row in group):.2f} |")
+
+    lines += [line(name, group) for name, group in sorted(means.items())]
+    if done:
+        ends = [row[method]["history"][-1] for row in done]
+        low, high = wilson_interval(sum(end < WIN_BELOW for end in ends), len(ends))
+        doc_means = [statistics.mean(row[method]["history"][-1] for row in group) for group in means.values()]
+        lines += [line("**All**", done), "",
+                  f"- **Under the bar:** {sum(end < WIN_BELOW for end in ends)} of {len(ends)} runs "
+                  f"({low:.0%} to {high:.0%}).",
+                  f"- **Documents whose mean is under the bar:** {sum(mean < WIN_BELOW for mean in doc_means)} of "
+                  f"{len(doc_means)}.",
+                  f"- **Median run:** {100 * statistics.median(ends):.1f}%."]
+    return "\n".join(lines) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("document", type=Path)
+    parser.add_argument("documents", type=Path, nargs="*")
+    parser.add_argument("--mage", type=int, metavar="N",
+                        help="write N documents from MAGE to the folder given, and stop")
     parser.add_argument("--style", type=Path, default=ROOT / "data/styles/alexandria_profile.json")
     parser.add_argument("--register", default="finalized")
     parser.add_argument("--structure", default="writer")
@@ -83,105 +165,158 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--thinking", default="low")
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--words", type=int, default=250)
-    parser.add_argument("--repeats", type=int, default=6)
-    parser.add_argument("--rounds", type=int, default=3)
-    parser.add_argument("--methods", default=",".join(METHODS), help="how to choose blocks to revise")
-    parser.add_argument("--note", choices=list(NOTES), help="an instruction added to the style profile")
+    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--rounds", type=int, default=10, help="at most: revising stops when it stalls")
+    parser.add_argument("--methods", default="sentences", help="how to choose blocks to revise")
+    parser.add_argument("--note", choices=list(NOTES), action="append", default=[],
+                        help="an instruction added to the style profile; repeat it to stack them")
+    parser.add_argument("--no-guard", action="store_true",
+                        help="with --as-page, let a revision leave the style profile, for one with no writer to match")
     parser.add_argument("--as-page", action="store_true",
                         help="revise as the page does: keep names and numbers, and stay close to the style profile")
+    parser.add_argument("--attack", action="append", default=[],
+                        choices=[CLAUSES, *(attack_name(pivot) for pivot in PIVOTS)],
+                        help="run on each rewrite before revising (eval/text_attacks.py); repeat it to stack them")
+    parser.add_argument("--top-p", type=float, help="the models' top-p, unset by default")
+    parser.add_argument("--top-k", type=int, help="the models' top-k, unset by default")
     parser.add_argument("--api-key-env", default="GEMINI_API_KEY")
     parser.add_argument("--out", type=Path, default=ROOT / "eval/cache/tune_revise.jsonl")
+    parser.add_argument("--report", type=Path, default=ROOT / "eval/reports/revise.md")
+    parser.add_argument("--report-only", action="store_true", help="write the report from what --out holds")
+    parser.add_argument("--full", action="store_true", help="also score the finished texts with the full detector")
     args = parser.parse_args(argv)
 
+    if args.mage:
+        if len(args.documents) != 1:
+            parser.error("--mage takes one folder to write to")
+        return 0 if mage_documents(args.documents[0], args.mage) else 1
     load_env()
-    api_key = os.environ.get(args.api_key_env, "")
-    if not api_key:
-        parser.error(f"${args.api_key_env} is not set")
-    data = args.document.read_bytes()
-    source = hashlib.sha256(data).hexdigest()[:16]
-    jobs, plan = sample_jobs(args.document.name, data, args.words, min_blocks=2 * GROUP, structure=args.structure)
-    shapes = writer_shapes(args.style, args.register)
-    plan.shapes = shapes
-    plan.clean = styled_clean(args.style, args.register)
+    style = f"{args.style.stem}:{args.register}+{args.structure}+passages+patience"  # as revise_blocks now does
     system = style_instructions(load_style_profile(args.style), args.register)
-    style = f"{args.style.stem}:{args.register}+{args.structure}"
-    if args.note:
-        system += f"\n\n{NOTES[args.note]}"
-        style += f"+{args.note}"
-    style += f"+t{args.temperature:g}" + ("+as-page" if args.as_page else "")
+    for note in args.note:
+        system += f"\n\n{NOTES[note]}"
+        style += f"+{note}"
+    style += f"+t{args.temperature:g}" + ("+as-page" if args.as_page else "") + ("+no-guard" if args.no_guard else "")
+    sampling = {option: value for option, value in (("top_p", args.top_p), ("top_k", args.top_k)) if value is not None}
+    style += "+draft" if not args.rounds else ""  # the first draft alone: --rounds 0 revises nothing
+    style += attack_label(args.attack) + "".join(f"+{option}{value:g}" for option, value in sampling.items())
     methods = [method.strip() for method in args.methods.split(",") if method.strip()]
+    saved = [json.loads(line) for line in args.out.open(encoding="utf-8")] if args.out.exists() else []
+    rows = [row for row in saved if row["style"] == style and row["model"] == args.model and "document" in row]
 
-    from opendetector import Detector, DetectorConfig
+    if not args.report_only:
+        api_key = os.environ.get(args.api_key_env, "")
+        if not api_key:
+            parser.error(f"${args.api_key_env} is not set")
+        from opendetector import Detector, DetectorConfig
 
-    detector = Detector.from_config(DetectorConfig.for_profile("slim"))
-    rows = [json.loads(line) for line in args.out.open(encoding="utf-8")] if args.out.exists() else []
-    rows = [row for row in rows if row["source"] == source and row["style"] == style and row["model"] == args.model]
-    done = {row["repeat"] for row in rows}
+        detector = Detector.from_config(DetectorConfig.for_profile("slim"))
+        shapes = writer_shapes(args.style, args.register)
+        clean = styled_clean(args.style, args.register)
 
-    def ask(prompt: str, pending: list[dict]) -> str:
-        return generate_essays.chat(GEMINI_API_URL, api_key, args.model, prompt, args.temperature, retries=2,
-                                    system=system, thinking=args.thinking, json_schema=GROUP_SCHEMA,
-                                    timeout=60 + 15 * len(pending))
+        def ask(prompt: str, pending: list[dict]) -> str:
+            return generate_essays.chat(GEMINI_API_URL, api_key, args.model, prompt, args.temperature, retries=2,
+                                        system=system, thinking=args.thinking, json_schema=GROUP_SCHEMA,
+                                        timeout=60 + 15 * len(pending), sampling=sampling or None)
 
-    def write_repeat(trial: dict) -> tuple[dict, list[tuple[dict, str]]]:
-        """One repeat's scores, and its texts to log, kept back until it is whole so a retry logs nothing twice."""
-        result = run_trial(trial, jobs, plan, system, api_key, args.temperature)
-        logs = [(result, style)]
-        parts = {f"{number:03d}": part for number, part in enumerate(result["text"].split("\n\n"), 1)}
-        row = {"source": source, "style": style, "model": args.model, "repeat": trial["repeat"],
-               "start": detector.analyze(result["text"], sentences=False).ai_probability,
-               "words": count_words(result["text"]), "requests": result["requests"],
-               "copied": result["copied"], "words_kept": result["words_kept"]}
-        for method in methods:
-            windows = document_windows(detector) if method == "windows" else None
-            fits = None
-            if args.as_page and (yardstick := StyleYardstick.build(args.style, row["words"], args.register)):
-                fits = style_guard(yardstick.text_distance, "\n\n".join(parts.values()))
-            changed, history = revise_blocks(parts, detector.analyze, ask, plan.clean, shapes, args.rounds,
-                                             windows=windows, fits=fits,
-                                             prompt=REVISE_KEEPING if args.as_page else REVISE)
-            text = "\n\n".join(changed.get(key, part) for key, part in parts.items())
-            row[method] = {"history": history, "changed": len(changed), "words": count_words(text)}
-            logs.append(({**result, "key": f"{trial['key']}-{method}", "text": text},
-                         f"{style}+revise{args.rounds}-{method}"))
-        return row, logs
+        def ask_plain(prompt: str) -> str:
+            return generate_essays.chat(GEMINI_API_URL, api_key, args.model, prompt, args.temperature, retries=2,
+                                        thinking=args.thinking, timeout=180, sampling=sampling or None)
 
-    for repeat in range(1, args.repeats + 1):
-        if repeat in done:
-            continue
-        variant = (args.note or "base") + ("-as-page" if args.as_page else "")
-        trial = {"key": f"revise-{variant}-{args.model}-{args.thinking}-{GROUP}-{args.temperature:g}-{repeat}",
-                 "model": args.model, "thinking": args.thinking, "group_size": GROUP,
-                 "temperature": args.temperature, "repeat": repeat}
-        waits = iter(BUSY_WAITS)
-        while True:
-            try:
-                row, logs = write_repeat(trial)
-                break
-            except QuotaExhausted as exc:
-                print(f"Stopped at repeat {repeat}: {exc}", file=sys.stderr)
-                row = None
-                break
-            except APIError as exc:
-                wait = next(waits, None)
-                if wait is None:
-                    print(f"Stopped at repeat {repeat}: {exc}", file=sys.stderr)
-                    row = None
-                    break
-                print(f"Repeat {repeat} failed, writing it again in {wait} s: {str(exc)[:80]}", flush=True)
-                time.sleep(wait)
-        if row is None:
-            break
-        for logged, label in logs:
-            _log_labelled(logged, args.document.name, source, label)
-        rows.append(row)
-        with args.out.open("a", encoding="utf-8") as output:
-            output.write(json.dumps(row) + "\n")
-        print(f"repeat {repeat}: start {row['start']:.3f}, " + ", ".join(
-            f"{method} {' > '.join(f'{p:.3f}' for p in row[method]['history'])} ({row[method]['changed']} blocks)"
-            for method in methods), flush=True)
+        for path in args.documents:
+            data = path.read_bytes()
+            source = hashlib.sha256(data).hexdigest()[:16]
+            jobs, plan = sample_jobs(path.name, data, args.words, min_blocks=2 * GROUP, structure=args.structure)
+            plan.shapes, plan.clean = shapes, clean
+            original = data.decode("utf-8", "replace")
+
+            def write_repeat(trial: dict, jobs=jobs, plan=plan, path=path, source=source,
+                             original=original) -> tuple[dict, list[tuple[dict, str]]]:
+                """One repeat's scores, and its texts to log, kept until it is whole so a retry logs nothing twice."""
+                result = run_trial(trial, jobs, plan, system, api_key, args.temperature,
+                                   sampling=sampling or None)
+                logs = [(result, style)]
+                pieces = result["text"].split("\n\n")
+                attacked, changes = run_attacks(pieces, args.attack, ask_plain, clean)
+                parts = {f"{number:03d}": part for number, part in enumerate(attacked, 1)}
+                yardstick = StyleYardstick.build(args.style, count_words(result["text"]), args.register)
+                row = {"document": path.name, "source": source, "style": style, "model": args.model,
+                       "repeat": trial["repeat"], "words": count_words(result["text"]),
+                       "start": detector.analyze(result["text"], sentences=False).ai_probability,
+                       "requests": result["requests"], "copied": result["copied"], "words_kept": result["words_kept"],
+                       "distance": yardstick.text_distance(result["text"]) if yardstick else None,
+                       "facts": facts_kept(original, result["text"]), "attack_changes": changes}
+                for method in methods:
+                    guarded = args.as_page and yardstick and not args.no_guard
+                    fits = style_guard(yardstick.text_distance, result["text"]) if guarded else None
+                    changed, history = revise_blocks(
+                        parts, detector.analyze, ask, clean, shapes, args.rounds, fits=fits,
+                        windows=document_windows(detector) if method == "windows" else None,
+                        prompt=REVISE_KEEPING if args.as_page else REVISE, facts=args.as_page)
+                    # A run with --rounds 0 and nothing more measures the attack alone.
+                    text = "\n\n".join(changed.get(key, part) for key, part in parts.items())
+                    row[method] = {"history": history, "changed": len(changed), "words": count_words(text),
+                                   "text": text,
+                                   "distance": yardstick.text_distance(text) if yardstick else None,
+                                   "facts": facts_kept(original, text)}
+                    logs.append(({**result, "key": f"{trial['key']}-{method}", "text": text},
+                                 f"{style}+revise{args.rounds}-{method}"))
+                return row, logs
+
+            done = {row["repeat"] for row in rows if row["source"] == source}
+            for repeat in range(1, args.repeats + 1):
+                if repeat in done:
+                    continue
+                variant = "+".join(args.note) or "base"
+                variant += ("-as-page" if args.as_page else "") + ("-no-guard" if args.no_guard else "")
+                key = f"{args.style.stem}-{variant}-{args.model}-{args.thinking}-{GROUP}-{args.temperature:g}-{repeat}"
+                trial = {"key": f"revise-{key}",
+                         "model": args.model, "thinking": args.thinking, "group_size": GROUP,
+                         "temperature": args.temperature, "repeat": repeat}
+                waits = iter(BUSY_WAITS)
+                while True:
+                    try:
+                        row, logs = write_repeat(trial)
+                        break
+                    except QuotaExhausted as exc:
+                        print(f"Out of quota at {path.name} repeat {repeat}: {exc}", file=sys.stderr)
+                        if rows:
+                            args.report.write_text(report(rows, methods[0]), encoding="utf-8")
+                        return 1
+                    except APIError as exc:
+                        wait = next(waits, None)
+                        if wait is None:
+                            print(f"Giving up on {path.name} repeat {repeat}: {exc}", file=sys.stderr)
+                            row = None
+                            break
+                        print(f"{path.name} repeat {repeat} failed, again in {wait} s: {str(exc)[:80]}", flush=True)
+                        time.sleep(wait)
+                if row is None:
+                    continue
+                for logged, label in logs:
+                    _log_labelled(logged, path.name, source, label)
+                rows.append(row)
+                with args.out.open("a", encoding="utf-8") as output:
+                    output.write(json.dumps(row) + "\n")
+                print(f"{path.name} {repeat}: start {row['start']:.3f}, " + ", ".join(
+                    f"{method} {' > '.join(f'{p:.3f}' for p in row[method]['history'])} "
+                    f"({row[method]['changed']} blocks, facts {row['facts']} > {row[method]['facts']})"
+                    for method in methods), flush=True)
+
+    if args.full and rows:
+        from opendetector import Detector, DetectorConfig
+
+        detector = Detector.from_config(DetectorConfig.for_profile("full"))
+        others = [row for row in saved if row not in rows]
+        for row in rows:
+            for method in methods:
+                if method in row and "full" not in row[method]:
+                    row[method]["full"] = detector.analyze(row[method]["text"], sentences=False).ai_probability
+        args.out.write_text("".join(json.dumps(row) + "\n" for row in others + rows), encoding="utf-8")
     if rows:
-        print(_summary(rows))
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(report(rows, methods[0]), encoding="utf-8")
+        print(report(rows, methods[0]))
     return 0
 
 

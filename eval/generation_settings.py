@@ -43,8 +43,9 @@ TABLE = Path(__file__).resolve().parents[1] / "models/generation_tuning.json"
 REFERENCE_BLOCKS = 100  # the document size a batch's pick is made for when none is given
 PROMPT_CHARS = 2000  # a request's own instructions, beside the style profile and document it carries
 LIMITS = DATA_ROOT / "data/model_limits.json"  # free requests a day, as quota errors have stated them
-# How Gemini's quota errors state a daily limit, after the model they are about.
-_DAILY_LIMIT = re.compile(r"([\w.-]+): [^\n]*?limit: ([\d,]+) requests per day")
+# How Gemini's and Groq's quota errors state a daily limit, after the model they are about.
+_DAILY_LIMIT = re.compile(r"([\w./:-]+): [^\n]*?(?:limit: ([\d,]+) requests per day"
+                          r"|requests per day \(RPD\): Limit ([\d,]+))", re.I)
 
 
 @dataclass(frozen=True)
@@ -82,7 +83,7 @@ def limits_in(text: str) -> dict[str, int]:
     """The daily request limits that quota errors in `text` state, by model: the lines
     generate_with_fallback writes as "<model>: <error>" and the benchmark as "<model> is out of quota:"."""
     found = _DAILY_LIMIT.findall(text.replace(" is out of", ":"))
-    return {model: int(limit.replace(",", "")) for model, limit in found}
+    return {model: int((gemini or groq).replace(",", "")) for model, gemini, groq in found}
 
 
 def learned_limits(path: Path | None = None) -> dict[str, int]:

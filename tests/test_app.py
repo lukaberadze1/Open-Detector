@@ -203,6 +203,7 @@ def test_red_team_sample_is_recorded_as_ai_with_its_score(stub_model, tmp_path):
         "calibrated": True, "detector_profile": "slim", "style_match": None,
         "thinking": "low", "temperature": 0.8, "style_profile": "plain", "register": None, "examples": 0,
         "structure": None, "restyle": False, "blocks_per_request": None,
+        "attacks": [], "top_p": None, "top_k": None,
     }
     assert rows[0]["ai_probability"] > 0.9
     assert len(list((tmp_path / "exports").glob("AI_REDTEAM_prompt_*.txt"))) == 1
@@ -755,7 +756,7 @@ def test_the_thinking_level_picked_reaches_the_model(stub_model):
     button(at, "Generate").click()
     at.run()
     assert not at.exception, at.exception
-    assert stub_model.options == [{"thinking": "minimal"}]
+    assert stub_model.options == [{"thinking": "minimal", "sampling": None}]
 
 
 def test_robustness_mode_batches_draft_one_block_per_request(stub_model):
@@ -1052,3 +1053,49 @@ def test_reading_a_section_finds_it_by_position_when_labels_repeat():
     at.selectbox[0].select_index(1).run()
     assert not at.exception
     assert at.text[0].value == "the second box"
+
+
+def test_choosing_a_provider_sets_its_address_models_and_key(stub_model, monkeypatch):
+    from eval.generate_essays import PROVIDERS
+
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.run()
+    at.selectbox(key="keep:redteam:provider").select("groq")
+    at.run()
+    assert not at.exception, at.exception
+    groq = PROVIDERS["groq"]
+    assert at.text_input(key="keep:redteam:base_url").value == groq.base_url
+    assert at.text_input(key="keep:redteam:model").value == groq.model
+    assert at.text_area(key="keep:redteam:fallbacks").value.splitlines() == list(groq.fallbacks)
+    assert at.text_input(key="keep:redteam:key_env").value == "GROQ_API_KEY"
+
+    at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
+    button(at, "Generate").click()
+    at.run()
+    assert [e.value for e in at.error] == ["Add your Groq API key under Model & connection."]
+    assert stub_model.prompts == [], "Gemini's key isn't sent to Groq"
+
+
+def test_a_provider_writes_with_its_own_key_and_address(stub_model, monkeypatch):
+    from eval.generate_essays import PROVIDERS
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
+    monkeypatch.setattr("ui.redteam._models_on_offer", lambda name, key: ["a/b:free"])
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.run()
+    at.selectbox(key="keep:redteam:provider").select("openrouter")
+    at.run()
+    at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
+    button(at, "Generate").click()
+    at.run()
+    assert not at.exception, at.exception
+    assert (stub_model.keys, stub_model.urls) == (["router-key"], [PROVIDERS["openrouter"].base_url])
+
+
+def test_public_mode_offers_no_other_provider(stub_model, monkeypatch):
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
+    at = public_page("a")
+    assert not any(box.key == "keep:redteam:provider" for box in at.selectbox)

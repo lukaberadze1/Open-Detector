@@ -643,3 +643,212 @@ def test_a_sentence_cut_off_to_fit_a_plan_is_joined_again():
     assert generate_essays._CUT_SHORT.sub(r"\1 ", "It fell. Another. piece of evidence.") == \
         "It fell. Another piece of evidence."
     assert generate_essays._CUT_SHORT.sub(r"\1 ", "Rome fell. Then it ended.") == "Rome fell. Then it ended."
+
+
+GROQ = generate_essays.PROVIDERS["groq"].base_url
+OPENROUTER = generate_essays.PROVIDERS["openrouter"].base_url
+
+
+def test_groq_and_openrouter_keep_reasoning_out_and_ask_for_the_json_shape(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_DATA_COLLECTION", raising=False)
+    server = FakeGemini(monkeypatch, [completion("{}")] * 3)
+    schema = {"type": "object"}
+    generate_essays.chat(GROQ, "key", "openai/gpt-oss-120b", "Write.", 0.8, thinking="minimal", json_schema=schema)
+    generate_essays.chat(GROQ, "key", "llama-3.3-70b-versatile", "Write.", 0.8, thinking="low")
+    generate_essays.chat(OPENROUTER, "key", "a/b:free", "Write.", 0.8, thinking="low", json_schema=schema)
+    oss, llama, routed = server.bodies
+    assert oss["include_reasoning"] is False and oss["reasoning_effort"] == "low", "Groq has no minimal"
+    assert oss["response_format"]["json_schema"]["schema"] == schema
+    assert "reasoning_effort" not in llama and "reasoning_format" not in llama, "llama doesn't reason"
+    assert routed["reasoning"] == {"effort": "low", "exclude": True}
+    assert routed["provider"] == {"data_collection": "deny"}, "a writer's passages skip hosts that keep prompts"
+
+
+def test_openrouter_can_be_allowed_hosts_that_keep_prompts(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_DATA_COLLECTION", "allow")
+    server = FakeGemini(monkeypatch, [completion("Written.")])
+    generate_essays.chat(OPENROUTER, "key", "a/b:free", "Write.", 0.8)
+    assert server.bodies[0]["provider"] == {"data_collection": "allow"}
+
+
+def test_other_endpoints_get_a_plain_request(monkeypatch):
+    server = FakeGemini(monkeypatch, [completion("Written.")])
+    generate_essays.chat("https://api.example.com/v1", "key", "m", "Write.", 0.8, thinking="low",
+                         json_schema={"type": "object"})
+    assert set(server.bodies[0]) == {"model", "messages", "temperature"}
+
+
+@pytest.mark.parametrize("message", ["This model does not support response format `json_schema`",
+                                     "Failed to generate JSON", "Generated JSON does not match the expected schema."])
+def test_a_model_turning_down_the_json_shape_is_asked_without_it(monkeypatch, message):
+    server = FakeGemini(monkeypatch, [(400, {"error": {"message": message}}), completion("Written.")])
+    reply = generate_essays.chat(GROQ, "key", "m", "Write.", 0.8, retries=1, json_schema={"type": "object"})
+    assert reply == "Written."
+    first, second = server.bodies
+    assert "response_format" in first and "response_format" not in second
+
+
+def test_a_model_turning_down_reasoning_is_asked_without_it(monkeypatch):
+    server = FakeGemini(monkeypatch, [(400, {"error": {"message": "reasoning_format is not supported"}}),
+                                      completion("Written.")])
+    assert generate_essays.chat(GROQ, "key", "qwen/qwen3.8-27b", "Write.", 0.8, retries=1, thinking="low") == "Written."
+    assert not {"reasoning_format", "reasoning_effort"} & set(server.bodies[1])
+
+
+def test_any_other_bad_request_is_not_asked_again(monkeypatch):
+    server = FakeGemini(monkeypatch, [(400, {"error": {"message": "reasoning is broken"}})])
+    with pytest.raises(generate_essays.APIError, match="HTTP 400"):
+        generate_essays.chat(GROQ, "key", "llama-3.3-70b-versatile", "Write.", 0.8, retries=1)
+    assert len(server.bodies) == 1
+
+
+@pytest.mark.parametrize(("reply", "text"), [("<think>Hmm.</think>\n\nThe essay.", "The essay."),
+                                             ("<THINK>a\nb</THINK>The essay.", "The essay.")])
+def test_reasoning_in_the_reply_is_never_saved_as_text(monkeypatch, reply, text):
+    FakeGemini(monkeypatch, [completion(reply)])
+    assert generate_essays.chat(GROQ, "key", "m", "Write.", 0.8) == text
+
+
+def test_a_reply_that_is_only_reasoning_is_an_error(monkeypatch):
+    FakeGemini(monkeypatch, [completion("<think>Still thinking")])
+    with pytest.raises(generate_essays.APIError, match="empty response"):
+        generate_essays.chat(GROQ, "key", "m", "Write.", 0.8, retries=1)
+
+
+def test_a_reply_cut_off_at_its_token_limit_is_an_error(monkeypatch):
+    FakeGemini(monkeypatch, [(200, {"choices": [{"message": {"content": "The essay stops"},
+                                                 "finish_reason": "length"}]})])
+    with pytest.raises(generate_essays.APIError, match="cut off"):
+        generate_essays.chat(GROQ, "key", "m", "Write.", 0.8, retries=1)
+
+
+def test_openrouter_reports_a_failed_host_inside_a_200(monkeypatch):
+    FakeGemini(monkeypatch, [(200, {"error": {"code": 502, "message": "Provider disconnected"}})])
+    with pytest.raises(generate_essays.APIError, match="Provider disconnected"):
+        generate_essays.chat(OPENROUTER, "key", "m", "Write.", 0.8, retries=1)
+
+
+def test_token_counts_come_back_under_geminis_field_names(monkeypatch):
+    FakeGemini(monkeypatch, [(200, {"choices": [{"message": {"content": "Written."}}], "usage": {
+        "prompt_tokens": 90, "completion_tokens": 10, "total_tokens": 100,
+        "completion_tokens_details": {"reasoning_tokens": 4}}})])
+    usage = {}
+    generate_essays.chat(GROQ, "key", "m", "Write.", 0.8, usage=usage)
+    assert usage == {"total_tokens": 100, "total_input_tokens": 90, "total_output_tokens": 10,
+                     "total_cached_tokens": 0, "total_thought_tokens": 4}
+
+
+@pytest.mark.parametrize(("status", "message"), [
+    (429, "Rate limit reached on tokens per day (TPD). Please try again in 1h2m3.4s."),
+    (429, "Rate limit exceeded: free-models-per-day."),
+    (402, "Insufficient credits"),
+])
+def test_a_spent_allowance_counts_as_out_of_quota(monkeypatch, status, message):
+    FakeGemini(monkeypatch, [(status, {"error": {"message": message}})])
+    with pytest.raises(generate_essays.QuotaExhausted):
+        generate_essays.chat(GROQ, "key", "m", "Write.", 0.8, retries=1)
+
+
+def test_a_short_wait_is_waited_out_at_the_time_groq_gives(monkeypatch):
+    waits = []
+    monkeypatch.setattr(generate_essays.time, "sleep", waits.append)
+    FakeGemini(monkeypatch, [(429, {"error": {"message": "Please try again in 420ms."}}), completion("Written."),
+                             (429, {"error": {"message": "Please try again in 1m2.5s."}}), completion("Written.")])
+    generate_essays.chat(GROQ, "key", "m", "Write.", 0.8, retries=2)
+    generate_essays.chat(GROQ, "key", "m", "Write.", 0.8, retries=2)
+    assert waits == [pytest.approx(0.42), pytest.approx(62.5)]
+
+
+def test_openrouter_errors_say_what_the_models_host_said(monkeypatch):
+    FakeGemini(monkeypatch, [(429, {"error": {"message": "Provider returned error",
+                                              "metadata": {"raw": "busy upstream"}}})])
+    with pytest.raises(generate_essays.APIError, match="busy upstream"):
+        generate_essays.chat(OPENROUTER, "key", "m", "Write.", 0.8, retries=1)
+
+
+@pytest.mark.parametrize("status", [400, 403, 404])
+def test_one_routed_models_refusal_moves_on_to_the_next(monkeypatch, status):
+    FakeGemini(monkeypatch, [(status, {"error": {"message": "flagged"}}), completion("Written.")])
+    text, model, errors = generate_essays.generate_with_fallback(OPENROUTER, "key", ["a", "b"], "Write.", 0.8, None)
+    assert (text, model, len(errors)) == ("Written.", "b", 1)
+
+
+def test_a_rejected_key_stops_at_the_first_routed_model(monkeypatch):
+    server = FakeGemini(monkeypatch, [(401, {"error": {"message": "Invalid API Key"}})])
+    with pytest.raises(generate_essays.APIError):
+        generate_essays.generate_with_fallback(GROQ, "key", ["a", "b"], "Write.", 0.8, None)
+    assert len(server.bodies) == 1
+
+
+def test_providers_are_told_apart_by_address():
+    assert generate_essays.provider_for("https://api.groq.com/openai/v1/") == "groq"
+    assert generate_essays.provider_for(OPENROUTER) == "openrouter"
+    assert generate_essays.provider_for(generate_essays.GEMINI_API_URL) == "gemini"
+    assert generate_essays.provider_for("http://localhost:11434/v1") == "custom"
+
+
+def test_listed_models_are_text_models_free_ones_first(monkeypatch):
+    entries = [{"id": "z/paid", "architecture": {"output_modalities": ["text"]}},
+               {"id": "a/paid-image", "architecture": {"output_modalities": ["image"]}},
+               {"id": "m/free:free"}, {"id": "whisper-large-v3"}, {"id": "retired", "active": False}]
+    monkeypatch.setattr(generate_essays.urllib.request, "urlopen", lambda request, timeout: contextlib.closing(
+        io.BytesIO(json.dumps({"data": entries}).encode())))
+    assert generate_essays.list_models(generate_essays.PROVIDERS["openrouter"], "key") == ["m/free:free", "z/paid"]
+
+
+@pytest.mark.parametrize(("status", "accepted"), [(200, True), (401, False), (403, False), (500, None)])
+def test_a_key_is_checked_on_the_path_only_a_good_key_opens(monkeypatch, status, accepted):
+    urls = []
+
+    def urlopen(request, timeout):
+        urls.append(request.full_url)
+        if status != 200:
+            raise urllib.error.HTTPError(request.full_url, status, "error", Message(), io.BytesIO(b"{}"))
+        return contextlib.closing(io.BytesIO(b"{}"))
+
+    monkeypatch.setattr(generate_essays.urllib.request, "urlopen", urlopen)
+    assert generate_essays.key_accepted(generate_essays.PROVIDERS["openrouter"], "key") is accepted
+    assert urls == [f"{OPENROUTER}/key"], "OpenRouter's model list is public, so it can't check a key"
+
+
+def test_every_provider_request_names_the_app_since_cloudflare_blocks_urllibs_default(monkeypatch):
+    agents = []
+
+    def urlopen(request, timeout):
+        agents.append(request.get_header("User-agent"))
+        return contextlib.closing(io.BytesIO(json.dumps(
+            {"data": [], "choices": [{"message": {"content": "Written."}}]}).encode()))
+
+    monkeypatch.setattr(generate_essays.urllib.request, "urlopen", urlopen)
+    groq = generate_essays.PROVIDERS["groq"]
+    generate_essays.chat(GROQ, "key", "m", "Write.", 0.8)
+    generate_essays.list_models(groq, "key")
+    generate_essays.key_accepted(groq, "key")
+    assert agents == [generate_essays.USER_AGENT] * 3
+
+
+class DroppedReply:
+    """A response whose connection drops partway through."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self, *args):
+        raise generate_essays.http.client.IncompleteRead(b"{")
+
+
+def test_a_reply_lost_on_the_way_is_asked_for_again(monkeypatch):
+    replies = [DroppedReply(), contextlib.closing(io.BytesIO(json.dumps(completion("Written.")[1]).encode()))]
+    monkeypatch.setattr(generate_essays.urllib.request, "urlopen", lambda request, timeout: replies.pop(0))
+    monkeypatch.setattr(generate_essays.time, "sleep", lambda seconds: None)
+    assert generate_essays.chat(OPENROUTER, "key", "m", "Write.", 0.8, retries=2) == "Written."
+
+
+def test_a_reply_lost_on_the_way_moves_on_to_the_next_model(monkeypatch):
+    replies = [DroppedReply(), contextlib.closing(io.BytesIO(json.dumps(completion("Written.")[1]).encode()))]
+    monkeypatch.setattr(generate_essays.urllib.request, "urlopen", lambda request, timeout: replies.pop(0))
+    text, model, errors = generate_essays.generate_with_fallback(OPENROUTER, "key", ["a", "b"], "Write.", 0.8, None)
+    assert (text, model, len(errors)) == ("Written.", "b", 1)

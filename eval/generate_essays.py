@@ -2,9 +2,10 @@
 
 Pairing each human essay with an AI essay on the same prompt means the detector is judged
 on style, not topic. Defaults to Gemini through its Interactions API, with the key
-read from GEMINI_API_KEY (or the project's .env). Any OpenAI-compatible endpoint works
-(OpenAI, OpenRouter, a local LM Studio or Ollama server) via --base-url and --api-key-env,
-so you can cover many model families. A local server needs no key and gets a 30-minute
+read from GEMINI_API_KEY (or the project's .env). --provider groq or --provider openrouter
+writes through those, with the keys in GROQ_API_KEY and OPENROUTER_API_KEY. Any other
+OpenAI-compatible endpoint works (OpenAI, a local LM Studio or Ollama server) via --base-url
+and --api-key-env, so you can cover many model families. A local server needs no key and gets a 30-minute
 timeout per request, since a small model on a laptop can take minutes per essay:
 
     python -m eval.generate_essays --persuade persuade_2.0.csv --n 50 \\
@@ -38,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import random
@@ -49,6 +51,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from itertools import count
 from pathlib import Path
 
@@ -65,6 +68,35 @@ FALLBACK_MODEL = "gemini-3.5-flash-lite"
 # The last resort once the hosted models fail: a model on a local Ollama server, with no key or quota.
 LOCAL_URL = "http://localhost:11434/v1"
 LOCAL_MODEL = "gemma3:4b"
+GROQ_HOST, OPENROUTER_HOST = "api.groq.com", "openrouter.ai"
+# Groq's Cloudflare answers urllib's default user agent with 403 (error code 1010), whatever the key.
+USER_AGENT = "OpenDetector/1.0 (+https://github.com/lukaberadze1/Open-Detector)"
+
+
+@dataclass(frozen=True)
+class Provider:
+    """A hosted API the generators can write through, and what to start it with."""
+
+    label: str
+    base_url: str
+    key_env: str
+    key_page: str
+    model: str
+    fallbacks: tuple[str, ...]
+    key_check: str = "/models"  # a path that answers only to a good key
+
+
+PROVIDERS = {
+    "gemini": Provider("Gemini", GEMINI_API_URL, "GEMINI_API_KEY", "https://aistudio.google.com/apikey",
+                       DEFAULT_MODEL, (FALLBACK_MODEL, "gemini-3.6-flash", "gemini-3.1-flash-lite",
+                                       "gemini-3-flash-preview")),
+    "groq": Provider("Groq", f"https://{GROQ_HOST}/openai/v1", "GROQ_API_KEY", "https://console.groq.com/keys",
+                     "openai/gpt-oss-120b", ("openai/gpt-oss-20b", "qwen/qwen3.8-27b")),
+    "openrouter": Provider("OpenRouter", f"https://{OPENROUTER_HOST}/api/v1", "OPENROUTER_API_KEY",
+                           "https://openrouter.ai/keys", "cohere/north-mini-code:free",
+                           ("dots-studio/dots-3-note-preview:free", "xingchen-agi/xing4.0-29b-a4b:free",
+                            "google/gemma-4-31b-it:free"), key_check="/key"),
+}
 
 PROMPTS = {
     "plain": "Write an essay responding to the assignment below. Aim for about {words} words. "
@@ -381,7 +413,8 @@ MAX_WAIT = 120  # seconds; a server asking us to wait longer than this means a s
 # Seconds per request. A small model on a small machine can take minutes per essay, and a request
 # that times out starts over, so a local server gets far longer than a hosted API.
 REMOTE_TIMEOUT, LOCAL_TIMEOUT = 300, 1800
-_RETRY_IN = re.compile(r"retry in (?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s)?")
+# Gemini says "retry in 19m15s" and Groq "try again in 1h2m3.4s" or "try again in 420ms".
+_RETRY_IN = re.compile(r"(?:retry|try again) in (?:(\d+)h)?(?:(\d+)m(?!s))?(?:([\d.]+)s)?(?:([\d.]+)ms)?")
 # How long a Gemini model reasons before it answers: less is faster and spends less quota.
 THINKING_LEVELS = ("minimal", "low", "medium", "high")
 # The levels each model accepts, from Google's thinking guide (October 2026). A model not listed here
@@ -424,6 +457,9 @@ def _error_details(exc: urllib.error.HTTPError) -> tuple[str, float | None]:
         data = data[0]
     error = data.get("error") if isinstance(data, dict) else None
     message = (error.get("message") if isinstance(error, dict) else error) or str(exc.reason)
+    metadata = error.get("metadata") if isinstance(error, dict) else None
+    if isinstance(metadata, dict) and metadata.get("raw"):  # OpenRouter: what the model's own host said
+        message = f"{message}: {metadata['raw']}"
     message = " ".join(str(message).split())
 
     retry_after = (exc.headers.get("retry-after") or "").strip()
@@ -431,8 +467,8 @@ def _error_details(exc: urllib.error.HTTPError) -> tuple[str, float | None]:
         return message, float(retry_after)
     match = _RETRY_IN.search(message)
     if match and any(match.groups()):
-        hours, minutes, seconds = (float(g or 0) for g in match.groups())
-        return message, hours * 3600 + minutes * 60 + seconds
+        hours, minutes, seconds, milliseconds = (float(g or 0) for g in match.groups())
+        return message, hours * 3600 + minutes * 60 + seconds + milliseconds / 1000
     return message, None
 
 
@@ -454,43 +490,120 @@ def thinking_level(model: str, level: str | None) -> str | None:
                 supported[-1])
 
 
+# Groq's models that reason before they answer, with how each is told to keep that out of the reply.
+_GROQ_REASONING = {"openai/gpt-oss": {"include_reasoning": False}, "qwen/": {"reasoning_format": "hidden"},
+                   "meta-models/muse": {"reasoning_format": "hidden"}, "minimaxai/": {"reasoning_format": "hidden"}}
+_REASONING_OPTIONS = ("include_reasoning", "reasoning_format", "reasoning_effort", "reasoning")
+# A model that puts its reasoning in the reply anyway. Left in, it would be saved as the sample's text.
+_THINK = re.compile(r"<think>.*?(?:</think>|\Z)\s*", re.S | re.I)
+_NOT_TEXT_MODELS = ("whisper", "orpheus", "guard", "content-safety")
+
+
+def _provider_options(host: str | None, model: str, thinking: str | None) -> dict:
+    """What Groq and OpenRouter take beyond the OpenAI request: the thinking level, and on OpenRouter which
+    of a model's hosts may have the text. A writer's passages go out in these requests, so OpenRouter skips
+    hosts that keep or train on prompts unless OPENROUTER_DATA_COLLECTION=allow."""
+    if host == GROQ_HOST:
+        hidden = next((options for prefix, options in _GROQ_REASONING.items() if model.startswith(prefix)), None)
+        if hidden is None:
+            return {}
+        return {**hidden, **({"reasoning_effort": "low" if thinking == "minimal" else thinking} if thinking else {})}
+    if host == OPENROUTER_HOST:
+        collection = os.environ.get("OPENROUTER_DATA_COLLECTION", "").strip().lower() or "deny"
+        return {"provider": {"data_collection": collection},
+                **({"reasoning": {"effort": thinking, "exclude": True}} if thinking else {})}
+    return {}
+
+
+def _drop_rejected(payload: dict, message: str) -> bool:
+    """Take out the options a model's 400 error turned down, to ask again without them. The prompt still
+    asks for JSON, and the reply is checked either way. False if there was nothing to take out."""
+    lower, dropped = message.lower(), False
+    if "reasoning" in lower:
+        dropped = any([payload.pop(option, None) is not None for option in _REASONING_OPTIONS])
+    if any(word in lower for word in ("response_format", "json", "schema")):
+        dropped = payload.pop("response_format", None) is not None or dropped
+    for option in ("top_p", "top_k"):
+        if option in lower:
+            dropped = payload.pop(option, None) is not None or dropped
+    return dropped
+
+
+def _openai_usage(counts: dict) -> dict:
+    """An OpenAI-style usage object under the field names Gemini's token counts use."""
+    return {"total_tokens": counts.get("total_tokens") or 0, "total_input_tokens": counts.get("prompt_tokens") or 0,
+            "total_output_tokens": counts.get("completion_tokens") or 0,
+            "total_cached_tokens": (counts.get("prompt_tokens_details") or {}).get("cached_tokens") or 0,
+            "total_thought_tokens": (counts.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0}
+
+
 def chat(base_url: str, api_key: str, model: str, prompt: str, temperature: float, retries: int = 5,
          system: str | None = None, timeout: int = REMOTE_TIMEOUT, thinking: str | None = None,
-         json_schema: dict | None = None, usage: dict | None = None) -> str:
+         json_schema: dict | None = None, usage: dict | None = None, sampling: dict | None = None) -> str:
     """Use Google's current Interactions API for Gemini, or another provider's OpenAI API. `thinking`
-    is a Gemini thinking level, and `json_schema` makes Gemini reply with JSON in that shape; other
-    providers get their own default thinking, and only the prompt asks them for JSON. Gemini's token
-    counts for the request (total_input_tokens, total_output_tokens and so on) are added to `usage`."""
-    if urllib.parse.urlparse(base_url).hostname == "generativelanguage.googleapis.com":
+    is a thinking level and `json_schema` the JSON shape to reply in, for Gemini, Groq and OpenRouter; other
+    providers get their own default thinking, and only the prompt asks them for JSON. `sampling` holds top_p
+    and top_k: top_k goes only to Gemini and OpenRouter, and a model that turns either down is asked again
+    without it. The request's token counts (total_input_tokens, total_output_tokens and so on) are added to
+    `usage`."""
+    host = urllib.parse.urlparse(base_url).hostname
+    if host == "generativelanguage.googleapis.com":
         return _gemini_interaction(model, api_key, prompt, temperature, retries, system, timeout,
-                                   thinking_level(model, thinking), json_schema, usage)
+                                   thinking_level(model, thinking), json_schema, usage, sampling)
 
     messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
-    body = json.dumps({"model": model, "messages": messages, "temperature": temperature}).encode()
-    headers = {"Content-Type": "application/json"}
+    payload = {"model": model, "messages": messages, "temperature": temperature,
+               **_provider_options(host, model, thinking)}
+    payload.update({option: value for option, value in (sampling or {}).items()
+                    if option == "top_p" or host == OPENROUTER_HOST})
+    if json_schema and host in (GROQ_HOST, OPENROUTER_HOST):
+        payload["response_format"] = {"type": "json_schema",
+                                      "json_schema": {"name": "reply", "strict": False, "schema": json_schema}}
+    headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    req = urllib.request.Request(f"{base_url.rstrip('/')}/chat/completions", data=body, headers=headers)
-    for attempt in range(retries):
+    attempt = 0
+    while attempt < retries:
+        req = urllib.request.Request(f"{base_url.rstrip('/')}/chat/completions", data=json.dumps(payload).encode(),
+                                     headers=headers)
+        attempt += 1
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.load(resp)
-            content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
-            if not content or not content.strip():
+            if data.get("error"):  # OpenRouter answers 200 when a model's host fails after accepting the request
+                error = data["error"]
+                raise APIError(f"{model}: {error.get('message') if isinstance(error, dict) else error}")
+            choice = (data.get("choices") or [{}])[0]
+            if choice.get("finish_reason") == "length":
+                used = (data.get("usage") or {}).get("completion_tokens", "?")
+                raise APIError(f"{model} ran out of room and its reply was cut off after {used} tokens")
+            content = _THINK.sub("", choice.get("message", {}).get("content") or "").strip()
+            if not content:
                 raise APIError(f"empty response from {model}: {json.dumps(data)[:300]}")
-            return content.strip()
+            if usage is not None and data.get("usage"):
+                usage.update(_openai_usage(data["usage"]))
+            return content
         except urllib.error.HTTPError as exc:
             message, delay = _error_details(exc)
-            if exc.code == 429 and delay is not None and delay > MAX_WAIT:
+            if exc.code == 400 and _drop_rejected(payload, message):
+                attempt -= 1
+                continue
+            # 402 is OpenRouter out of credits. Its free models' daily cap can come without a time to wait.
+            if exc.code == 402 or (exc.code == 429 and ((delay is not None and delay > MAX_WAIT)
+                                                        or "per-day" in message.lower())):
                 raise QuotaExhausted(f"{model} is out of quota: {message}") from exc
             # Bad requests, unknown models and rejected keys will never succeed; don't retry them.
-            if exc.code not in RETRYABLE_STATUS or attempt == retries - 1:
+            if exc.code not in RETRYABLE_STATUS or attempt == retries:
                 raise APIError(f"HTTP {exc.code} from {base_url}: {message}") from exc
-            reason, wait = f"HTTP {exc.code}", delay if delay is not None else 2 ** attempt * 5
+            reason, wait = f"HTTP {exc.code}", delay if delay is not None else 2 ** (attempt - 1) * 5
         except (urllib.error.URLError, TimeoutError) as exc:
-            if attempt == retries - 1:
+            if attempt == retries:
                 raise APIError(f"could not reach {base_url}: {getattr(exc, 'reason', exc)}") from exc
-            reason, wait = str(getattr(exc, "reason", exc)), 2 ** attempt * 5
+            reason, wait = str(getattr(exc, "reason", exc)), 2 ** (attempt - 1) * 5
+        except (http.client.HTTPException, ValueError) as exc:  # the connection dropped partway through the reply
+            if attempt == retries:
+                raise APIError(f"{model}'s reply was lost on the way: {exc!r}") from exc
+            reason, wait = "reply lost on the way", 2 ** (attempt - 1) * 5
         print(f"  request failed ({reason}); retrying in {wait:.0f}s", file=sys.stderr)
         time.sleep(wait)
     raise AssertionError("unreachable")
@@ -498,7 +611,8 @@ def chat(base_url: str, api_key: str, model: str, prompt: str, temperature: floa
 
 def _gemini_interaction(model: str, api_key: str, prompt: str, temperature: float, retries: int,
                         system: str | None, timeout: int, thinking: str | None = None,
-                        json_schema: dict | None = None, usage: dict | None = None) -> str:
+                        json_schema: dict | None = None, usage: dict | None = None,
+                        sampling: dict | None = None) -> str:
     """Create a text interaction through Google's first-party Gemini API."""
     payload = {"model": model, "input": prompt}
     if system:
@@ -508,6 +622,7 @@ def _gemini_interaction(model: str, api_key: str, prompt: str, temperature: floa
     config = {}
     if takes_temperature(model):
         config["temperature"] = temperature
+        config.update(sampling or {})  # a model that sets its own temperature sets these too
     if thinking:
         config["thinking_level"] = thinking
     attempt = 0
@@ -544,6 +659,8 @@ def _gemini_interaction(model: str, api_key: str, prompt: str, temperature: floa
             # A model without this thinking level or JSON mode: ask again without it. The prompt still
             # asks for JSON, and the reply is checked either way.
             if exc.code == 400 and (("thinking" in lower and config.pop("thinking_level", None))
+                                    or ("top_p" in lower and config.pop("top_p", None))
+                                    or ("top_k" in lower and config.pop("top_k", None))
                                     or (("response_format" in lower or "schema" in lower)
                                         and payload.pop("response_format", None))):
                 attempt -= 1
@@ -558,6 +675,10 @@ def _gemini_interaction(model: str, api_key: str, prompt: str, temperature: floa
             if attempt == retries:
                 raise APIError(f"could not reach Gemini Interactions API: {getattr(exc, 'reason', exc)}") from exc
             reason, wait = str(getattr(exc, "reason", exc)), 2 ** (attempt - 1) * 5
+        except (http.client.HTTPException, ValueError) as exc:  # the connection dropped partway through the reply
+            if attempt == retries:
+                raise APIError(f"{model}'s reply was lost on the way: {exc!r}") from exc
+            reason, wait = "reply lost on the way", 2 ** (attempt - 1) * 5
         print(f"  Gemini request failed ({reason}); retrying in {wait:.0f}s", file=sys.stderr)
         time.sleep(wait)
     raise AssertionError("unreachable")
@@ -581,21 +702,23 @@ def local_context_size(system: str | None, prompt: str, max_tokens: int) -> int:
 
 def chat_local(local_url: str, model: str, prompt: str, temperature: float, system: str | None = None,
                max_tokens: int | None = None, context: int | None = None, timeout: int = LOCAL_TIMEOUT,
-               json_schema: dict | None = None) -> str:
+               json_schema: dict | None = None, sampling: dict | None = None) -> str:
     """Ask a local server, one request at a time. Ollama gets its own chat endpoint, which, unlike its
     OpenAI-compatible one, takes a context window, an answer length and a JSON schema. Every block of a
     batch starts with the same document, so Ollama reads it once and keeps it cached. A server without
     that endpoint (LM Studio) gets the OpenAI-compatible request."""
     with _LOCAL_TURN:
-        return _chat_local(local_url, model, prompt, temperature, system, max_tokens, context, timeout, json_schema)
+        return _chat_local(local_url, model, prompt, temperature, system, max_tokens, context, timeout, json_schema,
+                           sampling)
 
 
 def _chat_local(local_url: str, model: str, prompt: str, temperature: float, system: str | None,
-                max_tokens: int | None, context: int | None, timeout: int, json_schema: dict | None) -> str:
+                max_tokens: int | None, context: int | None, timeout: int, json_schema: dict | None,
+                sampling: dict | None = None) -> str:
     parsed = urllib.parse.urlparse(local_url)
     max_tokens = max_tokens or answer_token_limit(500)
     options = {"temperature": temperature, "num_predict": max_tokens,
-               "num_ctx": context or local_context_size(system, prompt, max_tokens)}
+               "num_ctx": context or local_context_size(system, prompt, max_tokens), **(sampling or {})}
     messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
     body = {"model": model, "messages": messages, "stream": False, "options": options}
     if json_schema:
@@ -610,7 +733,8 @@ def _chat_local(local_url: str, model: str, prompt: str, temperature: float, sys
     except urllib.error.HTTPError as exc:
         message, _ = _error_details(exc)
         if exc.code == 404 and "not found" not in message.lower():  # not Ollama: no /api/chat
-            return chat(local_url, "", model, prompt, temperature, retries=1, system=system, timeout=timeout)
+            return chat(local_url, "", model, prompt, temperature, retries=1, system=system, timeout=timeout,
+                        sampling=sampling)
         raise APIError(f"HTTP {exc.code} from {local_url}: {message}") from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise APIError(f"could not reach {local_url}: {getattr(exc, 'reason', exc)}") from exc
@@ -624,20 +748,23 @@ def generate_with_fallback(base_url: str, api_key: str, models: list[str], promp
                            system: str | None, local_url: str = "", local_model: str = "",
                            max_tokens: int | None = None, local_context: int | None = None,
                            spent: set[str] | None = None, *, thinking: str | None = None,
-                           json_schema: dict | None = None, timeout: int = 60) -> tuple[str, str, list[str]]:
+                           json_schema: dict | None = None, timeout: int = 60,
+                           sampling: dict | None = None) -> tuple[str, str, list[str]]:
     """Try the hosted models in order, advancing past quota and transient failures, then the local
     model, which needs no key and has no quota. `max_tokens` caps the local model's answer, and
     `local_context` fixes its context window (a batch passes one size for all its blocks). Models whose
     quota is spent for hours, not just busy for a moment, are added to `spent`. `thinking` and
-    `json_schema` go to `chat`, and `timeout` is each hosted request's. Returns the text, the model
+    `json_schema` go to `chat`, as does `sampling` (top_p, top_k; to the local model too), and `timeout` is
+    each hosted request's. Returns the text, the model
     that wrote it and the errors of the models that failed before it."""
     attempted = []
     errors = []
+    extra = {"sampling": sampling} if sampling else {}
     for model_name in dict.fromkeys(name.strip() for name in models if name.strip()):
         attempted.append(model_name)
         try:
             result = chat(base_url, api_key, model_name, prompt, temperature, retries=1, system=system,
-                          timeout=timeout, thinking=thinking, json_schema=json_schema)
+                          timeout=timeout, thinking=thinking, json_schema=json_schema, **extra)
             return result, model_name, errors
         except APIError as exc:
             errors.append(f"{model_name}: {exc}")
@@ -648,13 +775,17 @@ def generate_with_fallback(base_url: str, api_key: str, models: list[str], promp
             endpoint_unreachable = "could not reach" in lower_message and not any(
                 word in lower_message for word in ("timed out", "timeout")
             )
-            if any(status in message for status in ("HTTP 400", "HTTP 401", "HTTP 403")) or endpoint_unreachable:
+            # One model's refusal says nothing about the next on Groq and OpenRouter, which host many makers'
+            # models; a rejected key does. On Gemini a 400 or 403 is the key too.
+            routed = urllib.parse.urlparse(base_url).hostname in (GROQ_HOST, OPENROUTER_HOST)
+            fatal = ("HTTP 401",) if routed else ("HTTP 400", "HTTP 401", "HTTP 403")
+            if any(status in message for status in fatal) or endpoint_unreachable:
                 break
     if local_model:
         attempted.append(local_model)
         try:
             result = chat_local(local_url, local_model, prompt, temperature, system, max_tokens, local_context,
-                                json_schema=json_schema)
+                                json_schema=json_schema, **extra)
             return result, local_model, errors
         except APIError as exc:
             errors.append(f"{local_model}: {exc}. Is Ollama running? Start it with `ollama serve` and "
@@ -696,6 +827,41 @@ def local_model_problem(local_url: str, model: str, timeout: float = 2) -> str |
     return None
 
 
+def provider_for(base_url: str) -> str:
+    """The name in PROVIDERS of the API at `base_url`, or "custom"."""
+    host = urllib.parse.urlparse(base_url).hostname
+    return next((name for name, provider in PROVIDERS.items()
+                 if urllib.parse.urlparse(provider.base_url).hostname == host), "custom")
+
+
+def list_models(provider: Provider, api_key: str, timeout: float = 5) -> list[str]:
+    """The text models `provider` offers now, free ones first, since the free list changes often."""
+    request = urllib.request.Request(f"{provider.base_url}/models",
+                                     headers={"Authorization": f"Bearer {api_key}", "User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            entries = json.load(response)["data"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:  # URLError and HTTPError are OSErrors
+        raise APIError(f"could not list {provider.label}'s models: {exc}") from exc
+    names = [entry["id"] for entry in entries
+             if entry.get("active", True) and not any(word in entry["id"].lower() for word in _NOT_TEXT_MODELS)
+             and "text" in ((entry.get("architecture") or {}).get("output_modalities") or ["text"])]
+    return sorted(names, key=lambda name: (not name.endswith(":free"), name))
+
+
+def key_accepted(provider: Provider, api_key: str, timeout: float = 15) -> bool | None:
+    """Whether `provider` takes `api_key`: None if it couldn't be asked just now."""
+    request = urllib.request.Request(f"{provider.base_url}{provider.key_check}",
+                                     headers={"Authorization": f"Bearer {api_key}", "User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout):
+            return True
+    except urllib.error.HTTPError as exc:
+        return False if exc.code in (401, 403) else None
+    except OSError:
+        return None
+
+
 def _grade(value) -> int:
     """PERSUADE grade levels arrive as floats (8.0) when the column has blanks; default to 10."""
     try:
@@ -709,8 +875,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--persuade", required=True, help="PERSUADE 2.0 CSV")
     parser.add_argument("--out", required=True)
-    parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--fallback-model", default=FALLBACK_MODEL,
+    parser.add_argument("--provider", choices=list(PROVIDERS), default="gemini",
+                        help="the API to write through, and the starting value of the next options")
+    parser.add_argument("--model")
+    parser.add_argument("--fallback-model",
                         help="switch to this model when --model is out of quota ('' to just stop)")
     parser.add_argument("--local-fallback", default=LOCAL_MODEL,
                         help="when the hosted models fail, switch to this model on --local-url ('' to just stop)")
@@ -725,11 +893,17 @@ def main() -> int:
                         help="also send this many of the writer's own passages in the register, with their "
                              "measured counts (needs the profile's corpus beside it)")
     parser.add_argument("--n", type=int, default=100)
-    parser.add_argument("--base-url", default=GEMINI_API_URL)
-    parser.add_argument("--api-key-env", default="GEMINI_API_KEY", help="environment variable holding the key")
+    parser.add_argument("--base-url")
+    parser.add_argument("--api-key-env", help="environment variable holding the key")
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
+    provider = PROVIDERS[args.provider]
+    args.model = args.model or provider.model
+    args.base_url = args.base_url or provider.base_url
+    args.api_key_env = args.api_key_env or provider.key_env
+    if args.fallback_model is None:
+        args.fallback_model = next(iter(provider.fallbacks), "")
 
     if not Path(args.persuade).is_file():
         parser.error(f"{args.persuade} not found. Download PERSUADE 2.0 from "

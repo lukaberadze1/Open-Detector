@@ -1,0 +1,5 @@
+# Training a LoRA or DPO adapter (eval/train_adapter.py), on a machine with an NVIDIA GPU. The app and the tests don't
+# need these, and the 8 GB development Mac shouldn't train: install them on the GPU machine only.
+-r requirements.txt
+peft>=0.13
+accelerate>=1.0

@@ -501,6 +501,63 @@ def test_a_document_under_the_bar_is_left_alone_and_a_short_text_is_not_revised(
     assert revise_blocks(text, _document_detector(lambda _: None), ask, str.strip, [], rounds=3) == ({}, [None])
 
 
+def test_a_revision_has_to_keep_the_passages_names_and_numbers():
+    from eval.redteam_batch import keeps_facts
+
+    passage = "The fleet of Xerxes met Themistocles at Salamis in 480 BC. However it lost 200 ships."
+    assert keeps_facts(passage, "Themistocles beat Xerxes off Salamis in 480, sinking 200 ships.")
+    assert not keeps_facts(passage, "The clever commander beat the king off the rocky island long ago.")
+    assert keeps_facts("However it went badly. Nothing here is named.", "It went badly."), "openers aren't names"
+
+
+def test_revising_drops_what_loses_the_facts_however_well_it_scores():
+    from eval.redteam_batch import revise_blocks
+
+    words = " ".join(["word"] * 20)
+    texts = {"a": f"Then Xerxes and Themistocles sailed past Salamis in 480 with {words}."}
+
+    def ask(prompt, pending):
+        return json.dumps({"blocks": [{"id": "B1", "text": "A plain passage about the bus I missed."}]})
+
+    def score(current):
+        return 0.5 - 0.3 * ("bus" in current)
+
+    assert revise_blocks(texts, _document_detector(score), ask, str.strip, [], rounds=1, facts=True)[0] == {}
+
+
+def test_revising_goes_on_while_it_helps_and_stops_when_it_stalls():
+    from eval.redteam_batch import _stalled
+
+    assert not _stalled([0.9])
+    assert not _stalled([0.9, 0.9]), "one round without a gain is not a stall"
+    assert not _stalled([0.9, 0.8, 0.8]), "the round before it helped"
+    assert _stalled([0.9, 0.8, 0.8, 0.8])
+
+
+def test_a_long_block_is_revised_a_passage_at_a_time_and_stays_one_block():
+    from eval.redteam_batch import revise_blocks
+
+    first = " ".join(f"Tidy sentence {n} offers a balanced overview of the whole wide topic." for n in range(9))
+    second = " ".join(f"Fine sentence {n} sounds like me on a slow afternoon at home again." for n in range(9))
+    asked = []
+
+    def ask(prompt, pending):
+        asked.extend(job["previous"] for job in pending)
+        return json.dumps({"blocks": [{"id": f"B{number}", "text": "A plain passage about the bus I missed."}
+                                      for number in range(1, len(pending) + 1)]})
+
+    def analyze(current, sentences=True):
+        marks = []
+        for match in re.finditer(r"[^.]+\\.", current) if sentences else ():
+            marks.append(SimpleNamespace(start=match.start(), ai_probability=0.9 if "Tidy" in match.group() else 0.02))
+        return SimpleNamespace(text=current, ai_probability=0.5 - 0.3 * ("bus" in current), sentences=marks)
+
+    changed, history = revise_blocks({"a": f"{first} {second}"}, analyze, ask, str.strip, [], rounds=1)
+    assert asked and all(len(text.split()) < 100 for text in asked), "passages, not the 200-word block"
+    assert list(changed) == ["a"] and "bus" in changed["a"] and "Fine sentence 8" in changed["a"], "the rest stays"
+    assert history == pytest.approx([0.5, 0.2])
+
+
 def test_a_revision_that_leaves_the_style_profile_is_dropped_however_well_it_scores():
     from eval.redteam_batch import revise_blocks, style_guard
 

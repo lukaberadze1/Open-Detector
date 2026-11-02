@@ -17,6 +17,10 @@ integrity rules, and a score is evidence, not proof of authorship.
   so no sentence is ever judged alone. The windows behind the highlights stay inside paragraphs
   (very short paragraphs merge with a neighbour first), so a human paragraph next to an AI one
   isn't coloured by it.
+- **Extra readings, off the score unless a refit adds them.** Every report also carries burstiness (sentence-length
+  variation), and the full build Fast-DetectGPT and raw perplexity, computed from Binoculars' base model. A RoBERTa
+  classifier can be measured with `eval.featurize --engines roberta`. Burstiness alone scored an AUROC of 0.555 and
+  added nothing to Desklib on 552 held-out texts (2026-11-02).
 - **Binoculars replaces raw perplexity.** Raw perplexity is the signal that flags simple prose
   and non-native writers. Binoculars normalizes it by how predictable *any* text looks to a
   second model.
@@ -205,6 +209,12 @@ tries a configurable fallback list after quota or temporary service errors. Its 
 The older 2.5 Flash models are omitted because Google restricts them for new users. After those it
 falls back to a local Ollama model (`gemma3:4b` by default), and the sidebar says whether that can
 run. `OPENDETECTOR_REDTEAM=off` leaves the page out, as the Hugging Face deploy does.
+
+On a local run, **Provider** under Model & connection switches to Groq or OpenRouter (keys in `GROQ_API_KEY` and
+`OPENROUTER_API_KEY`, or paste them there). Try a provider's models first with
+`python -m eval.check_providers groq openrouter`; `--list` shows what is on offer. OpenRouter's defaults are free
+models and skip hosts that keep or train on prompts (`OPENROUTER_DATA_COLLECTION=allow` lets those in). The benchmarks
+take `--provider` too. `tune_generation` then keeps its results apart from the table the page reads.
 
 On the public Streamlit site the page runs in **public mode** (`OPENDETECTOR_PUBLIC=on`). Each
 visitor pastes their own Gemini key in the sidebar. The server sends it to Google in each request's
@@ -472,6 +482,55 @@ the detector build and the attack settings alongside the result. These are bench
 this detector and test distribution, not universal claims about detector evasion. The resulting
 hard positives can support detector training in Phase 2. The harness loads all three engines, so don't run it
 alongside a featurize job on an 8 GB machine.
+
+### Attacks on finished text
+
+Under **More attacks** on the Red team page (local runs only), and as `--attack` on `eval.tune_prompts` and
+`eval.tune_revise`, the finished text can go through a round trip in another language, have its clauses moved around,
+or both, before it is revised. Top-p and top-k sit beside them (`--top-p`, `--top-k`). All are off by default and none
+is measured yet. The attacks appear in each sample's attack label, so the reports can compare them.
+
+### Training an adapter on your notes
+
+`eval/train_adapter.py` teaches a small open model the writer's voice instead of describing it. Everything it writes is
+AI text and is logged as such. It only reads the vault's notes, never the finished pieces.
+
+1. On your own computer, make the pairs. This sends each passage of the notes to the provider, about two requests a
+   passage, so it may take several days of a free quota. Run it again to carry on.
+
+   ```bash
+   .venv/bin/python -m eval.train_adapter prepare
+   ```
+
+2. On a machine with an NVIDIA GPU, install the training packages and train. Your notes' text has to be copied there
+   (`data/adapters/pairs.jsonl`), so pick a machine you're happy to have them on, and delete them afterwards from one
+   you don't control. It refuses to train without such a GPU unless given `--force`, and an 8 GB Mac will thrash.
+
+   ```bash
+   pip install -r requirements-train.txt
+   ```
+
+   ```bash
+   python -m eval.train_adapter train --out data/adapters/voice
+   ```
+
+3. Optionally, train DPO on top of it. It prefers the writer's passage to a second AI rewrite of the same text.
+
+   ```bash
+   python -m eval.train_adapter train --method dpo --start data/adapters/voice --out data/adapters/voice-dpo
+   ```
+
+4. Write samples, one block for each blank-line-separated block of a text file, and copy
+   `data/essays/adapter_redteam.jsonl` back. `eval.redteam_report` counts them, under the attacks `adapter+lora` and
+   `adapter+dpo`.
+
+   ```bash
+   python -m eval.train_adapter write data/adapters/voice source.txt
+   ```
+
+`export` merges an adapter into its base and writes an Ollama Modelfile. Ollama's support for importing the merged
+model hasn't been tried. The notes hold about 38,000 words, which is small for this, so check the held-out loss in
+`training.json` before reading much into the samples. This has only been run end to end on a tiny random model so far.
 
 ## Tests
 

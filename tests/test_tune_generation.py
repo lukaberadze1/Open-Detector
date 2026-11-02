@@ -449,3 +449,10 @@ def test_the_distance_is_given_where_the_match_cant_show_progress():
     closer, further = "One two three four five six seven eight. " * 6, "One two three. " * 20
     assert stick.match(closer) == stick.match(further) == 0.0
     assert stick.text_distance(closer) < stick.text_distance(further)
+
+
+def test_groqs_daily_limit_is_read_too():
+    errors = ("- openai/gpt-oss-120b: openai/gpt-oss-120b is out of quota: Rate limit reached for model "
+              "`openai/gpt-oss-120b` in organization `org` on requests per day (RPD): Limit 1,000, Used 1,000. "
+              "Please try again in 3h2m")
+    assert generation_settings.limits_in(errors) == {"openai/gpt-oss-120b": 1000}

@@ -35,16 +35,20 @@ from eval.generate_essays import (
     GEMINI_API_URL,
     LOCAL_MODEL,
     LOCAL_URL,
+    PROVIDERS,
     REGISTER_NAMES,
     THINKING_LEVELS,
     APIError,
     answer_token_limit,
     generate_with_fallback,
     is_local,
+    key_accepted,
+    list_models,
     load_style_profile,
     local_context_size,
     profile_registers,
     local_model_problem,
+    provider_for,
     style_instructions,
     styled_clean,
     unload_local_model,
@@ -81,6 +85,7 @@ from eval.redteam_batch import (
     worth_rewriting,
 )
 from eval.evasion_mode import PROFILE_ID, PROFILE_INSTRUCTIONS, generate_until_target
+from eval.text_attacks import CLAUSES, GROUP_WORDS, PIVOTS, attack_label, attack_name, run_attacks
 from opendetector import DetectorConfig
 from opendetector.config import DATA_ROOT
 from opendetector.documents import (
@@ -91,7 +96,7 @@ from opendetector.documents import (
     replace_document_section,
     rewritable_blocks,
 )
-from opendetector.env import load_env
+from opendetector.env import load_env, save_env
 from opendetector.segment import count_words
 
 from . import detect, models, nav, style
@@ -112,13 +117,8 @@ MAX_STYLE_BYTES = 500_000
 EVASION_TARGET = WIN_BELOW  # configured detector-challenge benchmark target
 STYLE_FLOOR = 35  # minimum style-profile percentile used to rank challenge candidates
 REVISE_BY_DEFAULT = True  # measured on eval/tune_revise.py: 81% to 7% on an AI-written source
-REVISE_ROUNDS = 4  # "Revise what the detector flags": rounds at most, one request each, only while still flagged
-DEFAULT_FALLBACK_MODELS = (
-    "gemini-3.5-flash-lite",
-    "gemini-3.6-flash",
-    "gemini-3.1-flash-lite",
-    "gemini-3-flash-preview",
-)
+REVISE_ROUNDS = 10  # "Revise what the detector flags": rounds at most, until under the bar or it stalls
+DEFAULT_FALLBACK_MODELS = PROVIDERS["gemini"].fallbacks
 DOCUMENT_TYPES = ("txt", "md", "docx", "pptx")
 MIME_TYPES = {
     ".txt": "text/plain",
@@ -265,6 +265,9 @@ class Plan:
     shapes: list | None = None  # for "writer": the sentence shapes of the profile writer's own paragraphs
     restyle: bool = False  # a sample from a prompt: rewrite the draft in the writer's sentences (redteam_batch.restyle)
     revise: int = 0  # a sample: rounds rewriting the passages the detector flags (redteam_batch.revise_flagged)
+    attacks: tuple[str, ...] = ()  # applied to the finished text before revising (eval/text_attacks.py)
+    top_p: float | None = None  # the models' nucleus sampling, when set
+    top_k: int | None = None  # how many next words they choose from, when set
     style_path: Path | None = None
     score: bool = True
     evasion: bool = False
@@ -273,6 +276,11 @@ class Plan:
     @property
     def batch(self) -> bool:
         return self.fill_answer_boxes or self.rewrite_all_blocks
+
+    @property
+    def sampling(self) -> dict | None:
+        settings = {"top_p": self.top_p, "top_k": self.top_k}
+        return {option: value for option, value in settings.items() if value is not None} or None
 
     @property
     def use_profile(self) -> bool:
@@ -363,8 +371,12 @@ def score_text(text: str, profile: str) -> dict:
 
 
 def _style_fits(plan: Plan, text: str):
-    """What keeps a revision of `text` as close to the plan's style profile as `text` is, if it has one."""
-    yardstick = _yardstick(text, plan.style_path, None, plan.register) if plan.style_path else None
+    """What keeps a revision of `text` as close to the plan's style profile as `text` is, if it has one. A built-in
+    profile describes no one in particular, so there is no writer to stay close to: one run without this went from
+    27% to 8% with no further drift (eval/tune_revise.py), to be checked over more documents."""
+    if not plan.style_path or plan.style_path.parent == BUILTIN_STYLE_DIR:
+        return None
+    yardstick = _yardstick(text, plan.style_path, None, plan.register)
     return style_guard(yardstick.text_distance, text) if yardstick else None
 
 
@@ -430,12 +442,53 @@ def candidate_metrics(text: str, profile: str, style_path: Path | None,
 # -- settings -------------------------------------------------------------------------
 
 
+PROVIDER = "keep:redteam:provider"
+
+
+def _provider_changed() -> None:
+    """Start the fields below the provider from its own models and key. Other leaves them to be edited."""
+    if provider := PROVIDERS.get(st.session_state[PROVIDER]):
+        st.session_state["keep:redteam:base_url"] = provider.base_url
+        st.session_state["keep:redteam:model"] = provider.model
+        st.session_state["keep:redteam:fallbacks"] = "\n".join(provider.fallbacks)
+        st.session_state["keep:redteam:key_env"] = provider.key_env
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _models_on_offer(name: str, _api_key: str) -> list[str]:
+    try:
+        return list_models(PROVIDERS[name], _api_key)
+    except APIError:
+        return []
+
+
+def _key_box(name: str) -> None:
+    """Paste a Groq or OpenRouter key: checked with the provider and kept in .env, as the Guide does Gemini's."""
+    provider = PROVIDERS[name]
+    with st.form(f"redteam:key:{name}", clear_on_submit=True, border=False):
+        key = st.text_input(f"{provider.label} API key", type="password", placeholder="Paste your key here",
+                            help=f"Get one at {provider.key_page}. It stays on this computer, in .env.")
+        submitted = st.form_submit_button("Check and save key", icon=":material/key:")
+    if submitted and key.strip():
+        if key_accepted(provider, key.strip()) is False:
+            st.error(f"{provider.label} didn't accept this key.", icon=":material/key_off:")
+        else:
+            save_env(provider.key_env, key.strip())
+            st.rerun()
+
+
 def _connection() -> Connection:
     """Model & connection, at the foot of the settings: which text models to use, and whether they can
     run. Drawn into the current container."""
     if public():
         return _public_connection()
     status = st.container()
+    name = st.selectbox(
+        "Provider", (*PROVIDERS, "custom"), format_func=lambda n: PROVIDERS[n].label if n in PROVIDERS else "Other",
+        key=keep(PROVIDER, provider_for(st.session_state.get("keep:redteam:base_url", GEMINI_API_URL))),
+        on_change=_provider_changed,
+        help="Sets the fields below. Each has its own models and limits, and is measured on its own.",
+    )
     base_url = st.text_input("API URL", key=keep("keep:redteam:base_url", GEMINI_API_URL),
                              help="Gemini uses its Interactions API. Any OpenAI-compatible endpoint "
                                   "works too.")
@@ -443,8 +496,8 @@ def _connection() -> Connection:
     fallback_text = st.text_area(
         "Fallback models, in order", key=keep("keep:redteam:fallbacks", "\n".join(DEFAULT_FALLBACK_MODELS)),
         height=130,
-        help="Gemini uses these current text models after quota or temporary errors. Models unavailable "
-             "to your account are skipped. Edit or clear this list for another OpenAI-compatible provider.",
+        help="Used in turn after quota or temporary errors. Models unavailable to your account are skipped. "
+             "Edit or clear this list for another OpenAI-compatible provider.",
     )
     local_model = st.text_input(
         "Local fallback model (Ollama)",
@@ -464,7 +517,15 @@ def _connection() -> Connection:
             st.caption(f":material/key: Using your key in {api_key_env}.")
         else:
             st.caption(f":material/key_off: No {api_key_env} yet. Local endpoints work without a key.")
-            st.page_link(nav.guide_page(), label="Add your Gemini API key", icon=":material/key:")
+            if name in ("groq", "openrouter"):
+                _key_box(name)
+            else:
+                st.page_link(nav.guide_page(), label="Add your Gemini API key", icon=":material/key:")
+        if api_key and name in ("groq", "openrouter") and (names := _models_on_offer(name, api_key)):
+            with st.popover(f"{len(names)} models on offer", icon=":material/list:"):
+                st.caption("Copy a name into Model or the fallbacks." + (
+                    " Free ones come first, and their list changes often." if name == "openrouter" else ""))
+                st.code("\n".join(names[:80]), language=None)
         if local_model:
             if problem := local_fallback_problem(local_url, local_model):
                 st.caption(f":orange[:material/cloud_off: The local fallback can't run: {problem}]")
@@ -737,10 +798,35 @@ def _scoring(plan: Plan, profile: str) -> None:
                      "Every revision is saved as AI-labelled evaluation data.") else 0
             if plan.revise:
                 plan.score = True
+            _attacks(plan)
     if plan.evasion:
         st.caption("Every draft is saved as AI-labelled evaluation data; the kept one records the mode and scores. "
                    + (" In a batch, each block is drafted and scored on its own, one at a time." if plan.batch
                       else ""))
+
+
+def _attacks(plan: Plan) -> None:
+    """The attacks on finished text and the sampling settings, all off to start with: none is measured yet."""
+    with st.expander("More attacks"):
+        pivot = st.selectbox("Round trip through a language", ("Off", *PIVOTS), key=keep("keep:redteam:pivot", "Off"),
+                             help="Translates the finished text there and back before revising, two requests for "
+                                  "about every 400 words. A paragraph that loses a number or changes length stays "
+                                  "as it was. This pulls the text away from the style profile.")
+        clauses = st.toggle("Move clauses around", key=keep("keep:redteam:clauses", False),
+                            help="Turns about half the sentences that can safely be turned around ('Because A, B.' "
+                                 "and 'B because A.'). No words change, and it takes no requests.")
+        plan.attacks = ((attack_name(pivot),) if pivot != "Off" else ()) + ((CLAUSES,) if clauses else ())
+        if plan.attacks:
+            plan.score = True
+        with st.container(horizontal=True):
+            top_p = st.slider("Top-p", 0.5, 1.0, step=0.05, key=keep("keep:redteam:top_p", 1.0),
+                              help="Lower keeps the model to its more likely next words. 1 leaves it unset. Gemini "
+                                   "3.6, 3.7 and 3.8 Flash use their own, and a model that turns it down is asked "
+                                   "again without it.")
+            top_k = st.slider("Top-k", 0, 100, step=5, key=keep("keep:redteam:top_k", 0),
+                              help="How many next words the model chooses from. 0 leaves it unset. Sent to Gemini, "
+                                   "OpenRouter and local models.")
+        plan.top_p, plan.top_k = (top_p if top_p < 1 else None), (top_k or None)
 
 
 def _setup(profile: str) -> tuple[Plan, Connection]:
@@ -920,8 +1006,8 @@ def _priorities(plan: Plan, conn: Connection) -> None:
         "Model thinking", THINKING_LEVELS, key=keep("keep:redteam:thinking", Plan.thinking),
         format_func=str.capitalize,
         help="How long Gemini reasons before it writes. Less is faster and spends less quota, and short rewrites "
-             "rarely need more than low. A model without the level gets the next one up; other providers "
-             "use their own.",
+             "rarely need more than low. A model without the level gets the next one up. Groq and OpenRouter "
+             "pass it to the models that reason; other providers use their own.",
     )
     if plan.batch:
         with st.container(horizontal=True):
@@ -1045,6 +1131,8 @@ def _problem(plan: Plan, conn: Connection) -> str | None:
     if not conn.api_key and public():
         return "Paste your Gemini API key under Model & connection first."
     if not conn.api_key and not conn.base_url.strip().startswith(("http://localhost", "http://127.0.0.1")):
+        if provider_for(conn.base_url) in ("groq", "openrouter"):
+            return f"Add your {PROVIDERS[provider_for(conn.base_url)].label} API key under Model & connection."
         return "Add your Gemini API key on the Guide page, or use a local model endpoint."
     return None
 
@@ -1090,6 +1178,7 @@ def _settings(plan: Plan) -> dict:
             "register": plan.register, "examples": len(writer_samples(plan)[0]),
             "structure": structure(plan) if plan.rewrite_all_blocks else None,
             "restyle": plan.restyle if plan.task == "sample" else None,
+            "attacks": list(plan.attacks), "top_p": plan.top_p, "top_k": plan.top_k,
             "blocks_per_request": (1 if plan.evasion else plan.group_size) if plan.batch else None}
 
 
@@ -1118,6 +1207,7 @@ def _checkpoint_path(plan: Plan) -> Path:
     style = [plan.style_name] if plan.use_profile and plan.style_name != UNNAMED_STYLE else []
     follow = [structure(plan)] if plan.rewrite_all_blocks and structure(plan) != "free" else []
     follow += [f"revise{plan.revise}"] if plan.revise else []
+    follow += [*plan.attacks, *(f"{option}{value:g}" for option, value in (plan.sampling or {}).items())]
     return _store().batches / (
         batch_key(plan.source_hash, plan.fill_answer_boxes, plan.rewrite_all_blocks, plan.prompt.strip(),
                   plan.use_profile, plan.answer_words, plan.match_existing_lengths, *style, *follow) + ".json"
@@ -1150,7 +1240,8 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
         document_bytes = document_name = None
         st.warning(f"The answers are saved, but the document copy could not be exported: {exc}")
 
-    attack = f"{mode_tag}+{plan.style_name}" + (f"+revise{plan.revise}" if plan.revise else "")
+    attack = (f"{mode_tag}+{plan.style_name}" + attack_label(plan.attacks)
+              + (f"+revise{plan.revise}" if plan.revise else ""))
     rows = []
     # A block handed back as the uploaded original is the writer's text, not AI text: never saved as AI.
     copies = {item["key"] for item in items if copied(item["target"].text, item["text"])}
@@ -1439,15 +1530,16 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         if not public():
             generation_settings.record_limits(generation_settings.limits_in(errors))
 
-    def write(prompt: str, max_tokens: int, **options) -> tuple[str, str, list[str]]:
+    def write(prompt: str, max_tokens: int, profile: str | None = system, **options) -> tuple[str, str, list[str]]:
         """Ask the models in turn. A model whose quota is spent for hours is dropped for the rest of the
         batch; when the ones left are only busy or rate-limited, wait and ask again."""
         for retry in range(BUSY_RETRIES + 1):
             spent: set[str] = set()
             try:
                 reply, used_model, model_errors = generate_with_fallback(
-                    conn.base_url, conn.api_key, list(status["order"]), prompt, plan.temperature, system,
-                    conn.local_url, local_model, max_tokens, local_context, spent, thinking=plan.thinking, **options)
+                    conn.base_url, conn.api_key, list(status["order"]), prompt, plan.temperature, profile,
+                    conn.local_url, local_model, max_tokens, local_context, spent, thinking=plan.thinking,
+                    sampling=plan.sampling, **options)
                 learn_limits("\n".join(model_errors))
                 return reply, used_model, model_errors
             except APIError as exc:
@@ -1560,6 +1652,25 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
             checkpoint.save()
         status["note"] = None
 
+    def attack_document() -> None:
+        """The attacks on the finished blocks, each staying in its place, before revising."""
+        def ask(prompt: str) -> str:
+            reply, used_model, model_errors = write(prompt, answer_token_limit(3 * GROUP_WORDS), None,
+                                                    timeout=180)
+            wrote_with(used_model, model_errors)
+            return reply
+
+        status["note"] = "Running the attacks on the finished text…"
+        written = checkpoint.generated(keys)
+        texts = [checkpoint.blocks[key]["text"] for key in written]
+        attacked, changes = run_attacks(texts, plan.attacks, ask, clean)
+        for key, before, text in zip(written, texts, attacked, strict=True):
+            if text != before:
+                checkpoint.update(key, text=text, score=candidate_metrics(text, plan.profile, plan.style_path,
+                                                                          register=plan.register))
+        checkpoint.meta["attack_changes"] = changes
+        checkpoint.save()
+
     def revise_document() -> None:
         """Close the loop on a whole-document rewrite: revise the blocks the detector flags."""
         def ask(prompt: str, group: list[dict]) -> str:
@@ -1571,7 +1682,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         status["note"] = "Revising the blocks the detector flags…"
         texts = {key: checkpoint.blocks[key]["text"] for key in checkpoint.generated(keys)}
         changed, history = revise_blocks(texts, models.get_detector(plan.profile).analyze, ask, clean,
-                                         plan.shapes or [], plan.revise, prompt=REVISE_KEEPING,
+                                         plan.shapes or [], plan.revise, prompt=REVISE_KEEPING, facts=True,
                                          fits=_style_fits(plan, "\n\n".join(texts.values())))
         for key, text in changed.items():
             checkpoint.update(key, text=text, score=candidate_metrics(text, plan.profile, plan.style_path,
@@ -1580,6 +1691,8 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         checkpoint.save()
 
     def score_document() -> None:
+        if plan.attacks and "attack_changes" not in checkpoint.meta:
+            attack_document()
         if plan.revise and "revise_rounds" not in checkpoint.meta:
             revise_document()
         # Answer boxes are mostly under the detector's 150-word minimum, so the regenerated text is
@@ -1676,6 +1789,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
             conn.base_url, conn.api_key, _model_order(plan, conn), prompt,
             0.95 if plan.evasion else plan.temperature,
             system, conn.local_url, conn.local_model, answer_token_limit(plan.words), thinking=plan.thinking,
+            sampling=plan.sampling,
         )
         text = clean(reply)
         drafts[text] = model
@@ -1686,9 +1800,18 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         reply, model, model_errors = generate_with_fallback(
             conn.base_url, conn.api_key, _model_order(plan, conn), prompt, plan.temperature, system, conn.local_url,
             conn.local_model, answer_token_limit(sum(count_words(job["previous"]) for job in jobs)),
-            thinking=plan.thinking, json_schema=GROUP_SCHEMA, timeout=60 + 15 * len(jobs))
+            thinking=plan.thinking, json_schema=GROUP_SCHEMA, timeout=60 + 15 * len(jobs), sampling=plan.sampling)
         return reply
 
+    def attack_ask(prompt: str) -> str:
+        nonlocal model, model_errors
+        reply, model, model_errors = generate_with_fallback(
+            conn.base_url, conn.api_key, _model_order(plan, conn), prompt, plan.temperature, None, conn.local_url,
+            conn.local_model, answer_token_limit(3 * GROUP_WORDS), thinking=plan.thinking, timeout=180,
+            sampling=plan.sampling)
+        return reply
+
+    attack_changes: dict[str, int] = {}
     style_cache: dict = {}
     candidate_style: dict[str, float | None] = {}
     baseline_metrics: dict | None = None
@@ -1734,13 +1857,19 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
                 with st.spinner("Rewriting it in the writer's sentences…"):
                     essay = restyle(essay, plan.shapes, restyle_ask, clean)
                 drafts[essay] = model
+            if plan.attacks:
+                with st.spinner("Running the attacks on the finished text…"):
+                    parts, attack_changes = run_attacks(essay.split("\n\n"), plan.attacks, attack_ask, clean)
+                essay = "\n\n".join(parts)
+                drafts[essay] = model
             if plan.revise:
                 if conn.local_model and model == conn.local_model:
                     unload_local_model(conn.local_url, conn.local_model)  # the detector needs the memory it holds
                 with st.spinner("Revising the passages the detector flags…"):
                     essay, revise_history = revise_flagged(
                         essay, models.get_detector(plan.profile).analyze, restyle_ask, clean,
-                        plan.shapes or [], plan.revise, prompt=REVISE_KEEPING, fits=_style_fits(plan, essay))
+                        plan.shapes or [], plan.revise, prompt=REVISE_KEEPING, facts=True,
+                        fits=_style_fits(plan, essay))
                 drafts[essay] = model
     except APIError as exc:
         st.error(str(exc), icon=":material/error:")
@@ -1759,7 +1888,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     prompt_hash = hashlib.sha256(test_material.encode()).hexdigest()[:16]
     mode_tag = "regenerate_section" if target_section else "prompt"
     attack = (f"{mode_tag}+{plan.style_name}+{PROFILE_ID}" if plan.evasion
-              else f"{mode_tag}+{plan.style_name}")
+              else f"{mode_tag}+{plan.style_name}" + attack_label(plan.attacks))
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     row = {
         "id": f"local-{timestamp}-{prompt_hash}-{model}-{attack}",
@@ -1787,6 +1916,8 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     }
     if plan.evasion:
         row["temperature"] = 0.95  # robustness mode drafts hotter than the setting
+    if attack_changes:
+        row["attack_changes"] = attack_changes
     if plan.revise:
         row["attack"] += f"+revise{plan.revise}"
         row["revise_rounds"] = revise_history  # the AI likelihood before revising and after each round

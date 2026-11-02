@@ -36,7 +36,8 @@ from opendetector.metrics import wilson_interval
 from opendetector.segment import count_words, looks_like_prose
 
 ROOT = Path(__file__).resolve().parents[1]
-SAMPLES = (DATA_ROOT / "data/essays/local_redteam.jsonl", DATA_ROOT / "data/essays/tuning_redteam.jsonl")
+SAMPLES = (DATA_ROOT / "data/essays/local_redteam.jsonl", DATA_ROOT / "data/essays/tuning_redteam.jsonl",
+           DATA_ROOT / "data/essays/adapter_redteam.jsonl")
 CACHE = ROOT / "eval/cache/redteam_scores.jsonl"
 BREAKDOWNS = ("attack", "model", "thinking", "temperature", "blocks_per_request", "dataset")
 

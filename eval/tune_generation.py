@@ -54,6 +54,7 @@ from types import SimpleNamespace
 from eval import generate_essays
 from eval.generate_essays import (
     GEMINI_API_URL,
+    PROVIDERS,
     RETRYABLE_STATUS,
     APIError,
     QuotaExhausted,
@@ -414,12 +415,14 @@ def _transient(exc: APIError) -> bool:
     message = str(exc)
     status = re.search(r"HTTP (\d{3})", message)
     return (int(status.group(1)) in RETRYABLE_STATUS if status
-            else any(text in message for text in ("could not reach", "empty response")))
+            else any(text in message for text in ("could not reach", "empty response", "lost on the way")))
 
 
-def run_trial(trial: dict, jobs: list[dict], plan, system: str | None, api_key: str, temperature: float) -> dict:
+def run_trial(trial: dict, jobs: list[dict], plan, system: str | None, api_key: str, temperature: float,
+              base_url: str = GEMINI_API_URL, sampling: dict | None = None) -> dict:
     """Rewrite the sample run with one setting, as a batch would: a request per group, then any block
     its reply leaves out on its own. Raises QuotaExhausted, or APIError for a request that keeps failing."""
+    options_for_all = {"sampling": sampling} if sampling else {}
     model, thinking, size = trial["model"], trial["thinking"], trial["group_size"]
     temperature = trial.get("temperature", temperature)
     seconds, requests, retried, tokens, texts = 0.0, 0, 0, Counter(), {}
@@ -432,8 +435,9 @@ def run_trial(trial: dict, jobs: list[dict], plan, system: str | None, api_key: 
             usage: dict = {}
             started = time.monotonic()
             try:
-                reply = generate_essays.chat(GEMINI_API_URL, api_key, model, prompt, temperature, retries=1,
-                                             system=system, thinking=thinking, usage=usage, **options)
+                reply = generate_essays.chat(base_url, api_key, model, prompt, temperature, retries=1,
+                                             system=system, thinking=thinking, usage=usage, **options_for_all,
+                                             **options)
             except QuotaExhausted:
                 raise
             except APIError as exc:
@@ -662,11 +666,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="how closely each rewrite follows the original block: a light edit, the same "
                              "sentences in new words, the sentence shapes of a passage of the --style profile's "
                              "writer (the default, as on the Adversarial Lab), or a free rewrite")
-    parser.add_argument("--models", default=",".join(MODELS))
+    parser.add_argument("--provider", choices=list(PROVIDERS), default="gemini",
+                        help="the API to write through. Another than Gemini starts from its own models and writes "
+                             "its own cache, table and report, so the table the page reads stays as it was")
+    parser.add_argument("--models")
     parser.add_argument("--thinking", default=",".join(LEVELS))
     parser.add_argument("--groups", default=",".join(map(str, GROUPS)), help="blocks per request to try")
     parser.add_argument("--design", choices=("main", "full"), default="main")
-    parser.add_argument("--baseline-model", default="gemini-3.5-flash-lite",
+    parser.add_argument("--baseline-model",
                         help="the model the group sizes are measured with in the main design")
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--words", type=int, default=250, help="how much of the document each trial rewrites")
@@ -675,16 +682,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--temperatures", default=",".join(f"{t:g}" for t in TEMPERATURES),
                         help="temperatures to measure on the baseline model (every model with --design full)")
     parser.add_argument("--profile", choices=("full", "slim"), default="slim", help="the detector build")
-    parser.add_argument("--api-key-env", default="GEMINI_API_KEY")
-    parser.add_argument("--out", type=Path, default=ROOT / "eval/cache/tuning.jsonl")
-    parser.add_argument("--table", type=Path, default=TABLE)
-    parser.add_argument("--report", type=Path, default=ROOT / "eval/reports/tuning.md")
+    parser.add_argument("--api-key-env")
+    parser.add_argument("--out", type=Path)
+    parser.add_argument("--table", type=Path)
+    parser.add_argument("--report", type=Path)
     parser.add_argument("--fit-only", action="store_true", help="skip new trials; fit what --out holds")
     parser.add_argument("--daily-limit", action="append", default=[], metavar="MODEL=N",
                         help="a model's free requests a day, when its quota errors haven't said; repeatable")
     parser.add_argument("--limits", type=Path, help=f"where daily limits are kept (default {LIMITS}); the Red "
                                                     "team page reads and adds to the same file")
     args = parser.parse_args(argv)
+    provider = PROVIDERS[args.provider]
+    gemini, suffix = args.provider == "gemini", "" if args.provider == "gemini" else f"_{args.provider}"
+    args.models = args.models or ",".join(MODELS if gemini else (provider.model, *provider.fallbacks))
+    args.baseline_model = args.baseline_model or ("gemini-3.5-flash-lite" if gemini else provider.model)
+    args.api_key_env = args.api_key_env or provider.key_env
+    args.out = args.out or ROOT / f"eval/cache/tuning{suffix}.jsonl"
+    args.table = args.table or (TABLE if gemini else ROOT / f"eval/cache/generation_tuning{suffix}.json")
+    args.report = args.report or ROOT / f"eval/reports/tuning{suffix}.md"
     sys.stdout.reconfigure(line_buffering=True)  # progress shows as it happens, also in a log file
     models = [name.strip() for name in args.models.split(",") if name.strip()]
     levels = [name.strip() for name in args.thinking.split(",") if name.strip()]
@@ -748,7 +763,7 @@ def main(argv: list[str] | None = None) -> int:
             if trial["key"] in done or trial["model"] in skipped:
                 continue
             try:
-                result = run_trial(trial, jobs, plan, system, api_key, args.temperature)
+                result = run_trial(trial, jobs, plan, system, api_key, args.temperature, provider.base_url)
             except QuotaExhausted as exc:
                 print(f"  {trial['model']} is out of quota; skipping its other trials this run. {exc}", file=sys.stderr)
                 skipped.add(trial["model"])

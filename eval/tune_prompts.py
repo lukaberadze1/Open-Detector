@@ -30,6 +30,7 @@ from pathlib import Path
 from eval import generate_essays
 from eval.generate_essays import (
     GEMINI_API_URL,
+    PROVIDERS,
     APIError,
     QuotaExhausted,
     clean_essay,
@@ -42,6 +43,7 @@ from eval.generate_essays import (
 )
 from eval.redteam_batch import (DRAFT_STRETCH, FRAMINGS, GROUP_SCHEMA, borrowed_plan, plainer_words, restyle,
                                 revise_flagged, sample_prompt)
+from eval.text_attacks import CLAUSES, PIVOTS, attack_label, attack_name, run_attacks
 from eval.tune_generation import LABELLED, TOKEN_FIELDS, StyleYardstick, style_examples, writer_shapes
 from opendetector.env import load_env
 from opendetector.segment import count_words
@@ -63,16 +65,27 @@ PROMPTS = {
 
 def run_sample(model: str, prompt: str, system: str | None, api_key: str, temperature: float,
                thinking: str, shapes: list | None = None, analyze=None, rounds: int = 0, clean=clean_essay,
-               vocabulary: set[str] | None = None) -> dict:
+               vocabulary: set[str] | None = None, base_url: str = GEMINI_API_URL,
+               attacks: tuple[str, ...] = (), sampling: dict | None = None) -> dict:
     """One sample: a draft, then with `shapes` that draft rewritten in the writer's sentences (restyle),
     then with `rounds` its flagged passages revised against the detector's `analyze` (revise_flagged)."""
     tokens, started = dict.fromkeys(TOKEN_FIELDS, 0), time.monotonic()
 
     def ask(request: str, jobs: list[dict] | None = None) -> str:
         usage: dict = {}
-        reply = generate_essays.chat(GEMINI_API_URL, api_key, model, request, temperature, retries=3, system=system,
+        reply = generate_essays.chat(base_url, api_key, model, request, temperature, retries=3, system=system,
                                      thinking=thinking_level(model, thinking), usage=usage,
+                                     **({"sampling": sampling} if sampling else {}),
                                      **({"json_schema": GROUP_SCHEMA} if jobs is not None else {}))
+        for field in TOKEN_FIELDS:
+            tokens[field] += usage.get(field, 0)
+        return reply
+
+    def ask_plain(request: str) -> str:
+        usage: dict = {}
+        reply = generate_essays.chat(base_url, api_key, model, request, temperature, retries=3, usage=usage,
+                                     thinking=thinking_level(model, thinking), timeout=180,
+                                     **({"sampling": sampling} if sampling else {}))
         for field in TOKEN_FIELDS:
             tokens[field] += usage.get(field, 0)
         return reply
@@ -83,12 +96,17 @@ def run_sample(model: str, prompt: str, system: str | None, api_key: str, temper
     if vocabulary:
         before_plain = text
         text, *unfamiliar = plainer_words(text, vocabulary, ask, clean)
+    before_attacks, changes = None, None
+    if attacks:
+        before_attacks = text
+        parts, changes = run_attacks(text.split("\n\n"), attacks, ask_plain, clean)
+        text = "\n\n".join(parts)
     history = None
     if rounds:
         text, history = revise_flagged(text, analyze, ask, clean, shapes or [], rounds)
     return {"text": text, "draft": draft if shapes else None, "seconds": round(time.monotonic() - started, 2),
             "tokens": tokens, "rounds": history, "unfamiliar": unfamiliar,
-            "before_plain": before_plain}
+            "before_plain": before_plain, "before_attacks": before_attacks, "attack_changes": changes}
 
 
 def summary(samples: list[dict]) -> list[str]:
@@ -128,10 +146,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="rewrite each draft passage by passage in the writer's sentences, as the page does")
     parser.add_argument("--revise", type=int, default=0, metavar="N",
                         help="rewrite the passages the detector flags, up to N rounds")
+    parser.add_argument("--attack", action="append", default=[],
+                        choices=[CLAUSES, *(attack_name(pivot) for pivot in PIVOTS)],
+                        help="run on each sample before revising (eval/text_attacks.py); repeat it to stack them")
+    parser.add_argument("--top-p", type=float, help="the models' top-p, unset by default")
+    parser.add_argument("--top-k", type=int, help="the models' top-k, unset by default")
     parser.add_argument("--plain-words", action="store_true",
                         help="replace the words the writer never uses (redteam_batch.plainer_words)")
     parser.add_argument("--examples", type=int, default=0, metavar="N", help="send N of the writer's own passages")
-    parser.add_argument("--models", default="gemini-3.5-flash-lite")
+    parser.add_argument("--provider", choices=list(PROVIDERS), default="gemini", help="the API to write through")
+    parser.add_argument("--models", help="comma-separated (default gemini-3.5-flash-lite, or the provider's first)")
     parser.add_argument("--thinking", default="low")
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--repeats", type=int, default=3)
@@ -141,9 +165,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     load_env()
-    api_key = os.environ.get("GEMINI_API_KEY", "")
+    provider = PROVIDERS[args.provider]
+    api_key = os.environ.get(provider.key_env, "")
     if not api_key:
-        parser.error("$GEMINI_API_KEY is not set")
+        parser.error(f"${provider.key_env} is not set")
+    args.models = args.models or ("gemini-3.5-flash-lite" if args.provider == "gemini" else provider.model)
     profile = load_style_profile(args.style)
     registers = profile_registers(profile)
     register = (args.register if args.register in registers else registers[0]) if registers else None
@@ -151,11 +177,14 @@ def main(argv: list[str] | None = None) -> int:
         style_examples(args.style, register, args.examples)
     system = None if args.no_style else style_instructions(profile, register, examples, checklist)
     shapes = writer_shapes(args.style, register) if args.plan or args.restyle else []
+    sampling = {option: value for option, value in (("top_p", args.top_p), ("top_k", args.top_k)) if value is not None}
     vocabulary = writer_vocabulary(args.style) if args.plain_words else None
     label = ("plain" if args.no_style else f"{args.style.stem}:{register}" if register else args.style.stem) + \
         f"+{args.framing}" + ("+plan" if args.plan else "") + ("+old-voice" if args.old_voice else "") + \
         ("+restyle" if args.restyle else "") + ("+plain-words" if args.plain_words else "") + \
-        ("+examples" if examples else "") + (f"+revise{args.revise}" if args.revise else "")
+        ("+examples" if examples else "") + attack_label(args.attack) + \
+        "".join(f"+{option}{value:g}" for option, value in sampling.items()) + \
+        (f"+revise{args.revise}" if args.revise else "")
     voice = OLD_VOICE if args.old_voice else ""
     done = {}
     if args.out.exists():
@@ -181,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
                                         shapes if args.restyle else None,
                                         detector.analyze if detector else None, args.revise,
                                         styled_clean(args.style, register) if not args.no_style else clean_essay,
-                                        vocabulary)
+                                        vocabulary, provider.base_url, tuple(args.attack), sampling or None)
                 except (QuotaExhausted, APIError) as exc:
                     print(f"  {model} failed, skipping it: {exc}")
                     break
