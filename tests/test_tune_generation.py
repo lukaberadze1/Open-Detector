@@ -413,3 +413,23 @@ def test_writers_sentences_come_from_the_register_asked_for(tmp_path):
     (tmp_path / "styles/writer/finalized/essay.md").write_text(
         "A finished sentence that runs on for a while, with a comma or two, before it ends.\n")
     assert tune_generation.writer_shapes(profile, "finalized") == [[(17, "2 commas")]]
+
+
+def test_a_share_out_of_a_handful_isnt_measured():
+    from eval.tune_generation import _value
+
+    label = "'a' before vowel sounds %"
+    few = {"words": 300, "per_1000_words": {"a_before_vowel": 0, "an_before_vowel": 3.34},
+           "mechanics": {"a_before_vowel_sound_pct": 0.0}}
+    many = {"words": 3000, "per_1000_words": {"a_before_vowel": 2.0, "an_before_vowel": 0.0},
+            "mechanics": {"a_before_vowel_sound_pct": 100.0}}
+    assert _value(few, label) is None, "one 'an' says nothing about the writer's habit"
+    assert _value(many, label) == 100.0
+
+
+def test_the_distance_is_given_where_the_match_cant_show_progress():
+    target = {"sentence_length": {"mean": 20.0}, "words": 1000}
+    stick = tune_generation.StyleYardstick(target, {"mean sentence length": 2.0}, [0.5, 1.0], {})
+    closer, further = "One two three four five six seven eight. " * 6, "One two three. " * 20
+    assert stick.match(closer) == stick.match(further) == 0.0
+    assert stick.text_distance(closer) < stick.text_distance(further)

@@ -210,14 +210,18 @@ class StyleYardstick:
                 offsets.append(((value - target) / spread) ** 2)
         return math.sqrt(statistics.fmean(offsets)) if offsets else None
 
-    def match(self, text: str) -> float | None:
-        """The style match of `text`, 0 to 100."""
+    def text_distance(self, text: str) -> float | None:
+        """How far `text` is from the profile. The match can't show progress outside the writer's furthest
+        passage, and with few passages moves only in big steps; this can."""
         import update_style_profile as usp
 
         paragraphs = [part for part in re.split(r"\n\s*\n", text) if part.strip()]
         summary = usp.summarize(usp.measure(paragraphs, self.banned))
-        distance = summary and self.distance(summary)
-        if distance is None:
+        return self.distance(summary) if summary else None
+
+    def match(self, text: str) -> float | None:
+        """The style match of `text`, 0 to 100."""
+        if (distance := self.text_distance(text)) is None:
             return None
         further = sum(1.0 if other > distance else 0.5 if other == distance else 0.0 for other in self.passages)
         return round(100 * further / len(self.passages), 1)
@@ -322,11 +326,21 @@ def _measures() -> list[tuple[str, tuple[str, ...]]]:
     return [*usp.DRIFT, ("banned phrases per 1000", ())]
 
 
+# A share out of a handful says nothing: one 'an' in a sample read as 0% against the writer's 98%, and made
+# up two thirds of its distance. Under this many cases a share isn't measured.
+MIN_CASES = 5
+_SHARES = {"'a' before vowel sounds %": ("a_before_vowel", "an_before_vowel"),
+           "contractions without apostrophe %": ("contraction_without_apostrophe", "contraction_with_apostrophe")}
+
+
 def _value(summary: dict, label: str) -> float | None:
     """One measurement from an update_style_profile summary."""
     if label == "banned phrases per 1000":
         words = summary.get("words")
         return 1000 * sum((summary.get("banned_phrases_used") or {}).values()) / words if words else None
+    if (kinds := _SHARES.get(label)) and sum((summary.get("per_1000_words") or {}).get(kind, 0) for kind in kinds) \
+            * (summary.get("words") or 0) / 1000 < MIN_CASES:
+        return None
     value = summary
     for key in dict(_measures())[label]:
         value = value.get(key) if isinstance(value, dict) else None

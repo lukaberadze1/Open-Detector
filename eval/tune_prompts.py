@@ -86,13 +86,14 @@ def run_sample(model: str, prompt: str, system: str | None, api_key: str, temper
 
 def summary(samples: list[dict]) -> list[str]:
     lines = ["| Model | Samples | Before revising % | AI likelihood % | Likely human | No verdict | Style match % "
-             "| Words | Tokens per sample |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+             "| Distance | Words | Tokens per sample |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for model in sorted({sample["model"] for sample in samples}):
         mine = [sample for sample in samples if sample["model"] == model and "verdict" in sample]
         if not mine:
             continue
         ai = [100 * sample["ai"] for sample in mine if sample["ai"] is not None]  # None: the detector abstained
         style = [sample["style"] for sample in mine if sample.get("style") is not None]
+        distance = [sample["distance"] for sample in mine if sample.get("distance") is not None]
         human = sum(sample["verdict"] == "likely_human" for sample in mine)
         before = [100 * sample["rounds"][0] for sample in mine
                   if sample.get("rounds") and sample["rounds"][0] is not None]
@@ -101,6 +102,7 @@ def summary(samples: list[dict]) -> list[str]:
                      f"| {f'{statistics.fmean(ai):.0f} ± {statistics.pstdev(ai):.0f}' if ai else 'n/a'} "
                      f"| {human} of {len(mine)} | {len(mine) - len(ai)} "
                      f"| {f'{statistics.fmean(style):.0f}' if style else 'n/a'} "
+                     f"| {f'{statistics.fmean(distance):.2f}' if distance else 'n/a'} "
                      f"| {statistics.fmean(sample['words'] for sample in mine):.0f} "
                      f"| {statistics.fmean(sample['tokens'].get('total_tokens', 0) for sample in mine):,.0f} |")
     return lines
@@ -192,7 +194,8 @@ def main(argv: list[str] | None = None) -> int:
             if size not in sticks:
                 sticks[size] = StyleYardstick.build(args.style, size, register)
             sample.update(ai=report.ai_probability, verdict=report.verdict,
-                          style=sticks[size].match(sample["text"]) if sticks[size] else None)
+                          style=sticks[size].match(sample["text"]) if sticks[size] else None,
+                          distance=sticks[size].text_distance(sample["text"]) if sticks[size] else None)
         args.out.write_text("".join(json.dumps(sample, ensure_ascii=False) + "\n" for sample in samples),
                             encoding="utf-8")
         LABELLED.parent.mkdir(parents=True, exist_ok=True)
