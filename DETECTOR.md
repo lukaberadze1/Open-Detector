@@ -19,8 +19,8 @@ integrity rules, and a score is evidence, not proof of authorship.
   isn't coloured by it.
 - **Extra readings, off the score unless a refit adds them.** Every report also carries burstiness (sentence-length
   variation), and the full build Fast-DetectGPT and raw perplexity, computed from Binoculars' base model. A RoBERTa
-  classifier can be measured with `eval.featurize --engines roberta`. Burstiness alone scored an AUROC of 0.555 and
-  added nothing to Desklib on 552 held-out texts (2026-11-02).
+  classifier can be measured with `eval.featurize --engines roberta`. None earned a place in the score: they catch no
+  more AI text at the 1% false-positive target, and two lose red-team samples (`eval/reports/extra_signals.md`).
 - **Binoculars replaces raw perplexity.** Raw perplexity is the signal that flags simple prose
   and non-native writers. Binoculars normalizes it by how predictable *any* text looks to a
   second model.
