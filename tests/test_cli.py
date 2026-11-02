@@ -71,3 +71,13 @@ def test_plain_text_from_stdin_has_no_sections(stub_detector, monkeypatch, capsy
     monkeypatch.setattr("sys.stdin", io.StringIO(HUMAN * 6))
     report = run(capsys)
     assert report["verdict"] == "likely_human" and "sections" not in report
+
+
+def test_a_missing_or_binary_file_is_a_clear_error(tmp_path, capsys):
+    binary = tmp_path / "a.pdf"
+    binary.write_bytes(b"\xff\xfe\x00")
+    for path, message in ((tmp_path / "missing.txt", "can't read"), (binary, "isn't UTF-8")):
+        with pytest.raises(SystemExit) as stop:
+            main([str(path)])
+        assert stop.value.code == 2
+        assert message in capsys.readouterr().err

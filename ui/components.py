@@ -508,7 +508,8 @@ def score_bars(rows: list[dict], thresholds: dict[str, float]) -> alt.LayerChart
         data.append({"key": _clip(key, 60), "p": row["probability"] if scored else None,
                      "tip": row["probability"] if scored else 0.0,
                      "band": VERDICTS[row["verdict"]][0] if scored else "Not scored",
-                     "value": f"{row['probability']:.0%}" if scored else "too short to score"})
+                     "value": f"{row['probability']:.0%}" if scored else
+                     ("not prose" if row["verdict"] == "not_prose" else "too short to score")})
     frame = pd.DataFrame(data)
     y = alt.Y("key:N", title=None, scale=alt.Scale(domain=list(frame["key"])), axis=alt.Axis(labelLimit=280))
     x = alt.X("p:Q", title="AI likelihood", scale=alt.Scale(domain=[0, 1]),

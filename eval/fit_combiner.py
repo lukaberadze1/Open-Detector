@@ -119,6 +119,9 @@ def main() -> None:
         raise SystemExit(f"Only {n_dev_human} human texts in the development split; "
                          f"a {DEFAULT_ALPHAS['ai']:.0%} FPR threshold needs at least {needed}.")
 
+    if not (test.label == 0).any():
+        raise SystemExit("No human texts in the test split, so nothing can check the false-positive rate.")
+
     oof = out_of_fold_scores(dev, features, args.seed)
     combiner = fit_logistic(
         dev[features].values, dev.label.values, features,
@@ -186,7 +189,7 @@ def main() -> None:
             report += [f"## By {column} (at the Likely-AI threshold)", "", *slice_table(test, flagged, column), ""]
 
     Path(args.report).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.report).write_text("\n".join(report))
+    Path(args.report).write_text("\n".join(report), encoding="utf-8")
     print("\n".join(report))
     print(f"\nWrote {args.out} and {args.report}")
 

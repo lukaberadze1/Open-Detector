@@ -146,7 +146,8 @@ def main(argv: list[str] | None = None) -> int:
     voice = OLD_VOICE if args.old_voice else ""
     done = {}
     if args.out.exists():
-        done = {sample["key"]: sample for sample in map(json.loads, args.out.read_text().splitlines()) if sample}
+        lines = args.out.read_text(encoding="utf-8").splitlines()
+        done = {sample["key"]: sample for sample in map(json.loads, lines) if sample}
     samples = list(done.values())
     detector = None
     if args.revise:
@@ -190,7 +191,8 @@ def main(argv: list[str] | None = None) -> int:
                 sticks[size] = StyleYardstick.build(args.style, size, register)
             sample.update(ai=report.ai_probability, verdict=report.verdict,
                           style=sticks[size].match(sample["text"]) if sticks[size] else None)
-        args.out.write_text("".join(json.dumps(sample, ensure_ascii=False) + "\n" for sample in samples))
+        args.out.write_text("".join(json.dumps(sample, ensure_ascii=False) + "\n" for sample in samples),
+                            encoding="utf-8")
         LABELLED.parent.mkdir(parents=True, exist_ok=True)
         with LABELLED.open("a", encoding="utf-8") as output:
             for sample in unscored:

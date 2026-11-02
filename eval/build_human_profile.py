@@ -123,7 +123,8 @@ def main(argv: list[str] | None = None) -> int:
         yardsticks[register]["target"] = whole
         print(f"{register}: {len(register_texts)} texts, {whole['words']:,} words, mean sentence "
               f"{whole['sentence_length']['mean']} words")
-    (OUT / "measurements.json").write_text(json.dumps(measurements, indent=2, ensure_ascii=False) + "\n")
+    (OUT / "measurements.json").write_text(json.dumps(measurements, indent=2, ensure_ascii=False) + "\n",
+                                                encoding="utf-8")
     (OUT / "shapes.json").write_text(json.dumps(shapes, separators=(",", ":")) + "\n")
     (OUT / "yardstick.json").write_text(json.dumps(yardsticks, separators=(",", ":")) + "\n")
     print(f"Wrote {OUT}/measurements.json, shapes.json and yardstick.json")

@@ -3,10 +3,18 @@ import zipfile
 
 import pytest
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from pptx import Presentation
 from pptx.util import Inches
 
-from opendetector.documents import DocumentSection, extract_answer_slots, extract_document, rewritable_blocks
+from opendetector.documents import (
+    DocumentSection,
+    extract_answer_slots,
+    extract_document,
+    replace_document_section,
+    rewritable_blocks,
+)
 
 
 def docx_bytes():
@@ -110,3 +118,97 @@ def test_rewriting_markdown_keeps_headings_questions_and_tables():
     assert [block.text for block in rewritable_blocks("notes.md", text.encode())] == [
         "Bees make honey.", "They sting.",
     ]
+
+
+def _bytes(document) -> bytes:
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def _merged_title_docx() -> bytes:
+    document = Document()
+    table = document.add_table(rows=2, cols=2)
+    table.rows[0].cells[0].merge(table.rows[0].cells[1]).text = "Section one"
+    table.rows[1].cells[0].text = "What is it?"
+    table.rows[1].cells[1].text = "An answer."
+    return _bytes(document)
+
+
+def test_a_merged_title_row_is_not_an_answer_box_and_reads_once():
+    data = _merged_title_docx()
+    assert [slot.question for slot in extract_answer_slots("a.docx", data)] == ["What is it?"]
+    texts = [section.text for section in extract_document("a.docx", data)]
+    assert texts == ["Section one", "What is it?", "An answer."]
+
+
+def test_a_cell_merged_down_two_rows_is_one_answer_box():
+    document = Document()
+    table = document.add_table(rows=2, cols=2)
+    table.rows[0].cells[0].text, table.rows[1].cells[0].text = "First?", "Second?"
+    table.rows[0].cells[1].merge(table.rows[1].cells[1]).text = "One answer."
+    assert [slot.question for slot in extract_answer_slots("a.docx", _bytes(document))] == ["First?"]
+
+
+def test_a_merged_pptx_title_row_is_not_an_answer_box():
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    table = slide.shapes.add_table(2, 2, Inches(1), Inches(1), Inches(4), Inches(2)).table
+    table.cell(0, 0).merge(table.cell(0, 1))
+    table.cell(0, 0).text = "Section one"
+    table.cell(1, 0).text, table.cell(1, 1).text = "What is it?", "An answer."
+    assert [slot.question for slot in extract_answer_slots("a.pptx", _bytes(presentation))] == ["What is it?"]
+
+
+def test_a_pptx_shape_without_a_position_is_left_out_of_the_pairs():
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(1), Inches(1))
+    box.text = "Hello"
+    box._element.spPr.remove(box._element.spPr.find(qn("a:xfrm")))
+    assert extract_answer_slots("a.pptx", _bytes(presentation)) == []
+
+
+@pytest.mark.parametrize("name", ["a.docx", "a.pptx"])
+def test_answer_slots_of_a_damaged_file_raise_value_error(name):
+    with pytest.raises(ValueError, match="valid"):
+        extract_answer_slots(name, b"not a zip")
+
+
+def test_replacing_a_word_paragraph_replaces_its_link_text_too():
+    document = Document()
+    paragraph = document.add_paragraph("Before the link ")
+    link, run, text = OxmlElement("w:hyperlink"), OxmlElement("w:r"), OxmlElement("w:t")
+    text.text = "LINK"
+    run.append(text)
+    link.append(run)
+    link.set(qn("w:anchor"), "x")
+    paragraph._p.append(link)
+    data = _bytes(document)
+    section = extract_document("a.docx", data)[0]
+    assert section.text == "Before the link LINK"
+    replaced = replace_document_section("a.docx", data, section, "New words.")
+    assert extract_document("a.docx", replaced)[0].text == "New words."
+
+
+def test_a_markdown_header_row_and_short_separator_are_not_answers():
+    data = b"| Topic | Thoughts |\n|-|:-|\n| Cats | good |\n"
+    assert [(slot.question, slot.previous_answer) for slot in extract_answer_slots("a.md", data)] == [("Cats", "good")]
+
+
+def test_markdown_front_matter_and_code_are_not_prose():
+    data = (b"---\ntitle: Notes\n---\nFirst real paragraph.\n\n```python\nx = a | b\n```\n\n"
+            b"| Question | Answer |\n|---|---|\n| Why? | Because. |\n\n~~~\n| Fake? | row |\n~~~\nLast paragraph.\n")
+    texts = [section.text for section in extract_document("a.md", data)]
+    assert "First real paragraph." in texts and "Last paragraph." in texts
+    assert not any("title:" in text or "x = a" in text or "Fake" in text for text in texts)
+    assert [slot.question for slot in extract_answer_slots("a.md", data)] == ["Why?"]
+    # Locators still point at the file's own lines.
+    block = next(section for section in extract_document("a.md", data) if section.text == "Last paragraph.")
+    replaced = replace_document_section("a.md", data, block, "Changed.")
+    assert replaced.endswith(b"~~~\nChanged.\n") and b"title: Notes" in replaced
+
+
+def test_a_leading_rule_is_not_front_matter():
+    data = b"---\nA paragraph between rules.\n\n---\nAnother.\n"
+    assert any("A paragraph between rules." in section.text for section in extract_document("a.md", data))

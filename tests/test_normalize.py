@@ -33,3 +33,17 @@ def test_leaves_genuine_cyrillic_text_alone():
 def test_collapses_spaces_but_keeps_paragraphs():
     text, _ = normalize("One   two. Three.\n\n\n\n  Next paragraph.  ")
     assert text == "One two. Three.\n\nNext paragraph."
+
+
+def test_strips_bidi_controls_fillers_and_tag_characters():
+    text, report = normalize("wo\u202erd wo\u2066rd wo\u3164rd wo\U000e0041rd wo\ufe0frd.")
+    assert text == "word word word word word."
+    assert report.invisible_chars == 5
+    assert report.suspicious
+
+
+def test_an_emoji_is_no_sign_of_a_trick():
+    text, report = normalize("Love it \u2764\ufe0f\u200d\U0001f525 and \U0001f468\u200d\U0001f469.")
+    assert "\u200d" not in text and "\ufe0f" not in text
+    assert report.invisible_chars == 0
+    assert not report.suspicious

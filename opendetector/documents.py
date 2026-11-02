@@ -50,18 +50,29 @@ def extract_answer_slots(filename: str, data: bytes) -> list[AnswerSlot]:
     PowerPoint text boxes are paired by left/right position and vertical alignment.
     """
     suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    try:
+        return _answer_slots(suffix, data)
+    except (ImportError, ValueError):
+        raise
+    except Exception as exc:  # damaged or renamed files raise zip, XML and package errors
+        raise ValueError(f"It isn't a valid .{suffix} file. It may be damaged, or another format "
+                         f"renamed to .{suffix}.") from exc
+
+
+def _answer_slots(suffix: str, data: bytes) -> list[AnswerSlot]:
     if suffix == "md":
         try:
             lines = data.decode("utf-8-sig").splitlines(keepends=True)
         except UnicodeDecodeError as exc:
             raise ValueError("The Markdown file must use UTF-8 encoding.") from exc
+        skipped = _markdown_non_prose(lines)
         slots = []
         table_number = 0
         row_number = 0
         in_table = False
         for line_number, line in enumerate(lines):
             body = line.rstrip("\r\n")
-            cells = _markdown_cell_spans(body)
+            cells = [] if line_number in skipped else _markdown_cell_spans(body)
             if len(cells) < 2:
                 in_table = False
                 continue
@@ -72,6 +83,9 @@ def extract_answer_slots(filename: str, data: bytes) -> list[AnswerSlot]:
             if _is_markdown_separator([cell[2] for cell in cells]):
                 continue
             row_number += 1
+            following = lines[line_number + 1].rstrip("\r\n") if line_number + 1 < len(lines) else ""
+            if _is_markdown_separator([cell[2] for cell in _markdown_cell_spans(following)]):
+                continue  # the row above a separator is the table's header, whatever it says
             question, answer = cells[0][2].strip(), cells[-1][2].strip()
             if not question or _is_table_header(question, answer):
                 continue
@@ -90,17 +104,21 @@ def extract_answer_slots(filename: str, data: bytes) -> list[AnswerSlot]:
         document = Document(BytesIO(data))
         slots = []
         for table_number, table in enumerate(document.tables, 1):
+            answered = set()  # a cell merged across rows is one answer box
             for row_number, row in enumerate(table.rows, 1):
-                if len(row.cells) < 2:
+                cells = row.cells
+                # A cell merged across the whole row (a section title) holds no question/answer pair.
+                if len(cells) < 2 or cells[0]._tc is cells[-1]._tc or cells[-1]._tc in answered:
                     continue
-                question, answer = row.cells[0].text.strip(), row.cells[-1].text.strip()
+                question, answer = cells[0].text.strip(), cells[-1].text.strip()
                 if not question or _is_table_header(question, answer):
                     continue
+                answered.add(cells[-1]._tc)
                 target = DocumentSection(
-                    f"Table {table_number}, row {row_number}, cell {len(row.cells)}",
+                    f"Table {table_number}, row {row_number}, cell {len(cells)}",
                     answer,
                     "docx_table_cell",
-                    (table_number - 1, row_number - 1, len(row.cells) - 1),
+                    (table_number - 1, row_number - 1, len(cells) - 1),
                 )
                 slots.append(AnswerSlot(f"Table {table_number}, row {row_number}", question, answer, target))
         return slots
@@ -116,6 +134,8 @@ def extract_answer_slots(filename: str, data: bytes) -> list[AnswerSlot]:
                     continue
                 for row_number, row in enumerate(shape.table.rows, 1):
                     cells = list(row.cells)  # python-pptx's cells take no negative index
+                    if cells[-1].is_spanned:  # a title merged across the row holds no answer box
+                        continue
                     question, answer = cells[0].text.strip(), cells[-1].text.strip()
                     if not question or _is_table_header(question, answer):
                         continue
@@ -132,6 +152,8 @@ def extract_answer_slots(filename: str, data: bytes) -> list[AnswerSlot]:
             left_shapes, right_shapes = [], []
             for shape_number, shape in enumerate(slide.shapes, 1):
                 if getattr(shape, "has_table", False) or not getattr(shape, "has_text_frame", False):
+                    continue
+                if None in (shape.left, shape.top, shape.height):  # no position of its own or inherited
                     continue
                 if shape.left < midpoint:
                     question = shape.text.strip()
@@ -240,17 +262,40 @@ def _markdown_cell_spans(line: str) -> list[tuple[int, int, str]]:
 
 
 def _is_markdown_separator(cells: list[str]) -> bool:
-    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells)
+    return bool(cells) and all(re.fullmatch(r":?-+:?", cell.strip()) for cell in cells)
+
+
+def _markdown_non_prose(lines: list[str]) -> set[int]:
+    """Indices of the lines nobody wrote as prose: YAML front matter and fenced code blocks."""
+    skipped: set[int] = set()
+    start = 0
+    if len(lines) > 1 and lines[0].strip() == "---" and re.match(r"[\w-]+:", lines[1]):
+        end = next((i for i in range(1, len(lines)) if lines[i].strip() in ("---", "...")), None)
+        if end is not None:
+            start = end + 1
+            skipped.update(range(start))
+    fence = ""
+    for index in range(start, len(lines)):
+        if fence:
+            skipped.add(index)
+            closing = lines[index].strip()
+            if closing.startswith(fence) and not closing.strip(fence[0]):
+                fence = ""
+        elif opening := re.match(r" {0,3}(`{3,}(?=[^`]*$)|~{3,})", lines[index].rstrip("\r\n")):
+            fence = opening.group(1)
+            skipped.add(index)
+    return skipped
 
 
 def _markdown_sections(data: bytes) -> list[DocumentSection]:
     text = data.decode("utf-8-sig")
     lines = text.splitlines(keepends=True)
+    skipped = _markdown_non_prose(lines)
     sections = []
     index = 0
     while index < len(lines):
         body = lines[index].strip()
-        if not body:
+        if not body or index in skipped:
             index += 1
             continue
         cells = _markdown_cell_spans(lines[index].rstrip("\r\n"))
@@ -277,7 +322,7 @@ def _markdown_sections(data: bytes) -> list[DocumentSection]:
         start = index
         while index < len(lines):
             current = lines[index].strip()
-            if not current or len(_markdown_cell_spans(lines[index].rstrip("\r\n"))) >= 2:
+            if not current or index in skipped or len(_markdown_cell_spans(lines[index].rstrip("\r\n"))) >= 2:
                 break
             if re.match(r"^\s{0,3}#{1,6}\s+", lines[index]):
                 break
@@ -308,10 +353,12 @@ def _docx_sections(stream: BytesIO) -> list[DocumentSection]:
         if paragraph.text.strip()
     ]
     for table_number, table in enumerate(document.tables, 1):
+        seen = set()  # row.cells repeats a merged cell once per grid position it covers
         for row_number, row in enumerate(table.rows, 1):
             for cell_number, cell in enumerate(row.cells, 1):
                 value = cell.text.strip()
-                if value:
+                if value and cell._tc not in seen:
+                    seen.add(cell._tc)
                     sections.append(DocumentSection(
                         f"Table {table_number}, row {row_number}, cell {cell_number}",
                         value,
@@ -432,7 +479,10 @@ def replace_document_section(filename: str, data: bytes, section: DocumentSectio
 
 
 def _replace_docx_paragraph(paragraph, text: str) -> None:
-    """Keep paragraph and first-run formatting while replacing only its characters."""
+    """Keep paragraph and first-run formatting while replacing only its characters. Links go too:
+    paragraph.text reads their words but paragraph.runs leaves them out, so they would stay behind."""
+    for link in paragraph.hyperlinks:
+        paragraph._p.remove(link._hyperlink)
     runs = paragraph.runs
     if not runs:
         paragraph.add_run(text)

@@ -13,7 +13,11 @@ from dataclasses import dataclass
 
 # Invisible characters that have no business in prose.
 _INVISIBLE = "​‌‍‎‏⁠⁡⁢⁣⁤﻿­᠎͏"
-_INVISIBLE_RE = re.compile(f"[{_INVISIBLE}]")
+# Also bidi controls, Hangul fillers, variation selectors and tag characters, escaped to stay readable.
+_INVISIBLE_RE = re.compile(f"[{_INVISIBLE}\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180d\u180f\u202a-\u202e"
+                           "\u2065-\u206f\u3164\ufe00-\ufe0f\uffa0\U000e0000-\U000e0fff]+")
+# Emoji are built with these: stripped like the rest, but no sign of a trick right after a symbol.
+_EMOJI_JOINERS = "\u200d\ufe0e\ufe0f"
 
 # Cyrillic and Greek letters that render identically to Latin ones.
 _CONFUSABLES = {
@@ -72,9 +76,20 @@ def _fix_homoglyphs(text: str) -> tuple[str, int]:
     return _WORD_RE.sub(repl, text), count
 
 
+def _strip_invisible(text: str) -> tuple[str, int]:
+    count = 0
+
+    def repl(match: re.Match[str]) -> str:
+        nonlocal count
+        in_emoji = match.start() > 0 and unicodedata.category(text[match.start() - 1]) in ("So", "Sk")
+        count += sum(not (in_emoji and ch in _EMOJI_JOINERS) for ch in match.group(0))
+        return ""
+
+    return _INVISIBLE_RE.sub(repl, text), count
+
+
 def normalize(text: str) -> tuple[str, NormalizationReport]:
-    invisible = len(_INVISIBLE_RE.findall(text))
-    text = _INVISIBLE_RE.sub("", text)
+    text, invisible = _strip_invisible(text)
 
     compat = sum(unicodedata.normalize("NFKC", ch) != ch for ch in text)
     text = unicodedata.normalize("NFKC", text)

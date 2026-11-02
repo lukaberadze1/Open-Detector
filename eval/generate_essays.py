@@ -92,7 +92,7 @@ CHECKLIST_INTRO = "The writer's measured counts. Check the draft against them be
 
 def load_style_profile(path: Path) -> dict:
     """A style profile as a dict. The top-level "style_profile" wrapper is optional."""
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"{path} must hold a JSON object")
     return data.get("style_profile", data)

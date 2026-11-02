@@ -31,9 +31,14 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     path = Path(args.path) if args.path else None
+    data = None
+    if path:
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            parser.error(f"can't read {path}: {exc.strerror}")
     sections = None
     if path and path.suffix.lower() in DOCUMENT_TYPES:
-        data = path.read_bytes()
         try:
             if args.answers_only:
                 slots = extract_answer_slots(path.name, data)
@@ -48,7 +53,10 @@ def main(argv: list[str] | None = None) -> None:
     elif args.answers_only:
         parser.error("--answers-only needs a .md, .docx or .pptx file")
     else:
-        text = path.read_text(encoding="utf-8") if path else sys.stdin.read()
+        try:
+            text = data.decode("utf-8-sig") if path else sys.stdin.read()
+        except UnicodeDecodeError:
+            parser.error(f"{path.name} isn't UTF-8 text; use a plain text, .md, .docx or .pptx file")
 
     config = DetectorConfig.for_profile(args.profile)
     if args.device:

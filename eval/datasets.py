@@ -190,7 +190,7 @@ def load_local(path: str, dataset: str | None = None) -> pd.DataFrame:
         from eval.redteam_batch import copied_row
 
         # A red-team "rewrite" that hands back its original is the writer's text, not AI text.
-        rows = [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+        rows = [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
         df = pd.DataFrame([row for row in rows if not copied_row(row)])
     else:
         df = pd.read_csv(p)

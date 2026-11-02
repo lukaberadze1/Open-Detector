@@ -192,10 +192,10 @@ def _sections_table(rows: list[dict], min_words: int, thresholds: dict[str, floa
         column_config={"AI likelihood": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1,
                                                                         color=style.tokens()["accent"])},
     )
-    labels = [row["label"] for row in rows]
-    chosen = st.selectbox("Read a section", labels, index=None, placeholder="Choose a section to read")
-    if chosen:
-        row = rows[labels.index(chosen)]
+    chosen = st.selectbox("Read a section", range(len(rows)), index=None, format_func=lambda i: rows[i]["label"],
+                          placeholder="Choose a section to read")  # by position: two slides' boxes can share a label
+    if chosen is not None:
+        row = rows[chosen]
         with st.container(border=True):
             verdict_badge(row["verdict"] or "insufficient_text")
             st.text(row["text"])

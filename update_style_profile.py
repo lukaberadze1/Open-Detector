@@ -788,7 +788,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check:
         try:
-            errors = format_errors(json.loads(args.profile.read_text()), json.loads(args.template.read_text()))
+            errors = format_errors(json.loads(args.profile.read_text(encoding="utf-8")),
+                                   json.loads(args.template.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError) as e:
             errors = [f"could not read the profile: {e}"]
         for error in errors:
@@ -808,20 +809,21 @@ def main(argv: list[str] | None = None) -> int:
     save_corpus(corpus, corpus_path)
 
     meta_path = args.state / "meta.json"
-    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {"starting_profile_week": week}
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {"starting_profile_week": week}
     meta_path.write_text(json.dumps(meta, indent=2) + "\n")
     snapshot = prepare_profile(args.profile, args.template, args.state / "history", week)
-    banned = banned_patterns(json.loads(args.profile.read_text()))
+    banned = banned_patterns(json.loads(args.profile.read_text(encoding="utf-8")))
     finished = finished_sources(args.state / FINALIZED)
     report = measurements(corpus, change, week, meta["starting_profile_week"], banned, finished,
                           note_ladders(args.vault))
     report["unreadable_notes"] = unreadable
     report["skipped_as_pasted"] = {"lines": len(pasted), "examples": [line[:120] for line in pasted[:8]]}
-    (args.state / "measurements.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+    (args.state / "measurements.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+                                                     encoding="utf-8")
     write_new_writing(args.state / "new_this_week.md", change, week)
     changelog = args.state / "CHANGELOG.md"
     if not changelog.exists():
-        changelog.write_text("# Style profile changelog\n\nNewest week at the bottom.\n")
+        changelog.write_text("# Style profile changelog\n\nNewest week at the bottom.\n", encoding="utf-8")
 
     c, numbers = report["corpus"], report["register_numbers"]
     print(f"{len(notes)} notes read{f', {len(unreadable)} unreadable' if unreadable else ''}. "

@@ -951,3 +951,17 @@ def test_the_built_in_human_profile_is_there_first_and_on_a_public_deploy_too(st
                            style_path=redteam.BUILTIN_STYLE_DIR / "human_default_profile.json")
     redteam._writer_shapes(plan)
     assert len(plan.shapes) == 1000, "a built-in profile's sentence shapes go out even on a public deploy"
+
+
+def test_reading_a_section_finds_it_by_position_when_labels_repeat():
+    def page():
+        from ui.detect import _sections_table
+
+        rows = [{"label": "Slide 1, Box", "text": text, "words": 3, "verdict": None, "probability": None}
+                for text in ("the first box", "the second box")]
+        _sections_table(rows, 150, {"review": 0.5, "ai": 0.9})
+
+    at = AppTest.from_function(page, default_timeout=30).run()
+    at.selectbox[0].select_index(1).run()
+    assert not at.exception
+    assert at.text[0].value == "the second box"

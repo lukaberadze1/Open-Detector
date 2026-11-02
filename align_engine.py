@@ -109,7 +109,7 @@ def _record(log_path: Path | None, run_id: str, group_key: str, attempt: int, te
     if log_path is None:
         return
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a") as f:
+    with log_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps({
             "id": f"{run_id}-{attempt}", "text": text, "label": 1, "dataset": "adaptive_attack",
             "domain": "generated", "model": model, "attack": f"rewrite_{attempt}", "group": "ai",
@@ -190,7 +190,7 @@ def main() -> int:
                         format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S", stream=sys.stderr)
     if args.max_attempts < 1 or not 0 < args.target < 1:
         parser.error("--max-attempts must be >= 1 and --target between 0 and 1")
-    prompt = args.prompt_file.read_text() if args.prompt_file else args.prompt
+    prompt = args.prompt_file.read_text(encoding="utf-8") if args.prompt_file else args.prompt
 
     try:
         text = generate_aligned_text(prompt, args.target, args.max_attempts, model=args.model,
@@ -215,7 +215,7 @@ def main() -> int:
         return 1
 
     if args.out:
-        args.out.write_text(text + "\n")
+        args.out.write_text(text + "\n", encoding="utf-8")
         log.info("Wrote %s", args.out)
     else:
         print(text)
