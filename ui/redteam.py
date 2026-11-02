@@ -175,7 +175,7 @@ def public() -> bool:
     value = os.environ.get("OPENDETECTOR_PUBLIC", "").strip().lower()
     if value:
         return value in ("1", "on", "true", "yes")
-    return ROOT.parts[:3] == ("/", "mount", "src")
+    return ROOT.as_posix().startswith("/mount/src/")
 
 
 def packaged() -> bool:

@@ -39,11 +39,12 @@ PYTHON = "3.12"  # as the .venv
 # Fixed, so releases/latest/download/Open-Detector-Setup.exe always works.
 INSTALLER_NAME = "Open-Detector-Setup"
 CONSTRAINTS = HERE / "constraints.txt"
-WEBVIEW2_BOOTSTRAPPER = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"  # Microsoft's small online installer
+# Microsoft's small online installer.
+WEBVIEW2_BOOTSTRAPPER = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
 INNO_SETUP = Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe")
 
-EXECUTABLE_SOURCE = r"""/* Open Detector.exe, written by deploy/windows/build_app.py. The app's Python is in python\ and the
-   code it runs in app\, next to this program, wherever it was installed. The C library is linked in,
+EXECUTABLE_SOURCE = r"""/* Open Detector.exe, written by deploy/windows/build_app.py. The app's Python is in
+   python\ and the code it runs in app\, next to this program, wherever it was installed. The C library is linked in,
    so nothing else has to be found before Python: Python's own reads the variables set here. */
 #include <windows.h>
 #include <shellapi.h>
