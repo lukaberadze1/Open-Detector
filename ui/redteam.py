@@ -89,6 +89,7 @@ from eval.evasion_mode import PROFILE_ID, PROFILE_INSTRUCTIONS, generate_until_t
 from eval.text_attacks import CLAUSES, FREE_TRIP, GROUP_WORDS, PIVOTS, attack_label, attack_name, run_attacks
 from opendetector import DetectorConfig
 from opendetector.config import DATA_ROOT
+from opendetector.citations import citation_material, validate_references
 from opendetector.documents import (
     AnswerSlot,
     DocumentSection,
@@ -97,6 +98,7 @@ from opendetector.documents import (
     replace_document_section,
     rewritable_blocks,
 )
+from opendetector.generator_inputs import extract_generation_source
 from opendetector.env import load_env, save_env
 from opendetector.segment import count_words
 
@@ -121,6 +123,8 @@ REVISE_BY_DEFAULT = True  # measured on eval/tune_revise.py: 81% to 7% on an AI-
 REVISE_ROUNDS = 10  # "Revise what the detector flags": rounds at most, until under the bar or it stalls
 DEFAULT_FALLBACK_MODELS = PROVIDERS["gemini"].fallbacks
 DOCUMENT_TYPES = ("txt", "md", "docx", "pptx")
+GENERATOR_SOURCE_TYPES = (*DOCUMENT_TYPES, "zip", "py", "sh", "bash", "js", "jsx", "ts", "tsx", "java",
+                          "c", "h", "cc", "cpp", "hpp", "cs", "go", "rs", "sql", "tex")
 MIME_TYPES = {
     ".txt": "text/plain",
     ".md": "text/markdown",
@@ -273,6 +277,7 @@ class Plan:
     score: bool = True
     evasion: bool = False
     blocked: str = ""  # why the page can't run yet, when the settings themselves say so
+    citations: list[dict] = field(default_factory=list)
 
     @property
     def batch(self) -> bool:
@@ -610,11 +615,35 @@ def _source(regenerate: bool) -> tuple[str, Upload | None, list, list, list]:
         "Instructions" + (" (optional)" if regenerate else ""), key=keep("keep:redteam:prompt", ""), height=120,
         placeholder="Anything the rewrite should keep in mind: the assignment, the audience, the angle."
         if regenerate else "Describe what the sample should cover: the assignment, the audience, the angle.")
+    references = []
+    if not regenerate:
+        reference_json = st.text_area(
+            "References for citations (optional)", key=keep("keep:redteam:references", ""), height=100,
+            placeholder='[{"author":"Author, A.","title":"Work title","year":2024,"venue":"Journal"}]',
+            help="Paste reference metadata as JSON. The generator may cite only these sources; it will not search "
+                 "for or invent references. Required fields: author, title, year, venue. Optional: doi, url.",
+        )
+        if reference_json.strip():
+            try:
+                references = validate_references(json.loads(reference_json))
+            except (json.JSONDecodeError, ValueError) as exc:
+                st.error(f"References could not be used: {exc}")
+                st.session_state["redteam:references_invalid"] = True
+            else:
+                st.session_state["redteam:references_invalid"] = False
+                bibliography, _, _ = citation_material(references)
+                prompt += ("\n\nUse inline citation markers such as [1] only for claims supported by the "
+                           "provided sources. Do not invent sources or unsupported claims. Append no bibliography; "
+                           "the application will add the supplied references.\n\nProvided sources:\n" + bibliography)
+        else:
+            st.session_state["redteam:references_invalid"] = False
+    st.session_state["redteam:validated_references"] = references
     upload = persistent_upload(
-        "Document to rewrite" if regenerate else "Source document (optional)", "redteam:file", DOCUMENT_TYPES,
-        help="A text, Markdown, Word or PowerPoint file. To generate, its text is context for the sample. To "
-             "regenerate, its sections, text blocks or answer boxes are rewritten. The file itself is never "
-             "changed.",
+        "Document to rewrite" if regenerate else "Source material (optional)", "redteam:file",
+        DOCUMENT_TYPES if regenerate else GENERATOR_SOURCE_TYPES,
+        help="Generate can use Word, PowerPoint, ZIP bundles, or source files as context. For source code, only "
+             "comments and Python docstrings are included. Regenerate supports text, Markdown, Word and PowerPoint. "
+             "The uploaded file is never changed.",
     )
     if not upload:
         pasted = st.text_area(
@@ -630,9 +659,12 @@ def _source(regenerate: bool) -> tuple[str, Upload | None, list, list, list]:
     sections, slots, blocks = [], [], []
     if upload:
         try:
-            sections = extract_document(upload.name, upload.data)
-            slots = extract_answer_slots(upload.name, upload.data)
-            blocks = rewritable_blocks(upload.name, upload.data)
+            if regenerate:
+                sections = extract_document(upload.name, upload.data)
+                slots = extract_answer_slots(upload.name, upload.data)
+                blocks = rewritable_blocks(upload.name, upload.data)
+            else:
+                sections = extract_generation_source(upload.name, upload.data)
         except (ImportError, ValueError) as exc:
             st.error(f"Could not read {upload.name}: {exc}")
             upload = None
@@ -846,6 +878,9 @@ def _setup(profile: str) -> tuple[Plan, Connection]:
     with style.group("Input", "02"):
         prompt, upload, sections, slots, blocks = _source(regenerate)
     plan = Plan(prompt, upload, sections, slots, blocks, "sample", profile)
+    plan.citations = st.session_state.get("redteam:validated_references", []) if not regenerate else []
+    if not regenerate and st.session_state.get("redteam:references_invalid"):
+        plan.blocked = "Fix or clear the reference JSON before generating."
     plan.context_sections = sections
     steps = iter(("03", "04", "05"))
     if regenerate:
@@ -1885,6 +1920,11 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         st.error(str(exc), icon=":material/error:")
         return
 
+    _, references_text, bibtex_text = citation_material(plan.citations)
+    references_json = json.dumps(plan.citations, ensure_ascii=False, indent=2)
+    if plan.citations:
+        essay = essay.rstrip() + "\n\n" + references_text
+
     score = reports.get(essay)
     if plan.score and score is None:
         try:
@@ -1912,6 +1952,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
         "group_key": f"prompt-{prompt_hash}",
         "prompt": test_material,
         "source_file": upload.name if upload else None,
+        "references": plan.citations,
         "target_section": target_section.label if target_section else None,
         "ai_probability": score.ai_probability
         if score and score.verdict not in ("insufficient_text", "not_prose")
@@ -1985,6 +2026,8 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
             st.warning(f"The answer was saved, but the document copy could not be exported: {exc}")
     st.session_state[RESULT] = {
         "essay": essay,
+        "bibtex": bibtex_text if plan.citations else None,
+        "references_json": references_json if plan.citations else None,
         "detect_text": essay,
         "row": row,
         "note": f"Written by {model} after {len(model_errors)} model(s) failed." if model_errors else None,
@@ -2168,6 +2211,13 @@ def _show_result(result: dict, profile: str) -> None:
         with files, st.container(horizontal=True):
             st.download_button("Text file", result["attachment"], file_name=result["filename"], mime="text/plain",
                                icon=":material/download:", key="download_latest_redteam_sample")
+            if result.get("bibtex"):
+                stem = Path(result["filename"]).stem
+                st.download_button("BibTeX", result["bibtex"], file_name=f"{stem}.bib", mime="application/x-bibtex",
+                                   icon=":material/download:", key="download_latest_redteam_bibtex")
+                st.download_button("References JSON", result["references_json"], file_name=f"{stem}_refs.json",
+                                   mime="application/json", icon=":material/download:",
+                                   key="download_latest_redteam_references")
             if result.get("document_attachment"):
                 suffix = Path(result["document_filename"]).suffix
                 st.download_button(f"Document copy ({suffix})", result["document_attachment"],

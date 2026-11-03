@@ -200,7 +200,7 @@ def test_red_team_sample_is_recorded_as_ai_with_its_score(stub_model, tmp_path):
         "id": None, "text": None, "label": 1, "dataset": "local_redteam", "domain": "custom_prompt",
         "model": "stub-model", "attack": "prompt+plain", "group": "ai", "group_key": None, "prompt": None,
         "source_file": None, "target_section": None, "ai_probability": None, "verdict": "likely_ai",
-        "calibrated": True, "detector_profile": "slim", "style_match": None,
+        "calibrated": True, "detector_profile": "slim", "style_match": None, "references": [],
         "thinking": "low", "temperature": 0.8, "style_profile": "plain", "register": None, "examples": 0,
         "structure": None, "restyle": False, "blocks_per_request": None,
         "attacks": [], "top_p": None, "top_k": None,

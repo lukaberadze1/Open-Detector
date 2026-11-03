@@ -89,6 +89,12 @@ challenge sample, a section-level challenge, answers for a test worksheet, or ch
 text block while headings, titles, questions and tables stay fixed. If a file doesn't support a task,
 the page says why. Document tasks export a
 separate text/Markdown/DOCX/PPTX copy that keeps the source's structure; the original is left unchanged.
+For a new sample, source material can also be a ZIP bundle or source-code file: ZIPs are read in place
+with size limits, and source files contribute comments (plus Python docstrings), not executable code.
+Optional citation metadata can be supplied as a JSON list with `author`, `title`, `year`, and `venue`,
+and optionally `doi` or `url`. The generator is instructed to cite only those supplied works; the
+references list and matching BibTeX and JSON files are available to download with the sample. Check
+that the sources support the claims before using generated citations.
 The two batch tasks run in the background, save each block as it is written, and resume where they
 stopped. Short labels, names, dates and numbers ("14 August", "Done", "1") stay as they are: only
 prose blocks, a sentence of four words or more or eight words without one, are generated. They
