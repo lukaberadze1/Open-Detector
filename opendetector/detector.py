@@ -12,6 +12,7 @@ from .combiner import Combiner
 from .config import DetectorConfig
 from .normalize import NormalizationReport, normalize
 from .segment import Sentence, Window, burstiness, count_words, looks_like_prose, sentence_windows, split_sentences
+from .zippy import compression_readings
 
 # Used only when no combiner has been fitted yet: a plain average of the classifiers'
 # probabilities, with conservative cut-offs. The app labels these results uncalibrated.
@@ -92,7 +93,7 @@ class Detector:
             names += ["bino_doc", "bino_min"]
             if hasattr(self.binoculars, "scan"):
                 names += ["fast_doc", "perp_doc"]
-        return [*names, "burst_cv", "burst_adj"]
+        return [*names, "burst_cv", "burst_adj", "zippy_lzma", "zippy_zlib"]
 
     @property
     def missing_features(self) -> list[str]:
@@ -173,7 +174,8 @@ class Detector:
         cfg = self.config
         windows = sentence_windows(sentences, cfg.doc_window_words, cfg.doc_stride_words)
         scores, whole = self._engine_scores(clean, windows)
-        return {**self._doc_features(scores, windows, whole), **burstiness(clean, sentences)}
+        return {**self._doc_features(scores, windows, whole), **burstiness(clean, sentences),
+                **compression_readings(clean)}
 
     def score(self, text: str) -> float:
         return float(self._probabilities([self.features(text)])[0])
@@ -197,7 +199,8 @@ class Detector:
         doc_scores = {k: v[:nd] for k, v in scores.items()}
         local_scores = {k: v[nd:] for k, v in scores.items()}
 
-        feats = {**self._doc_features(doc_scores, doc_windows, whole), **burstiness(clean, sents)}
+        feats = {**self._doc_features(doc_scores, doc_windows, whole), **burstiness(clean, sents),
+                 **compression_readings(clean)}
         p = float(self._probabilities([feats])[0])
 
         engines = {c.name: _sigmoid(feats[f"{c.name}_mean"]) for c in self.classifiers}

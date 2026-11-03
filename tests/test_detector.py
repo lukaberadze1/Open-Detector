@@ -38,8 +38,8 @@ def make(min_words=40, combiner=None):
 def test_feature_names_and_values():
     det = make()
     feats = det.features(HUMAN * 6 + AI * 6)
-    assert set(feats) == {"fake_mean", "fake_max", "bino_doc", "bino_min", "burst_cv", "burst_adj"} == set(
-        det.feature_names)
+    assert set(feats) == {"fake_mean", "fake_max", "bino_doc", "bino_min", "burst_cv", "burst_adj",
+                          "zippy_lzma", "zippy_zlib"} == set(det.feature_names)
     assert feats["fake_max"] > feats["fake_mean"]
     assert feats["bino_min"] == 0.7
 
