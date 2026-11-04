@@ -35,6 +35,7 @@ from opendetector.segment import count_words, sentence_windows, split_sentences
 from opendetector.zippy import compression_readings
 
 OUT = DATA_ROOT / "data/essays/math_redteam.jsonl"
+LOGITS = Path(__file__).resolve().parent / "cache/window_logits.jsonl"  # the command line's scores, kept between runs
 PASSES = ("rules", "swaps", "clauses", "burst")
 TARGET_CV = 0.69  # spread of sentence lengths over their mean, as in the built-in human profile
 SPLIT_ABOVE = 22  # words: a sentence this long may be cut in two
@@ -70,6 +71,19 @@ SAFE_SYNONYMS = {
     "typically": ["usually"], "almost": ["nearly"], "nearly": ["almost"], "correct": ["right"], "maybe": ["perhaps"],
     "perhaps": ["maybe"], "simply": ["just"], "whole": ["entire"], "entire": ["whole"], "enough": ["sufficient"],
     "buy": ["purchase"], "bought": ["purchased"],
+    # Written from eval/blamed_words.py: what the detector's gradient blames, where a true equivalent exists.
+    "said": ["stated"], "great": ["excellent"], "bigger": ["larger"], "generally": ["usually"],
+    "absolutely": ["completely"], "completely": ["totally"], "opportunity": ["chance"], "opportunities": ["chances"],
+    "currently": ["now"], "amazing": ["incredible"], "though": ["although"], "although": ["though"],
+    "previously": ["earlier"], "probably": ["likely"], "enjoyed": ["liked"], "enjoy": ["like"], "enjoys": ["likes"],
+    "tiny": ["small"], "answer": ["reply"], "answers": ["replies"], "notable": ["noteworthy"], "person": ["individual"],
+    "particular": ["specific"], "movie": ["film"], "movies": ["films"], "film": ["movie"], "films": ["movies"],
+    "buying": ["purchasing"], "children": ["kids"], "kids": ["children"], "amount": ["quantity"], "type": ["kind"],
+    "types": ["kinds"], "kind": ["type"], "kinds": ["types"], "happy": ["glad"], "glad": ["happy"], "sick": ["ill"],
+    "rich": ["wealthy"], "wealthy": ["rich"], "smart": ["clever"], "clever": ["smart"], "suddenly": ["abruptly"],
+    "wonderful": ["lovely"], "terrible": ["awful"], "awful": ["terrible"], "beautiful": ["lovely"],
+    "extremely": ["very"], "incredibly": ["very"], "certainly": ["surely"], "surely": ["certainly"],
+    "various": ["several"], "several": ["various"], "around": ["about"], "approximately": ["about"],
 }
 # Stock phrases whose first listed replacement fails in some sentences: 'despite the fact that' to 'despite that'.
 UNSAFE_PHRASES = {"the fact that", "responsible for", "the development of", "the ability to", "the results of",
@@ -430,6 +444,29 @@ def _read(path: Path) -> list[dict]:
     return [{"text": path.read_text(encoding="utf-8")}]
 
 
+def documents(rows: list[dict]) -> list[dict]:
+    """AI rows sharing a `group_key` joined in file order into one text, as a batch's blocks were one document. A draft
+    a challenge passed over (its id ends in -draftN) is another version of the same text, so it stays out, as does a
+    repeated block. Rows without a key stay as they are."""
+    joined: dict[str, dict] = {}
+    out: list[dict] = []
+    for row in rows:
+        if row.get("label") not in (1, "1", "ai") or re.search(r"-draft\d+$", str(row.get("id", ""))):
+            continue
+        key = row.get("group_key")
+        if not key:
+            out.append(row)
+        elif key not in joined:
+            joined[key] = {**row, "parts": [row["text"]]}
+            out.append(joined[key])
+        elif row["text"] not in joined[key]["parts"]:
+            joined[key]["parts"].append(row["text"])
+    for row in out:
+        if "parts" in row:
+            row["text"] = "\n\n".join(row.pop("parts"))
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("source", type=Path, help=".txt, .md, or .jsonl with a text field")
@@ -438,6 +475,10 @@ def main() -> None:
     parser.add_argument("--target", type=float, default=TARGET_CV)
     parser.add_argument("--score", action="store_true",
                         help="guide the edits with the detector (--passes then doesn't apply) and print the scores")
+    parser.add_argument("--by-group", action="store_true", help="join a .jsonl's rows by group_key first")
+    parser.add_argument("--baseline", action="store_true", help="only print each text's words and score; saves nothing")
+    parser.add_argument("--band", type=float, nargs=2, metavar=("LOW", "HIGH"), help="with --score, only texts in this")
+    parser.add_argument("--budget", type=int, default=GUIDED_BUDGET, help="detector passes per text in the search")
     parser.add_argument("--profile", default="slim", choices=("slim", "full"))
     parser.add_argument("--power", action="store_true", help="with --score, add the gradient word search (slower)")
     args = parser.parse_args()
@@ -454,18 +495,32 @@ def main() -> None:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     saved = 0
     with args.out.open("a", encoding="utf-8") as out:
-        for i, row in enumerate(_read(args.source)):
+        rows = _read(args.source)
+        if args.by_group:
+            total = len(rows)
+            rows = documents(rows)
+            print(f"{total} rows joined into {len(rows)} documents, "
+                  f"{sum(count_words(row['text']) >= 150 for row in rows)} of them 150+ words")
+        for i, row in enumerate(rows):
             if row.get("label") in (0, "0", "human"):
                 continue  # AI rewrites of human text would need their own decision; this attacks AI text only
             text = row["text"]
-            if detector and count_words(text) >= 150:  # the detector abstains on less, so it can't guide
+            if detector and args.band and not args.band[0] <= detector.score(text) <= args.band[1]:
+                continue
+            if detector and args.baseline:
+                print(f"{i}: {count_words(text)} words, score {detector.score(text):.3f}", flush=True)
+                continue
+            if detector and count_words(text) < 150:  # the detector abstains on less, so nothing can guide the edits
+                print(f"{i}: skipped, {count_words(text)} words is under the detector's 150")
+                continue
+            if detector:
                 if args.power:
                     from eval.gradient_attack import power_attack
 
                     result = power_attack(text, detector)
                     new, applied = result.text, result.kept
                 else:
-                    new, applied, _ = guided_attack(text, CachedScorer(detector))
+                    new, applied, _ = guided_attack(text, CachedScorer(detector, path=LOGITS), budget=args.budget)
                 applied = sorted(set(applied))
             else:
                 new, applied = math_attack(text, passes, args.target)

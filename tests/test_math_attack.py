@@ -8,6 +8,7 @@ from eval.math_attack import (
     _cv,
     compression_change,
     contract,
+    documents,
     drop_markers,
     fix_articles,
     fitted_swaps,
@@ -197,6 +198,16 @@ def test_cached_scorer_matches_the_detector_and_only_runs_new_windows():
     assert scorer(paragraph) == pytest.approx(detector.score(paragraph)) and scorer.runs == first
     changed = paragraph.replace("number a", "number z", 1)
     assert scorer(changed) == pytest.approx(detector.score(changed)) and scorer.runs - first < first
+
+
+def test_documents_join_a_groups_ai_blocks_only():
+    rows = [{"id": "a", "text": "One.", "label": 1, "group_key": "k"},
+            {"id": "b", "text": "Human.", "label": 0, "group_key": "k"},
+            {"id": "c", "text": "Two.", "label": 1, "group_key": "k"},
+            {"id": "c2", "text": "Two.", "label": 1, "group_key": "k"},
+            {"id": "x-draft2", "text": "Other version.", "label": 1, "group_key": "k"},
+            {"id": "d", "text": "Alone.", "label": 1}]
+    assert [row["text"] for row in documents(rows)] == ["One.\n\nTwo.", "Alone."]
 
 
 def test_a_list_block_is_left_alone():
