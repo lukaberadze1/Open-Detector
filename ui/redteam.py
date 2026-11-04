@@ -74,6 +74,7 @@ from eval.redteam_batch import (
     rewrite_group,
     restyle,
     REVISE_CANDIDATES,
+    REVISE_PATIENCE,
     REVISE_KEEPING,
     WIN_BELOW,
     revise_blocks,
@@ -1479,6 +1480,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
             **{key: value for key, value in document_score.items() if key != "words"},
             **_followed(plan, items),
             **({"revise_rounds": checkpoint.meta["revise_rounds"]} if "revise_rounds" in checkpoint.meta else {}),
+            **({"style_stages": checkpoint.meta["style_stages"]} if checkpoint.meta.get("style_stages") else {}),
         })
         checkpoint.meta["document_recorded"] = True
     if plan.human_source and rows:
@@ -1526,6 +1528,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
         ),
         "score_label": "Whole regenerated document",
         "followed": _followed(plan, items),
+        "style_stages": checkpoint.meta.get("style_stages"),
         "baseline_score": checkpoint.meta.get("document_baseline_score"),
         "checkpoint_path": str(checkpoint.path),
         "attachment": text_attachment,
@@ -1583,17 +1586,31 @@ def _batch_progress(worker: BatchWorker) -> None:
     # The last few rounds of blocks predict the rest best: a switch to another model changes the pace.
     recent = worker.seconds["scored" if scoring else "generated"][-worker.window:]
     seconds_left = sum(recent) / len(recent) * (total - done) if recent else None
+    revising = worker.status.get("revising")
     with st.container(border=True):
         model_note = f" · {worker.status['model']}" if not scoring and worker.status.get("model") else ""
         st.markdown(f":material/autorenew: **{'Scoring' if scoring else 'Writing'} {worker.plan.upload.name}** · "
                     f"{TASKS[worker.plan.task][0]}{model_note}")
         with st.container(horizontal=True):
-            st.metric("Time left" + (" to score" if scoring else ""),
-                      duration(seconds_left) if seconds_left is not None else "Timing the first block…", border=True)
-            st.metric("Done around", (datetime.now() + timedelta(seconds=seconds_left)).strftime("%H:%M")
-                      if seconds_left is not None else "Soon", border=True)
-            st.metric(f"Blocks {verb}", f"{done} of {total}", border=True)
-        st.progress(done / total)
+            if revising:
+                st.metric("Revising round", f"{revising['round']} of up to {revising['rounds']}", border=True)
+                st.metric("Passages tested", f"{revising['tested']} of {revising['passages']}", border=True)
+                st.metric("AI likelihood now", f"{revising['likelihood']:.0%}", border=True)
+            else:
+                st.metric("Time left" + (" to score" if scoring else ""),
+                          duration(seconds_left) if seconds_left is not None else "Timing the first block…",
+                          border=True)
+                st.metric("Done around", (datetime.now() + timedelta(seconds=seconds_left)).strftime("%H:%M")
+                          if seconds_left is not None else "Soon", border=True)
+                st.metric(f"Blocks {verb}", f"{done} of {total}", border=True)
+        if revising:
+            st.progress((revising["round"] - 1 + revising["tested"] / revising["passages"]) / revising["rounds"])
+            st.caption(f"Stops early once it scores under {WIN_BELOW:.0%}, or after {REVISE_PATIENCE} rounds "
+                       "with no improvement. "
+                       + ("Writing new versions of the passages…" if not revising["tested"]
+                          else "Testing each new version against the detector…"))
+        else:
+            st.progress(done / total)
         if note := worker.status.get("note"):
             st.caption(note)
         for line in worker.status.get("log", [])[-4:]:
@@ -1859,6 +1876,19 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
             checkpoint.save()
         status["note"] = None
 
+    stage_yardstick: list = []  # one yardstick for the whole batch, or the stages wouldn't compare
+
+    def record_stage(stage: str, text: str) -> None:
+        """Save how far the document is from the style profile after a stage, once per stage across resumes."""
+        stages = checkpoint.meta.setdefault("style_stages", [])
+        if not plan.style_path or not text.strip() or any(saved["stage"] == stage for saved in stages):
+            return
+        if not stage_yardstick:
+            stage_yardstick.append(_yardstick(text, plan.style_path, None, plan.register))
+        if stage_yardstick[0] and (reading := stage_yardstick[0].reading(text)):
+            stages.append({"stage": stage, **reading})
+            checkpoint.save()
+
     def attack_document() -> None:
         """The attacks on the finished blocks, each staying in its place, before revising."""
         def ask(prompt: str) -> str:
@@ -1870,14 +1900,20 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         status["note"] = "Running the attacks on the finished text…"
         written = checkpoint.generated(keys)
         texts = [checkpoint.blocks[key]["text"] for key in written]
-        attacked, changes = run_attacks(texts, plan.attacks, ask, clean) if plan.attacks else (texts, {})
+        attacked, changes = texts, {}
+        for attack in plan.attacks:  # one at a time, to read the style after each
+            attacked, changed = run_attacks(attacked, (attack,), ask, clean)
+            changes.update(changed)
+            record_stage(attack, "\n\n".join(attacked))
         if plan.rules:
             attacked, changes["rules"] = _rule_swaps(attacked)
+            record_stage("rules", "\n\n".join(attacked))
         if plan.math and plan.engine != "Math":  # in Math the blocks are already its edits
             status["note"] = "Running the math script on the finished text…"
             edited = [_math_edit(text, plan)[0] for text in attacked]
             changes["math"] = sum(new != old for new, old in zip(edited, attacked, strict=True))
             attacked = edited
+            record_stage("math", "\n\n".join(attacked))
         for key, before, text in zip(written, texts, attacked, strict=True):
             if text != before:
                 checkpoint.update(key, text=text, score=candidate_metrics(text, plan.profile, plan.style_path,
@@ -1897,15 +1933,22 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         texts = {key: checkpoint.blocks[key]["text"] for key in checkpoint.generated(keys)}
         changed, history = revise_blocks(texts, models.get_detector(plan.profile).analyze, ask, clean,
                                          plan.shapes or [], plan.revise, prompt=REVISE_KEEPING, facts=True,
-                        candidates=REVISE_CANDIDATES,
-                                         fits=_style_fits(plan, "\n\n".join(texts.values())))
+                                         candidates=REVISE_CANDIDATES,
+                                         fits=_style_fits(plan, "\n\n".join(texts.values())),
+                                         progress=lambda now: status.update(revising=now))
+        status.pop("revising", None)
         for key, text in changed.items():
             checkpoint.update(key, text=text, score=candidate_metrics(text, plan.profile, plan.style_path,
                                                                       register=plan.register))
         checkpoint.meta["revise_rounds"] = history
         checkpoint.save()
+        record_stage("revise", "\n\n".join(checkpoint.blocks[key]["text"] for key in checkpoint.generated(keys)))
 
     def score_document() -> None:
+        written = "\n\n".join(checkpoint.blocks[key]["text"] for key in checkpoint.generated(keys))
+        if not {"attack_changes", "revise_rounds"} & checkpoint.meta.keys():  # on a resume the text may be further on
+            record_stage("written", written)
+        record_stage("source", "\n\n".join(job["previous"] for job in jobs if job["previous"].strip()))
         if (plan.attacks or plan.rules or plan.math) and "attack_changes" not in checkpoint.meta:
             attack_document()
         if plan.revise and "revise_rounds" not in checkpoint.meta:
@@ -2365,6 +2408,17 @@ def _show_result(result: dict, profile: str) -> None:
                                    f"punctuation and their paragraphs. They keep {followed['words_kept']:.0f}% of "
                                    "its words.")
                 verdict_badge(score["verdict"])
+            if result.get("style_stages"):
+                with st.expander("Style at each stage"):
+                    st.dataframe(
+                        [{"Stage": stage["stage"], "Words": stage["words"], "Distance": stage["distance"],
+                          "Style match": stage["match"], "Sentences under 6 words %": stage["short_pct"],
+                          "Length variation": stage["spread"], "Word variety": stage["mattr"]}
+                         for stage in result["style_stages"]],
+                        hide_index=True,
+                    )
+                    st.caption("All against one set of the writer's passages. Distance 0 is the profile itself; "
+                               "lower is closer.")
             _breakdown(result, profile)
         elif score:
             words = f" ({score['words']} words)" if score.get("words") else ""

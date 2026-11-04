@@ -785,7 +785,8 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
                   clean: Callable[[str], str], shapes: list, rounds: int = 2, target: float = WIN_BELOW,
                   windows: Callable[[str], list[tuple[int, int, float]]] | None = None,
                   fits: Callable[[str], bool] | None = None, prompt: str = REVISE, facts: bool = False,
-                  candidates: int = 1) -> tuple[dict[str, str], list[float | None]]:
+                  candidates: int = 1, progress: Callable[[dict], None] | None = None,
+                  ) -> tuple[dict[str, str], list[float | None]]:
     """A document's rewritten blocks revised where the detector reads the whole as AI, as revise_flagged does
     a sample, keeping each block in its place in the document. `texts` holds each block's text by key, in
     document order. A long block is cut into passages (passage_spans), since whole it gets one all-or-nothing
@@ -797,7 +798,10 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
     With `fits` (style_guard) a block that takes the whole away from the style profile is dropped too, and with
     `facts` (meaning_kept) one that loses the passage's names and numbers or changes its meaning. With `candidates`,
     a passage gets that many rewrites a round, in different plans, and the lowest-scoring that passes is the one tried.
+    `progress`, if given, is told the round, rounds, passages tested, passages chosen and current AI likelihood
+    as they change, since one round can take minutes.
     Gives the changed blocks' texts by key, and the AI likelihood after each round, the first before any."""
+    tell = progress or (lambda _: None)
     shown, gaps, blocks = {}, {}, {}  # each passage's text and what follows it, by "block#number"
     for key, text in texts.items():
         plain = normalize(text)[0]
@@ -831,6 +835,8 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
             chosen = [name for name in order if scores[name] >= target][:REVISED_BLOCKS] or order[:1]
         if not chosen:
             break
+        tell({"round": round_, "rounds": rounds, "tested": 0, "passages": len(chosen), "likelihood": best})
+
         def jobs(attempt: int, chosen=chosen, shown=shown, round_=round_) -> list[dict]:
             return [{"kind": "text_block", "label": f"Passage {number}", "question": "", "previous": shown[name],
                      "key": f"{name} revise {round_} try {attempt}"} for number, name in enumerate(chosen, 1)]
@@ -839,7 +845,7 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
                                match_existing_lengths=True, answer_words=100, structure="writer" if shapes else "free",
                                shapes=shapes)
         written = _written_tries(plan, jobs, ask, clean, candidates)
-        for name in chosen:
+        for tested, name in enumerate(chosen, 1):
             kept = None
             for text in written.get(f"{name} revise {round_}", []):
                 new = normalize(text)[0]
@@ -859,6 +865,7 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
             if kept and kept[1] < best:
                 best, shown[name] = kept[1], kept[2]
                 touched.add(blocks[name])
+            tell({"round": round_, "rounds": rounds, "tested": tested, "passages": len(chosen), "likelihood": best})
         history.append(best)
         if _stalled(history):
             break

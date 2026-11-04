@@ -456,3 +456,12 @@ def test_groqs_daily_limit_is_read_too():
               "`openai/gpt-oss-120b` in organization `org` on requests per day (RPD): Limit 1,000, Used 1,000. "
               "Please try again in 3h2m")
     assert generation_settings.limits_in(errors) == {"openai/gpt-oss-120b": 1000}
+
+
+def test_reading_gives_a_texts_numbers_against_the_yardstick(tmp_path):
+    yardstick = tune_generation.StyleYardstick.build(corpus_profile(tmp_path), words=120)
+    text = yardstick.texts[0]
+    reading = yardstick.reading(text)
+    assert reading["match"] == yardstick.match(text) and reading["distance"] == round(yardstick.text_distance(text), 2)
+    assert reading["words"] > 0 and {"short_pct", "spread", "mattr"} <= set(reading)
+    assert yardstick.reading("   ") is None

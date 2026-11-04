@@ -1119,3 +1119,27 @@ def test_an_uploaded_document_gets_a_file_check_tab():
     assert not at.exception, at.exception
     assert any(tab.label == "File check" for tab in at.tabs)
     assert any("Hidden text" in error.value for error in at.error)
+
+
+def test_a_document_batch_records_its_style_at_each_stage(stub_model, tmp_path, monkeypatch):
+    from eval.tune_generation import StyleYardstick
+    from ui import redteam
+
+    stick = StyleYardstick({}, {}, [], {})
+    monkeypatch.setattr(redteam, "_yardstick", lambda *_: stick)
+    monkeypatch.setattr(StyleYardstick, "reading", lambda _self, text: {
+        "words": len(text.split()), "distance": 1.0, "match": 50.0, "short_pct": 1.0, "spread": 0.5, "mattr": 0.7})
+    (tmp_path / "styles").mkdir(exist_ok=True)
+    (tmp_path / "styles" / "mine.json").write_text(json.dumps({"tone": "mine"}))
+    at = word_document_page()
+    assert not at.exception, at.exception
+    at.toggle(key="keep:redteam:style").set_value(True)
+    at.run()
+    button(at, "Regenerate 2 blocks").click()
+    at.run()
+    run_until_batch_ends(at)
+    assert not at.exception, at.exception
+    row = json.loads((tmp_path / "local_redteam.jsonl").read_text().splitlines()[-1])
+    assert row["domain"] == "document_combined"
+    assert [stage["stage"] for stage in row["style_stages"]][:2] == ["written", "source"]
+    assert any(expander.label == "Style at each stage" for expander in at.expander)

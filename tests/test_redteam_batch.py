@@ -798,3 +798,15 @@ def test_saving_gives_up_on_a_lock_that_stays(tmp_path, monkeypatch):
     monkeypatch.setattr(redteam_batch.time, "sleep", lambda seconds: None)
     with pytest.raises(PermissionError):
         redteam_batch.replace_file(tmp_path / "a", tmp_path / "b", tries=3)
+
+
+def test_revise_blocks_reports_its_progress():
+    from eval.redteam_batch import revise_blocks
+
+    seen = []
+    words = " ".join(["word"] * 40)
+    revise_blocks({"a": f"Tidy {words}."}, _document_detector(lambda text: 0.2 if "bus" in text else 0.5),
+                  lambda _prompt, group: json.dumps({"blocks": [{"id": "B1", "text": f"bus {words}."}]}),
+                  str.strip, [], rounds=2, progress=seen.append)
+    assert seen[0] == {"round": 1, "rounds": 2, "tested": 0, "passages": 1, "likelihood": 0.5}
+    assert seen[1]["tested"] == 1 and seen[1]["likelihood"] == 0.2

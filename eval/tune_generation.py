@@ -232,6 +232,22 @@ class StyleYardstick:
         further = sum(1.0 if other > distance else 0.5 if other == distance else 0.0 for other in self.passages)
         return round(100 * further / len(self.passages), 1)
 
+    def reading(self, text: str) -> dict | None:
+        """What a text measures against this yardstick, numbers only: for following one text through stages,
+        which only compare when they use the same yardstick."""
+        import update_style_profile as usp
+
+        paragraphs = [part for part in re.split(r"\n\s*\n", text) if part.strip()]
+        summary = usp.summarize(usp.measure(paragraphs, self.banned))
+        if not summary or (distance := self.distance(summary)) is None:
+            return None
+        further = sum(1.0 if other > distance else 0.5 if other == distance else 0.0 for other in self.passages)
+        return {"words": count_words(text), "distance": round(distance, 2),
+                "match": round(100 * further / len(self.passages), 1),
+                **{name: value if (value := _value(summary, label)) is None else round(value, 3)
+                   for name, label in (("short_pct", "sentences under 6 words %"),
+                                       ("spread", "coefficient of variation"), ("mattr", "MATTR-100"))}}
+
     def feedback(self, text: str, limit: int = 3) -> list[str]:
         """Return the largest measurable style deviations as concrete revision directions."""
         import update_style_profile as usp
