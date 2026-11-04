@@ -1,9 +1,13 @@
 import itertools
 import math
+import textwrap
+
+import pytest
 
 from opendetector.segment import (
     Sentence,
     burstiness,
+    join_wrapped_lines,
     looks_like_prose,
     paragraph_blocks,
     sentence_windows,
@@ -111,3 +115,38 @@ def test_burstiness_is_zero_for_even_sentences_and_higher_for_uneven_ones():
 def test_burstiness_needs_enough_sentences():
     text = "Only two sentences here. And another one."
     assert all(math.isnan(v) for v in burstiness(text, split_sentences(text)).values())
+
+
+ESSAY = ("The city council met on Tuesday to discuss the new parking rules. Many residents said the changes would "
+         "hurt small shops on Main Street. Others argued that fewer cars would make the area safer for children. "
+         "The mayor promised a second vote next month after more people have been heard. ") * 4
+
+
+@pytest.mark.parametrize("width", (40, 50, 80))
+def test_prose_wrapped_to_a_narrow_column_is_still_prose(width):
+    assert looks_like_prose(textwrap.fill(ESSAY, width))
+
+
+def test_short_sentences_on_their_own_lines_are_still_prose():
+    assert looks_like_prose("\n".join(["I went home early.", "It was raining a lot.", "Nobody called me back.",
+                                       "So I made some tea."] * 12))
+
+
+def test_verse_and_lists_with_punctuation_are_still_not_prose():
+    assert not looks_like_prose("\n".join(["The moon above the silent sea,", "Whispers softly unto me",
+                                           "Of all the days that came before,", "And waves broke the shore."] * 10))
+    assert not looks_like_prose("\n".join(["- Add two cups of flour.", "- Stir in the salt.", "- Beat three eggs.",
+                                           "- Pour in the milk."] * 12))
+
+
+def test_wrapped_text_is_rejoined_into_sentences():
+    joined = join_wrapped_lines(textwrap.fill(ESSAY, 40) + "\n\n" + textwrap.fill(ESSAY, 40))
+    assert joined == ESSAY.strip() + "\n\n" + ESSAY.strip()
+    assert len(split_sentences(joined)) == 2 * len(split_sentences(ESSAY))
+
+
+def test_other_text_is_not_rejoined():
+    paragraphs = "\n".join(["First thing happened here. Then a second thing happened after it."] * 8)
+    poem = "\n".join(["The moon above the silent sea", "Whispers softly unto me"] * 10)
+    assert join_wrapped_lines(paragraphs) == paragraphs
+    assert join_wrapped_lines(poem) == poem

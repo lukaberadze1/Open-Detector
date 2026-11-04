@@ -111,6 +111,17 @@ def burstiness(text: str, sentences: list[Sentence]) -> dict[str, float]:
     return {"burst_cv": statistics.pstdev(lengths) / mean, "burst_adj": statistics.fmean(jumps) / mean}
 
 
+_LIST_ITEM_RE = re.compile(r"([-*\u2022]|\d+[.)/ ])")
+_SENTENCE_END_RE = re.compile(r"[.!?][\"')\]]*(?=\s|$)")
+MIN_LIST_SHARE = 0.25
+MIN_MID_LINE_ENDS = 0.1  # sentences ending mid-line, per line
+MIN_MID_LINE_SHARE = 0.6
+MAX_WRAPPED_ENDED_LINES = 0.5
+MIN_WRAPPED_LOWERCASE = 0.5  # a wrapped line starts wherever the column fell; list items and verse start capitalized
+MIN_ENDED_LINES = 0.7
+MIN_SENTENCE_LINE_WORDS = 3
+
+
 def _unwrap(lines: list[str]) -> list[str]:
     """Rejoin hard-wrapped prose: a line that fills the width (45+ characters), doesn't end a
     sentence, and is continued in lowercase. Verse lines are usually shorter than that, so
@@ -128,12 +139,49 @@ def _unwrap(lines: list[str]) -> list[str]:
 
 def looks_like_prose(text: str, min_lines: int = 6, max_median_words: int = 10) -> bool:
     """False for verse, lists and similar line-by-line formats, which the detector isn't built
-    for (Turnitin doesn't score poetry, scripts or lists either). On RAID's 150+ word texts this
-    flags 84% of human poems and 92% of human recipes, but 0-2% of human prose in other domains."""
+    for (Turnitin doesn't score poetry, scripts or lists either). Short lines alone don't make a
+    poem: text wrapped to a narrow column ends its sentences mid-line, and short sentences on their
+    own lines end nearly every line.
+
+    Measured on 2026-11-04 on RAID and MAGE texts of 150+ words, after join_wrapped_lines: 17.5% of poems
+    and 13.8% of recipes pass (17.1% and 13.8% on line length alone), 99.7% of prose (99.4%), and prose
+    wrapped at 30 and 40 characters 80% and 86% (none on line length alone)."""
     lines = _unwrap([line.strip() for line in text.splitlines() if line.strip()])
     if len(lines) < min_lines:
         return True
-    return statistics.median(len(line.split()) for line in lines) > max_median_words
+    median = statistics.median(len(line.split()) for line in lines)
+    if median > max_median_words:
+        return True
+    if sum(bool(_LIST_ITEM_RE.match(line)) for line in lines) / len(lines) >= MIN_LIST_SHARE:
+        return False
+    if _sentences_run_across_lines(lines):
+        return True
+    return _line_ends(lines)[0] / len(lines) >= MIN_ENDED_LINES and median >= MIN_SENTENCE_LINE_WORDS
+
+
+def _line_ends(lines: list[str]) -> tuple[int, int]:
+    """How many lines end a sentence, and how many sentences end partway through a line."""
+    ended = sum(bool(_SENTENCE_END_RE.search(line[-3:])) for line in lines)
+    return ended, sum(len(_SENTENCE_END_RE.findall(line)) for line in lines) - ended
+
+
+def _sentences_run_across_lines(lines: list[str]) -> bool:
+    """Text hard-wrapped to a column, as from a PDF or an email: most lines stop mid-sentence and
+    sentences end mid-line. A paragraph on each line also ends sentences mid-line, but ends its lines too."""
+    ended, mid_line = _line_ends(lines)
+    lowercase = sum(line[:1].islower() for line in lines)
+    return (lowercase / len(lines) >= MIN_WRAPPED_LOWERCASE and ended / len(lines) < MAX_WRAPPED_ENDED_LINES
+            and mid_line >= max(3, MIN_MID_LINE_ENDS * len(lines))
+            and mid_line / (mid_line + ended) >= MIN_MID_LINE_SHARE)
+
+
+def join_wrapped_lines(text: str, min_lines: int = 6) -> str:
+    """Put hard-wrapped text back into paragraphs, since each line break otherwise ends a sentence.
+    Any other text comes back unchanged, so the combiner's calibration still holds for it."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < min_lines or not _sentences_run_across_lines(lines):
+        return text
+    return "\n\n".join(" ".join(block.split()) for block in re.split(r"\n\s*\n", text))
 
 
 def paragraph_blocks(sentences: list[Sentence], min_words: int) -> list[tuple[int, int]]:

@@ -11,7 +11,16 @@ import numpy as np
 from .combiner import Combiner
 from .config import DetectorConfig
 from .normalize import NormalizationReport, normalize
-from .segment import Sentence, Window, burstiness, count_words, looks_like_prose, sentence_windows, split_sentences
+from .segment import (
+    Sentence,
+    Window,
+    burstiness,
+    count_words,
+    join_wrapped_lines,
+    looks_like_prose,
+    sentence_windows,
+    split_sentences,
+)
 from .zippy import compression_readings
 
 # Used only when no combiner has been fitted yet: a plain average of the classifiers'
@@ -164,6 +173,7 @@ class Detector:
 
     def _prepare(self, text: str) -> tuple[str, NormalizationReport, list[Sentence]]:
         clean, report = normalize(text)
+        clean = join_wrapped_lines(clean)
         return clean, report, split_sentences(clean)
 
     def features(self, text: str) -> dict[str, float]:
