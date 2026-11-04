@@ -57,10 +57,21 @@ MIN_PAIR_SHARE = 0.2  # a new word's rarer word pair, against the original's: 'r
 WORD_VECTORS = Path(__file__).resolve().parents[1] / "data/vendor/counter-fitting/word_vectors"
 # Words that carry a sentence's structure, not its content: swapping them passed the sentence-level checks but broke it
 # ('after' to 'now', 'around' to 'seen', 'due' to 'because').
-_STRUCTURAL = frozenset(["after", "before", "during", "while", "since", "until", "because", "due", "around", "across", "along", "among", "between", "through", "within", "without", "against", "toward", "towards", "behind", "beyond", "near", "now", "then", "still", "yet", "even", "ever", "never", "something", "anything", "nothing", "everything", "someone", "anyone", "everyone", "got", "get", "gets", "went", "go", "goes", "comes", "come", "came"])
+_STRUCTURAL = frozenset((
+    "after before during while since until because due around across along among between through "
+    "within without against toward towards behind beyond near now then still yet even ever never "
+    "something anything nothing everything someone anyone everyone got get gets went go goes comes "
+    "come came"
+).split())  # noqa: SIM905
 # Light verbs and units of time: 'keep on' and 'seven days' don't survive a synonym.
-_LOCKED = frozenset(["keep", "keeps", "kept", "give", "gives", "gave", "take", "takes", "took", "make", "makes", "made", "have", "has", "had", "do", "does", "did", "days", "weeks", "months", "years", "hours", "minutes", "times"])
-_IRREGULAR_PAST = frozenset(["told", "said", "went", "came", "got", "made", "took", "gave", "knew", "thought", "found", "left", "felt", "kept", "held", "brought", "began", "wrote", "saw", "ran", "won", "lost", "paid", "sold", "sent", "stood", "understood", "became"])
+_LOCKED = frozenset((
+    "keep keeps kept give gives gave take takes took make makes made have has had do does did days "
+    "weeks months years hours minutes times"
+).split())  # noqa: SIM905
+_IRREGULAR_PAST = frozenset((
+    "told said went came got made took gave knew thought found left felt kept held brought began "
+    "wrote saw ran won lost paid sold sent stood understood became"
+).split())  # noqa: SIM905
 _TOKENS = re.compile(r"([A-Za-z]+)")
 _FORMS = ("ing", "ed", "ly", "s")
 

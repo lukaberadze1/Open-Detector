@@ -213,3 +213,4 @@ data/
 
 # A separate clone of the original project, not part of this one
 Open-Detector/
+.DS_Store

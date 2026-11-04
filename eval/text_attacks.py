@@ -154,8 +154,8 @@ def free_translate(text: str, source: str, target: str, max_retries: int = 3) ->
                 try:
                     retry_at = email.utils.parsedate_to_datetime(retry_after)
                     if retry_at.tzinfo is None:
-                        retry_at = retry_at.replace(tzinfo=datetime.timezone.utc)
-                    delay = (retry_at - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+                        retry_at = retry_at.replace(tzinfo=datetime.UTC)
+                    delay = (retry_at - datetime.datetime.now(datetime.UTC)).total_seconds()
                 except (TypeError, ValueError, OverflowError):
                     return text
             # Don't retry sooner than requested; avoid blocking an evaluation for a long wait.
