@@ -6,6 +6,7 @@ import pytest
 from eval.math_attack import (
     CachedScorer,
     _cv,
+    changed_passages,
     compression_change,
     contract,
     documents,
@@ -208,6 +209,11 @@ def test_documents_join_a_groups_ai_blocks_only():
             {"id": "x-draft2", "text": "Other version.", "label": 1, "group_key": "k"},
             {"id": "d", "text": "Alone.", "label": 1}]
     assert [row["text"] for row in documents(rows)] == ["One.\n\nTwo.", "Alone."]
+
+
+def test_changed_passages_show_the_change_in_context():
+    assert changed_passages("a b c d e", "a b X d e", context=1) == [("b c d", "b X d")]
+    assert changed_passages("same", "same") == []
 
 
 def test_a_list_block_is_left_alone():

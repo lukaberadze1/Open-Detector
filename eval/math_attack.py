@@ -14,6 +14,7 @@ It can only attack text that already exists: it writes nothing from a prompt. Ev
 from __future__ import annotations
 
 import argparse
+import difflib
 import gzip
 import hashlib
 import json
@@ -444,6 +445,14 @@ def _read(path: Path) -> list[dict]:
     return [{"text": path.read_text(encoding="utf-8")}]
 
 
+def changed_passages(before: str, after: str, context: int = 3) -> list[tuple[str, str]]:
+    """Each change between two texts with a few words either side, to read whether it still makes sense."""
+    old, new = before.split(), after.split()
+    return [(" ".join(old[max(0, i1 - context):i2 + context]), " ".join(new[max(0, j1 - context):j2 + context]))
+            for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes()
+            if tag != "equal"]
+
+
 def documents(rows: list[dict]) -> list[dict]:
     """AI rows sharing a `group_key` joined in file order into one text, as a batch's blocks were one document. A draft
     a challenge passed over (its id ends in -draftN) is another version of the same text, so it stays out, as does a
@@ -463,6 +472,7 @@ def documents(rows: list[dict]) -> list[dict]:
             joined[key]["parts"].append(row["text"])
     for row in out:
         if "parts" in row:
+            row["n_rows"] = len(row["parts"])
             row["text"] = "\n\n".join(row.pop("parts"))
     return out
 
@@ -478,6 +488,7 @@ def main() -> None:
     parser.add_argument("--by-group", action="store_true", help="join a .jsonl's rows by group_key first")
     parser.add_argument("--baseline", action="store_true", help="only print each text's words and score; saves nothing")
     parser.add_argument("--band", type=float, nargs=2, metavar=("LOW", "HIGH"), help="with --score, only texts in this")
+    parser.add_argument("--show-edits", action="store_true", help="print each change with the words around it")
     parser.add_argument("--budget", type=int, default=GUIDED_BUDGET, help="detector passes per text in the search")
     parser.add_argument("--profile", default="slim", choices=("slim", "full"))
     parser.add_argument("--power", action="store_true", help="with --score, add the gradient word search (slower)")
@@ -508,7 +519,8 @@ def main() -> None:
             if detector and args.band and not args.band[0] <= detector.score(text) <= args.band[1]:
                 continue
             if detector and args.baseline:
-                print(f"{i}: {count_words(text)} words, score {detector.score(text):.3f}", flush=True)
+                print(f"{i}: {count_words(text)} words, score {detector.score(text):.3f}, model {row.get('model')}, "
+                      f"attack {row.get('attack')}, from {row.get('n_rows', 1)} rows", flush=True)
                 continue
             if detector and count_words(text) < 150:  # the detector abstains on less, so nothing can guide the edits
                 print(f"{i}: skipped, {count_words(text)} words is under the detector's 150")
@@ -526,6 +538,9 @@ def main() -> None:
                 new, applied = math_attack(text, passes, args.target)
             if new == text:
                 continue
+            if args.show_edits:
+                for old_part, new_part in changed_passages(text, new):
+                    print(f"   - {old_part}\n   + {new_part}")
             key = row.get("group_key") or hashlib.sha256(text.encode()).hexdigest()[:16]
             record = {"text": new, "label": 1, "model": row.get("model") or "none",
                       "attack": "+".join(filter(None, (row.get("attack"), "math", *applied))),
