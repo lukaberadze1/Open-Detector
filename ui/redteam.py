@@ -86,6 +86,7 @@ from eval.redteam_batch import (
     worth_rewriting,
 )
 from eval.evasion_mode import PROFILE_ID, PROFILE_INSTRUCTIONS, generate_until_target
+from eval.math_attack import guided_attack, math_attack
 from eval.text_attacks import CLAUSES, FREE_TRIP, GROUP_WORDS, PIVOTS, attack_label, attack_name, run_attacks
 from opendetector import DetectorConfig
 from opendetector.config import DATA_ROOT
@@ -118,6 +119,8 @@ EXPORT_DIR = DATA_ROOT / "data/essays/exports"
 BATCH_DIR = DATA_ROOT / "data/essays/batches"
 VISITOR_DIR = DATA_ROOT / "data/visitors"  # a public deploy's per-visitor folders
 MAX_STYLE_BYTES = 500_000
+MIN_SCORED_WORDS = 150  # the detector abstains under this, so the math script can't be guided by it
+MATH_MODEL = "math-script"  # recorded as the model of a block written with no model
 EVASION_TARGET = WIN_BELOW  # configured detector-challenge benchmark target
 STYLE_FLOOR = 35  # minimum style-profile percentile used to rank challenge candidates
 REVISE_BY_DEFAULT = True  # measured on eval/tune_revise.py: 81% to 7% on an AI-written source
@@ -273,6 +276,7 @@ class Plan:
     revise: int = 0  # a sample: rounds rewriting the passages the detector flags (redteam_batch.revise_flagged)
     attacks: tuple[str, ...] = ()  # applied to the finished text before revising (eval/text_attacks.py)
     rules: bool = False  # phrase and discourse-marker swaps on the finished text (opendetector/core)
+    math: bool = False  # the no-model, detector-guided edits on the finished text (eval/math_attack.py)
     top_p: float | None = None  # the models' nucleus sampling, when set
     top_k: int | None = None  # how many next words they choose from, when set
     style_path: Path | None = None
@@ -847,6 +851,16 @@ def _rule_swaps(texts: list[str]) -> tuple[list[str], int]:
     return swapped, sum(new != old for new, old in zip(swapped, texts, strict=True))
 
 
+def _math_edit(text: str, plan: Plan) -> tuple[str, list[str]]:
+    """The math script on one text, no requests: guided by the detector when there's enough text for it to score,
+    otherwise the rule passes alone. Word swaps only with the built-in profile, which has no writer's voice to lose."""
+    builtin = bool(plan.style_path) and plan.style_path.parent == BUILTIN_STYLE_DIR
+    if count_words(text) >= MIN_SCORED_WORDS:
+        new, kept, _ = guided_attack(text, models.get_detector(plan.profile).score, swaps=builtin)
+        return new, kept
+    return math_attack(text, ("rules", "clauses", "burst"))
+
+
 def _attacks(plan: Plan) -> None:
     """The attacks on finished text and the sampling settings, all off to start with: none is measured yet."""
     with st.expander("More attacks"):
@@ -861,6 +875,10 @@ def _attacks(plan: Plan) -> None:
                                help="Runs the deterministic rules in opendetector/core/rules over the finished text: "
                                     "set phrases, then discourse markers. Numbers, negations, math, citations and "
                                     "code stay as they were, and it takes no requests.")
+        plan.math = st.toggle("Math script (no API)", key=keep("keep:redteam:math", False),
+                              help="Edits the finished text passage by passage with rules, keeping an edit only if "
+                                   "the detector then scores the text lower. It takes no requests and no local "
+                                   "model, but many detector passes, so a long text takes minutes.")
         free = False
         if plan.style_path and plan.style_path.parent == BUILTIN_STYLE_DIR:  # no writer's voice for it to lose
             free = st.toggle("Free translation round trip", key=keep("keep:redteam:free_trip", False),
@@ -869,7 +887,7 @@ def _attacks(plan: Plan) -> None:
                                   "check often refuses, and then the text stays as it was. Your text goes to Google.")
         plan.attacks = (((attack_name(pivot),) if pivot != "Off" else ()) + ((FREE_TRIP,) if free else ())
                         + ((CLAUSES,) if clauses else ()))
-        if plan.attacks or plan.rules:
+        if plan.attacks or plan.rules or plan.math:
             plan.score = True
         with st.container(horizontal=True):
             top_p = st.slider("Top-p", 0.5, 1.0, step=0.05, key=keep("keep:redteam:top_p", 1.0),
@@ -1235,6 +1253,7 @@ def _settings(plan: Plan) -> dict:
             "structure": structure(plan) if plan.rewrite_all_blocks else None,
             "restyle": plan.restyle if plan.task == "sample" else None,
             "attacks": list(plan.attacks), **({"rules": True} if plan.rules else {}),
+            **({"math": True} if plan.math else {}),
             "top_p": plan.top_p, "top_k": plan.top_k,
             "blocks_per_request": (1 if plan.evasion else plan.group_size) if plan.batch else None}
 
@@ -1264,7 +1283,7 @@ def _checkpoint_path(plan: Plan) -> Path:
     style = [plan.style_name] if plan.use_profile and plan.style_name != UNNAMED_STYLE else []
     follow = [structure(plan)] if plan.rewrite_all_blocks and structure(plan) != "free" else []
     follow += [f"revise{plan.revise}"] if plan.revise else []
-    follow += [*plan.attacks, *(["rules"] if plan.rules else []),
+    follow += [*plan.attacks, *(["rules"] if plan.rules else []), *(["math"] if plan.math else []),
                *(f"{option}{value:g}" for option, value in (plan.sampling or {}).items())]
     return _store().batches / (
         batch_key(plan.source_hash, plan.fill_answer_boxes, plan.rewrite_all_blocks, plan.prompt.strip(),
@@ -1299,7 +1318,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
         st.warning(f"The answers are saved, but the document copy could not be exported: {exc}")
 
     attack = (f"{mode_tag}+{plan.style_name}" + attack_label(plan.attacks) + ("+rules" if plan.rules else "")
-              + (f"+revise{plan.revise}" if plan.revise else ""))
+              + ("+math" if plan.math else "") + (f"+revise{plan.revise}" if plan.revise else ""))
     rows = []
     # A block handed back as the uploaded original is the writer's text, not AI text: never saved as AI.
     copies = {item["key"] for item in items if copied(item["target"].text, item["text"])}
@@ -1669,6 +1688,26 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         return follow_original(plan, job, clean(answer)), used_model
 
     def generate_group(group: list[str]) -> Iterator[tuple[str, str, str]]:
+        """`write_group`, and when every model and the local one have failed, the math script on the blocks left, so
+        a spent quota doesn't stop the batch. Such a block is an edit of its original: the export's copy check keeps
+        one that holds most of the original's words out of the AI data."""
+        done = set()
+        try:
+            for item in write_group(group):
+                done.add(item[0])
+                yield item
+        except APIError as exc:
+            left = [key for key in group if key not in done]
+            # Nothing to edit in an empty answer box, and drafting aids stay out of public mode.
+            if public() or not all(by_key[key]["previous"].strip() for key in left):
+                raise
+            with shared:
+                status["log"].append(f"No model could write; using the math script for the rest. {str(exc)[:300]}")
+                status["model"] = MATH_MODEL
+            for key in left:
+                yield key, _math_edit(by_key[key]["previous"], plan)[0], MATH_MODEL
+
+    def write_group(group: list[str]) -> Iterator[tuple[str, str, str]]:
         """Write a group of blocks in one request, and any it hands back as the original once more together
         (rewrite_group), then any block a reply leaves out or garbles on its own."""
         group_jobs = [by_key[key] for key in group]
@@ -1724,6 +1763,11 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         attacked, changes = run_attacks(texts, plan.attacks, ask, clean) if plan.attacks else (texts, {})
         if plan.rules:
             attacked, changes["rules"] = _rule_swaps(attacked)
+        if plan.math:
+            status["note"] = "Running the math script on the finished text…"
+            edited = [_math_edit(text, plan)[0] for text in attacked]
+            changes["math"] = sum(new != old for new, old in zip(edited, attacked, strict=True))
+            attacked = edited
         for key, before, text in zip(written, texts, attacked, strict=True):
             if text != before:
                 checkpoint.update(key, text=text, score=candidate_metrics(text, plan.profile, plan.style_path,
@@ -1752,7 +1796,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         checkpoint.save()
 
     def score_document() -> None:
-        if (plan.attacks or plan.rules) and "attack_changes" not in checkpoint.meta:
+        if (plan.attacks or plan.rules or plan.math) and "attack_changes" not in checkpoint.meta:
             attack_document()
         if plan.revise and "revise_rounds" not in checkpoint.meta:
             revise_document()
@@ -1927,6 +1971,13 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
                 parts, attack_changes["rules"] = _rule_swaps(essay.split("\n\n"))
                 essay = "\n\n".join(parts)
                 drafts[essay] = model
+            if plan.math:
+                if conn.local_model and model == conn.local_model:
+                    unload_local_model(conn.local_url, conn.local_model)  # the detector needs the memory it holds
+                with st.spinner("Running the math script…"):
+                    essay, kept = _math_edit(essay, plan)
+                attack_changes["math"] = len(kept)
+                drafts[essay] = model
             if plan.revise:
                 if conn.local_model and model == conn.local_model:
                     unload_local_model(conn.local_url, conn.local_model)  # the detector needs the memory it holds
@@ -1960,7 +2011,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     mode_tag = "regenerate_section" if target_section else "prompt"
     attack = (f"{mode_tag}+{plan.style_name}+{PROFILE_ID}" if plan.evasion
               else f"{mode_tag}+{plan.style_name}" + attack_label(plan.attacks)
-              + ("+rules" if plan.rules else ""))
+              + ("+rules" if plan.rules else "") + ("+math" if plan.math else ""))
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     row = {
         "id": f"local-{timestamp}-{prompt_hash}-{model}-{attack}",
