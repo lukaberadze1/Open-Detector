@@ -150,3 +150,10 @@ def test_other_text_is_not_rejoined():
     poem = "\n".join(["The moon above the silent sea", "Whispers softly unto me"] * 10)
     assert join_wrapped_lines(paragraphs) == paragraphs
     assert join_wrapped_lines(poem) == poem
+
+
+def test_report_with_tables_and_headings_is_prose():
+    paragraph = " ".join(["The field grew steadily as the current rose through the coil during each trial"] * 3) + "."
+    cells = ["Method", "Trial 1", "Trial 2", "0.50", "0.56", "1.00", "1.06", "1.50", "1.68", "Mean", "Range"]
+    assert looks_like_prose("\n\n".join(cells + [paragraph] * 4))
+    assert not looks_like_prose("\n".join(["1.5 cups flour", "2 eggs", "1/2 cup milk", "Salt"] * 3 + [paragraph] * 4))

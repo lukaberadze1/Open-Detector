@@ -111,7 +111,7 @@ def burstiness(text: str, sentences: list[Sentence]) -> dict[str, float]:
     return {"burst_cv": statistics.pstdev(lengths) / mean, "burst_adj": statistics.fmean(jumps) / mean}
 
 
-_LIST_ITEM_RE = re.compile(r"([-*\u2022]|\d+[.)/ ])")
+_LIST_ITEM_RE = re.compile(r"[-*\u2022]|\d+[.)]\s|\d+/|\d+(\.\d+)?\s")  # not a bare "0.50"
 _SENTENCE_END_RE = re.compile(r"[.!?][\"')\]]*(?=\s|$)")
 MIN_LIST_SHARE = 0.25
 MIN_MID_LINE_ENDS = 0.1  # sentences ending mid-line, per line
@@ -120,6 +120,8 @@ MAX_WRAPPED_ENDED_LINES = 0.5
 MIN_WRAPPED_LOWERCASE = 0.5  # a wrapped line starts wherever the column fell; list items and verse start capitalized
 MIN_ENDED_LINES = 0.7
 MIN_SENTENCE_LINE_WORDS = 3
+PARAGRAPH_LINE_WORDS = 25
+MIN_PARAGRAPH_WORD_SHARE = 0.6
 
 
 def _unwrap(lines: list[str]) -> list[str]:
@@ -145,7 +147,11 @@ def looks_like_prose(text: str, min_lines: int = 6, max_median_words: int = 10) 
 
     Measured on 2026-11-04 on RAID and MAGE texts of 150+ words, after join_wrapped_lines: 17.5% of poems
     and 13.8% of recipes pass (17.1% and 13.8% on line length alone), 99.7% of prose (99.4%), and prose
-    wrapped at 30 and 40 characters 80% and 86% (none on line length alone)."""
+    wrapped at 30 and 40 characters 80% and 86% (none on line length alone).
+
+    A report's headings and table cells are short lines too, so most of the words sitting in paragraph-length
+    lines also counts as prose. On RAID (2026-11-04) that lifted reddit from 95.7% to 99.1% and wiki from 94.5%
+    to 99.6%, with poems at 23.6% (22.2%) and recipes at 17.8% (14.7%)."""
     lines = _unwrap([line.strip() for line in text.splitlines() if line.strip()])
     if len(lines) < min_lines:
         return True
@@ -155,6 +161,9 @@ def looks_like_prose(text: str, min_lines: int = 6, max_median_words: int = 10) 
     if sum(bool(_LIST_ITEM_RE.match(line)) for line in lines) / len(lines) >= MIN_LIST_SHARE:
         return False
     if _sentences_run_across_lines(lines):
+        return True
+    words = [len(line.split()) for line in lines]
+    if sum(n for n in words if n >= PARAGRAPH_LINE_WORDS) / sum(words) >= MIN_PARAGRAPH_WORD_SHARE:
         return True
     return _line_ends(lines)[0] / len(lines) >= MIN_ENDED_LINES and median >= MIN_SENTENCE_LINE_WORDS
 
