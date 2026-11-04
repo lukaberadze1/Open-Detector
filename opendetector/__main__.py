@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import Detector, DetectorConfig
 from .documents import extract_answer_slots, extract_document
+from .forensics import inspect_document
 from .segment import count_words
 
 DOCUMENT_TYPES = (".md", ".docx", ".pptx")
@@ -73,6 +74,8 @@ def main(argv: list[str] | None = None) -> None:
                 result = detector.analyze(section.text, sentences=False)
                 report["sections"].append({"label": section.label, "words": words, "verdict": result.verdict,
                                            "ai_probability": result.ai_probability})
+    if path and (forensics := inspect_document(path.name, data)):
+        report["forensics"] = forensics.to_dict()
     json.dump(report, sys.stdout, indent=2)
     print()
 

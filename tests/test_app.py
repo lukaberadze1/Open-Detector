@@ -1099,3 +1099,23 @@ def test_public_mode_offers_no_other_provider(stub_model, monkeypatch):
     monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
     at = public_page("a")
     assert not any(box.key == "keep:redteam:provider" for box in at.selectbox)
+
+
+def test_an_uploaded_document_gets_a_file_check_tab():
+    from ui.components import Upload
+
+    document = Document()
+    document.add_paragraph(HUMAN * 25).add_run("hidden words in here").font.hidden = True
+    buffer = io.BytesIO()
+    document.save(buffer)
+
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.session_state["upload:detect:file"] = Upload("bees.docx", buffer.getvalue())
+    at.session_state["keep:detect:source"] = "Upload a file"
+    at.run()
+    button(at, "Analyze").click()
+    at.run()
+    assert not at.exception, at.exception
+    assert any(tab.label == "File check" for tab in at.tabs)
+    assert any("Hidden text" in error.value for error in at.error)

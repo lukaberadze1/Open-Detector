@@ -81,3 +81,14 @@ def test_a_missing_or_binary_file_is_a_clear_error(tmp_path, capsys):
             main([str(path)])
         assert stop.value.code == 2
         assert message in capsys.readouterr().err
+
+
+def test_a_word_file_reports_its_forensics(stub_detector, tmp_path, capsys):
+    document = Document()
+    document.core_properties.author = "python-docx"
+    document.add_paragraph(HUMAN)
+    path = tmp_path / "essay.docx"
+    document.save(path)
+    main([str(path)])
+    report = json.loads(capsys.readouterr().out)
+    assert any(f["title"] == "Made by a script" for f in report["forensics"]["findings"])

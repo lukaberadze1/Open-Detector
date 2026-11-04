@@ -9,6 +9,7 @@ import html
 import streamlit as st
 
 from opendetector.documents import extract_answer_slots, extract_document
+from opendetector.forensics import inspect_document
 from opendetector.segment import count_words
 
 from . import models, style
@@ -148,7 +149,10 @@ def _analyze(text: str, source: str, sections: list | None, profile: str, enable
             progress.progress(done / len(sections), text=f"Scored {done} of {len(sections)} sections")
         progress.empty()
 
-    st.session_state[RESULT] = _result(detector, report, text, source, profile, enabled, rows)
+    result = _result(detector, report, text, source, profile, enabled, rows)
+    upload = st.session_state.get("upload:detect:file") if sections else None
+    result["forensics"] = inspect_document(upload.name, upload.data) if upload else None
+    st.session_state[RESULT] = result
 
 
 def breakdown(text: str, source: str, profile: str, rows: list[dict]) -> dict:
@@ -242,6 +246,21 @@ def _engine_pushes(result: dict) -> None:
                + off)
 
 
+def _file_check(forensics) -> None:
+    """What the file says about itself. None of it counts toward the score."""
+    st.caption("From the file itself, not its words. None of this changes the score. Red items are text a reader "
+               "can't see; the others have ordinary explanations too, so treat them as places to ask, not proof.")
+    for finding in forensics.findings:
+        if finding.level == "flag":
+            st.error(f"**{finding.title}.** {finding.detail}", icon=":material/warning:")
+        else:
+            st.info(f"**{finding.title}.** {finding.detail}", icon=":material/search:")
+    if not forensics.findings:
+        st.success("Nothing unusual in this file.", icon=":material/check:")
+    st.dataframe([{"Property": key, "Value": str(value)} for key, value in forensics.properties.items()],
+                 hide_index=True, width="stretch")
+
+
 def _details(result: dict) -> None:
     report = result["report"]
     if report.ai_probability is not None:
@@ -310,7 +329,8 @@ def show_result(result: dict, digest: str | None = None) -> None:
         _engine_readings(report, result["bands"])
 
     names = (["Highlights"] if report.ai_probability is not None else []) \
-        + (["Sentences"] if report.sentences else []) + (["Sections"] if result["sections"] else []) + ["Details"]
+        + (["Sentences"] if report.sentences else []) + (["Sections"] if result["sections"] else []) \
+        + (["File check"] if result.get("forensics") else []) + ["Details"]
     for tab, name in zip(st.tabs(names), names, strict=True):
         with tab:
             if name == "Highlights":
@@ -342,6 +362,8 @@ def show_result(result: dict, digest: str | None = None) -> None:
                 )
             elif name == "Sections":
                 _sections_table(result["sections"], result["min_words"], report.thresholds)
+            elif name == "File check":
+                _file_check(result["forensics"])
             else:
                 _details(result)
 
