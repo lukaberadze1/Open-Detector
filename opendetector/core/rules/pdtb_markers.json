@@ -1,8 +1,11 @@
 {
-  "version": 1,
+  "version": 2,
   "relations": {
     "contrast": ["however", "nevertheless", "nonetheless"],
     "cause_effect": ["therefore", "consequently", "thus"],
-    "addition": ["moreover", "furthermore", "additionally"]
+    "addition": ["moreover", "furthermore", "additionally"],
+    "summary": ["in conclusion", "in summary", "in short"],
+    "example": ["for example", "for instance"],
+    "restatement": ["in other words", "put another way"]
   }
 }

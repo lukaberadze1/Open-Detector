@@ -2,12 +2,14 @@
 
 from eval.math_attack import (
     _cv,
+    compression_change,
     contract,
     drop_markers,
     fitted_swaps,
     guided_attack,
     math_attack,
     plain_markers,
+    sanitize,
     vary_lengths,
 )
 from opendetector.segment import count_words, split_sentences
@@ -80,6 +82,25 @@ def test_one_harmful_sentence_does_not_veto_the_others():
     text = "It is late. They do not know. We are here. It is cold."
     new, _, _ = guided_attack(text, lambda t: 0.9 - 0.01 * ("It's cold" in t) + 0.05 * ("don't" in t), budget=30)
     assert "It's cold" in new and "don't" not in new
+
+
+def test_sanitize_strips_hidden_characters_and_keeps_layout():
+    assert sanitize("a​b﻿  c\n\nd⁠") == "ab  c\n\nd"
+    assert sanitize("é") == "é"
+
+
+def test_guided_cleans_its_input_even_with_no_edit_kept():
+    new, kept, _ = guided_attack("Plain​ words.", lambda text: 0.5, budget=5)
+    assert new == "Plain words." and kept == []
+
+
+def test_mined_rules_and_new_markers_apply():
+    new, _ = math_attack("We use it as well as this. It is important to note that this can lead to errors.", ("rules",))
+    assert "and this" in new and "can cause" in new and "Note that" in new
+
+
+def test_compression_change_reports_both_sides():
+    assert set(compression_change("some text here", "some other text")) >= {"zippy_lzma_before", "zippy_lzma_after"}
 
 
 def test_a_list_block_is_left_alone():

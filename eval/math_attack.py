@@ -19,6 +19,7 @@ import hashlib
 import json
 import re
 import statistics
+import unicodedata
 from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
@@ -27,7 +28,9 @@ from eval.human_swaps import _CONTRACTIONS, _like, _tables
 from eval.text_attacks import CLAUSES, run_attacks
 from opendetector.config import DATA_ROOT
 from opendetector.core.deterministic_engine import DeterministicEngine
+from opendetector.normalize import _fix_homoglyphs, _strip_invisible
 from opendetector.segment import count_words, split_sentences
+from opendetector.zippy import compression_readings
 
 OUT = DATA_ROOT / "data/essays/math_redteam.jsonl"
 PASSES = ("rules", "swaps", "clauses", "burst")
@@ -53,10 +56,24 @@ _PLAIN = {"however": "But", "nevertheless": "Still,", "nonetheless": "Still,", "
 _PLAIN_START = re.compile(r"(^|(?<=[.!?]\s))(" + "|".join(_PLAIN) + r"),\s+(\S)", re.I | re.M)
 GUIDED_BELOW = 0.1
 _MARKER_START = re.compile(
-    r"(^|(?<=[.!?]\s))(?:furthermore|moreover|additionally|in addition|consequently|therefore|thus|as a result|"
-    r"in conclusion|overall|ultimately|indeed|notably|importantly),\s+([a-z])", re.I | re.M)
+    r"(^|(?<=[.!?]\s))(?:(?:furthermore|moreover|additionally|in addition|consequently|therefore|thus|as a result|"
+    r"in conclusion|in summary|overall|ultimately|indeed|notably|importantly),|it is important to note that|"
+    r"it is worth noting that|it should be noted that)\s+([a-z])", re.I | re.M)
 _CONTRACTION = re.compile(r"\b(" + "|".join(sorted(map(re.escape, _CONTRACTIONS), key=len, reverse=True)) + r")\b",
                           re.I)
+
+
+def sanitize(text: str) -> str:
+    """`text` without invisible characters or look-alike letters, in NFC, with its spacing and layout left alone."""
+    text, _ = _strip_invisible(text)
+    text, _ = _fix_homoglyphs(unicodedata.normalize("NFC", text))
+    return text
+
+
+def compression_change(before: str, after: str) -> dict[str, float]:
+    """ZipPy's readings of a text before and after: higher is more AI-like, and readings only, not part of the score."""
+    return {f"{name}_{when}": value for when, text in (("before", before), ("after", after))
+            for name, value in compression_readings(text).items()}
 
 
 def _cv(lengths: list[int]) -> float:
@@ -124,7 +141,7 @@ def math_attack(text: str, passes: tuple[str, ...] = PASSES, target: float = TAR
         "clauses": lambda t: run_attacks([t], (CLAUSES,), None, str)[0][0],
         "burst": lambda t: vary_lengths(t, target),
     }
-    protected, tokens = engine.protect_ast_latex(text)
+    protected, tokens = engine.protect_ast_latex(sanitize(text))
     facts = engine._invariants(protected)
     applied = []
     for name in passes:
@@ -217,7 +234,7 @@ def guided_attack(text: str, score: Callable[[str], float], budget: int = GUIDED
         "clauses": lambda t: run_attacks([t], (CLAUSES,), None, str)[0][0],
         "burst": lambda t: vary_lengths(t, 9.0), **({"swaps": fitted_swaps} if swaps else {}),
     }
-    protected, tokens = engine.protect_ast_latex(text)
+    protected, tokens = engine.protect_ast_latex(sanitize(text))
     numbers = engine._invariants(protected)[0]
     negations = len(engine._invariants(protected)[1])
     best = score(engine.restore_ast_latex(protected, tokens))
@@ -289,7 +306,7 @@ def main() -> None:
             key = row.get("group_key") or hashlib.sha256(text.encode()).hexdigest()[:16]
             record = {"text": new, "label": 1, "model": row.get("model") or "none",
                       "attack": "+".join(filter(None, (row.get("attack"), "math", *applied))),
-                      "group_key": key, "source": args.source.name}
+                      "group_key": key, "source": args.source.name, **compression_change(text, new)}
             if detector:
                 record["score_before"] = detector.score(text)
                 record["score_after"] = detector.score(new)

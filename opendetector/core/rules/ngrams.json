@@ -1,41 +1,37 @@
 {
-  "version": 1,
+  "version": 2,
   "rules": [
-    {
-      "source": "in order to",
-      "replacement": "to",
-      "category": "purpose",
-      "domains": []
-    },
-    {
-      "source": "due to the fact that",
-      "replacement": "because",
-      "category": "cause",
-      "domains": []
-    },
-    {
-      "source": "at this point in time",
-      "replacement": "now",
-      "category": "time",
-      "domains": []
-    },
-    {
-      "source": "in the event that",
-      "replacement": "if",
-      "category": "condition",
-      "domains": []
-    },
-    {
-      "source": "as a result",
-      "replacement": "therefore",
-      "category": "cause",
-      "domains": []
-    },
-    {
-      "source": "in addition",
-      "replacement": "also",
-      "category": "addition",
-      "domains": []
-    }
+    {"source": "in order to", "replacement": "to", "category": "purpose", "domains": []},
+    {"source": "due to the fact that", "replacement": "because", "category": "cause", "domains": []},
+    {"source": "at this point in time", "replacement": "now", "category": "time", "domains": []},
+    {"source": "in the event that", "replacement": "if", "category": "condition", "domains": []},
+    {"source": "as a result", "replacement": "therefore", "category": "cause", "domains": []},
+    {"source": "in addition", "replacement": "also", "category": "addition", "domains": []},
+
+    {"source": "it is important to note that", "replacement": "note that", "category": "mined", "domains": []},
+    {"source": "it is worth noting that", "replacement": "note that", "category": "mined", "domains": []},
+    {"source": "it should be noted that", "replacement": "note that", "category": "mined", "domains": []},
+    {"source": "it is important to", "replacement": "it helps to", "category": "mined", "domains": []},
+    {"source": "it's important to", "replacement": "it helps to", "category": "mined", "domains": []},
+    {"source": "make sure to", "replacement": "be sure to", "category": "mined", "domains": []},
+    {"source": "make sure that", "replacement": "check that", "category": "mined", "domains": []},
+    {"source": "to ensure that", "replacement": "to make sure", "category": "mined", "domains": []},
+    {"source": "along the way", "replacement": "on the way", "category": "mined", "domains": []},
+    {"source": "can lead to", "replacement": "can cause", "category": "mined", "domains": []},
+    {"source": "different types of", "replacement": "different kinds of", "category": "mined", "domains": []},
+    {"source": "for those who", "replacement": "for people who", "category": "mined", "domains": []},
+    {"source": "this means that", "replacement": "so", "category": "mined", "domains": []},
+    {"source": "in addition to", "replacement": "besides", "category": "mined", "domains": []},
+    {"source": "a variety of", "replacement": "many", "category": "mined", "domains": []},
+    {"source": "in recent years", "replacement": "lately", "category": "mined", "domains": []},
+    {"source": "can be used to", "replacement": "can", "category": "mined", "domains": []},
+    {"source": "when it comes to", "replacement": "with", "category": "mined", "domains": []},
+    {"source": "to be able to", "replacement": "to", "category": "mined", "domains": []},
+    {"source": "is expected to", "replacement": "should", "category": "mined", "domains": []},
+    {"source": "due to the", "replacement": "because of the", "category": "mined", "domains": []},
+    {"source": "as well as", "replacement": "and", "category": "mined", "domains": []},
+    {"source": "the use of", "replacement": "using", "category": "mined", "domains": []},
+    {"source": "it is also", "replacement": "it's also", "category": "mined", "domains": []},
+    {"source": "in the future", "replacement": "later on", "category": "mined", "domains": []}
   ]
 }

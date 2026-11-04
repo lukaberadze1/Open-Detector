@@ -86,7 +86,7 @@ from eval.redteam_batch import (
     worth_rewriting,
 )
 from eval.evasion_mode import PROFILE_ID, PROFILE_INSTRUCTIONS, generate_until_target
-from eval.math_attack import guided_attack, math_attack
+from eval.math_attack import compression_change, guided_attack, math_attack
 from eval.text_attacks import CLAUSES, FREE_TRIP, GROUP_WORDS, PIVOTS, attack_label, attack_name, run_attacks
 from opendetector import DetectorConfig
 from opendetector.config import DATA_ROOT
@@ -121,6 +121,8 @@ VISITOR_DIR = DATA_ROOT / "data/visitors"  # a public deploy's per-visitor folde
 MAX_STYLE_BYTES = 500_000
 MIN_SCORED_WORDS = 150  # the detector abstains under this, so the math script can't be guided by it
 MATH_MODEL = "math-script"  # recorded as the model of a block written with no model
+ENGINES = ("API", "Math", "Combo")
+MATH_RESULT = "redteam:math_result"
 EVASION_TARGET = WIN_BELOW  # configured detector-challenge benchmark target
 STYLE_FLOOR = 35  # minimum style-profile percentile used to rank challenge candidates
 REVISE_BY_DEFAULT = True  # measured on eval/tune_revise.py: 81% to 7% on an AI-written source
@@ -277,6 +279,8 @@ class Plan:
     attacks: tuple[str, ...] = ()  # applied to the finished text before revising (eval/text_attacks.py)
     rules: bool = False  # phrase and discourse-marker swaps on the finished text (opendetector/core)
     math: bool = False  # the no-model, detector-guided edits on the finished text (eval/math_attack.py)
+    engine: str = "API"  # API: models only; Math: no model at all; Combo: models, then the math script
+    source_is_ai: bool = False  # Math: the user says the source is AI text, so an edit of it counts as AI data
     top_p: float | None = None  # the models' nucleus sampling, when set
     top_k: int | None = None  # how many next words they choose from, when set
     style_path: Path | None = None
@@ -861,6 +865,67 @@ def _math_edit(text: str, plan: Plan) -> tuple[str, list[str]]:
     return math_attack(text, ("rules", "clauses", "burst"))
 
 
+def _math_source(plan: Plan) -> str:
+    """The text Math mode edits: the chosen section, or the whole input."""
+    if plan.target_section:
+        return plan.target_section.text
+    return "\n\n".join(section.text for section in plan.context_sections)
+
+
+def _math_problem(plan: Plan) -> str | None:
+    if plan.batch or _math_source(plan).strip():
+        return None
+    return "Math mode edits existing text and can't write from instructions. Paste text or upload a document."
+
+
+def _math_sample(plan: Plan) -> None:
+    """Edit the input with no model, score both sides, and save the result as AI data if it counts as AI."""
+    source = _math_source(plan)
+    with st.spinner("Running the math script…"):
+        text, kept = _math_edit(source, plan)
+        detector = models.get_detector(plan.profile)
+        before, after = (detector.analyze(side, sentences=False).ai_probability for side in (source, text))
+    saved = text != source and plan.source_is_ai  # rules on a person's text leave it their text, however many words
+    if saved:
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        key = hashlib.sha256(source.encode()).hexdigest()[:16]
+        store = _store()
+        store.output.parent.mkdir(parents=True, exist_ok=True)
+        with store.output.open("a", encoding="utf-8") as output:
+            output.write(json.dumps({
+                "id": f"local-{timestamp}-{key}-{MATH_MODEL}", "text": text, "label": 1, "dataset": "local_redteam",
+                "model": MATH_MODEL, "attack": "math+" + "+".join(sorted(set(kept))), "group_key": key,
+                "ai_probability": after, "baseline_ai_probability": before, "detector_profile": plan.profile,
+                **compression_change(source, text), **_settings(plan)}, ensure_ascii=False) + "\n")
+    st.session_state.pop(RESULT, None)
+    st.session_state[MATH_RESULT] = {"text": text, "before": before, "after": after, "saved": saved,
+                                     "changed": text != source, "kept": kept,
+                                     "zippy": compression_change(source, text)}
+
+
+def _show_math_result(result: dict) -> None:
+    def percent(value: float | None) -> str:
+        return f"{value:.1%}" if value is not None else "Too short to score"
+
+    first, second, third = st.columns(3)
+    first.metric("AI likelihood before", percent(result["before"]))
+    second.metric("AI likelihood after", percent(result["after"]))
+    third.metric("Edits kept", len(result["kept"]))
+    zippy = result["zippy"]
+    st.caption(f"Compression (higher is more AI-like, not part of the score): LZMA {zippy['zippy_lzma_before']:.3f} to "
+               f"{zippy['zippy_lzma_after']:.3f}, zlib {zippy['zippy_zlib_before']:.3f} to "
+               f"{zippy['zippy_zlib_after']:.3f}.")
+    if not result["changed"]:
+        st.info("No edit lowered the score, so the text is unchanged and nothing was saved.")
+    elif result["saved"]:
+        st.success("Saved as AI-labelled evaluation data.")
+    else:
+        st.info("Not saved as AI data: rule edits leave it the original author's text. If an AI wrote the source, "
+                "turn on **The source is AI text**.")
+    st.text_area("Edited text", result["text"], height=320)
+    st.download_button("Download", result["text"], "AI_REDTEAM_math.txt", icon=":material/download:")
+
+
 def _attacks(plan: Plan) -> None:
     """The attacks on finished text and the sampling settings, all off to start with: none is measured yet."""
     with st.expander("More attacks"):
@@ -875,10 +940,6 @@ def _attacks(plan: Plan) -> None:
                                help="Runs the deterministic rules in opendetector/core/rules over the finished text: "
                                     "set phrases, then discourse markers. Numbers, negations, math, citations and "
                                     "code stay as they were, and it takes no requests.")
-        plan.math = st.toggle("Math script (no API)", key=keep("keep:redteam:math", False),
-                              help="Edits the finished text passage by passage with rules, keeping an edit only if "
-                                   "the detector then scores the text lower. It takes no requests and no local "
-                                   "model, but many detector passes, so a long text takes minutes.")
         free = False
         if plan.style_path and plan.style_path.parent == BUILTIN_STYLE_DIR:  # no writer's voice for it to lose
             free = st.toggle("Free translation round trip", key=keep("keep:redteam:free_trip", False),
@@ -904,8 +965,15 @@ def _setup(profile: str) -> tuple[Plan, Connection]:
     """The settings column, top to bottom: Mode, Input, Rewrite (to regenerate), Writing, Detector, then
     Advanced (priorities) and Model & connection folded away. The priorities need the connection, so the
     two folded panels are laid out first and filled in that order."""
+    engine = "API"
     with style.group("Mode", "01"):
         regenerate = _mode() == "regenerate"
+        if not public():  # drafting aids stay out of public mode
+            engine = st.segmented_control(
+                "Engine", ENGINES, key=keep("keep:redteam:engine", "API"), required=True,
+                help="API writes with the models. Math uses no model or quota: it edits text you supply by rules, "
+                     "keeping an edit only if the detector then scores lower. Combo writes with the models, then "
+                     "runs the math script on the result.")
     with style.group("Input", "02"):
         prompt, upload, sections, slots, blocks = _source(regenerate)
     plan = Plan(prompt, upload, sections, slots, blocks, "sample", profile)
@@ -921,6 +989,15 @@ def _setup(profile: str) -> tuple[Plan, Connection]:
         _writing(plan)
     with style.group("Detector", next(steps)):
         _scoring(plan, profile)
+        plan.engine = engine
+        if engine != "API":
+            plan.math = plan.score = True
+        if engine == "Math":
+            plan.evasion, plan.revise, plan.restyle, plan.attacks, plan.rules = False, 0, False, (), False
+            plan.source_is_ai = st.toggle(
+                "The source is AI text", key=keep("keep:redteam:source_is_ai", False),
+                help="Rule edits leave a text its original author's, so by default they aren't saved as AI data. "
+                     "Turn this on only for text an AI wrote.")
     advanced_box = st.expander("Advanced · priorities and generation settings", icon=":material/tune:")
     key_missing = public() and not st.session_state.get(PUBLIC_KEY, "").strip()
     with st.expander("Model & connection" + (" · add your Gemini key" if key_missing else ""),
@@ -1284,6 +1361,7 @@ def _checkpoint_path(plan: Plan) -> Path:
     follow = [structure(plan)] if plan.rewrite_all_blocks and structure(plan) != "free" else []
     follow += [f"revise{plan.revise}"] if plan.revise else []
     follow += [*plan.attacks, *(["rules"] if plan.rules else []), *(["math"] if plan.math else []),
+               *(["mathonly"] if plan.engine == "Math" else []),
                *(f"{option}{value:g}" for option, value in (plan.sampling or {}).items())]
     return _store().batches / (
         batch_key(plan.source_hash, plan.fill_answer_boxes, plan.rewrite_all_blocks, plan.prompt.strip(),
@@ -1321,7 +1399,10 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
               + ("+math" if plan.math else "") + (f"+revise{plan.revise}" if plan.revise else ""))
     rows = []
     # A block handed back as the uploaded original is the writer's text, not AI text: never saved as AI.
-    copies = {item["key"] for item in items if copied(item["target"].text, item["text"])}
+    # So is a math edit, however few of its words stay, unless the user says an AI wrote the source.
+    copies = set() if plan.source_is_ai else {item["key"] for item in items
+                                              if item.get("model") == MATH_MODEL
+                                              or copied(item["target"].text, item["text"])}
     for item in items:
         if item.get("recorded") or (plan.score and "score" not in item) or item["key"] in copies:
             continue
@@ -1592,11 +1673,12 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
     )
     local_model = conn.local_model
     if local_model and models.RAM_GB <= 8.5 and local_context > SMALL_MACHINE_LOCAL_CONTEXT:
-        status["log"].append(
-            f"Leaving out {local_model}: this document's prompts need a {local_context:,}-token window, more than "
-            f"it can hold in {models.RAM_GB:.0f} GB. If the hosted models run out, the batch stops; press Resume "
-            "once their quota is back."
-        )
+        if plan.engine != "Math":
+            status["log"].append(
+                f"Leaving out {local_model}: this document's prompts need a {local_context:,}-token window, more "
+                f"than it can hold in {models.RAM_GB:.0f} GB. If the hosted models run out, the math script edits "
+                "the blocks left."
+            )
         local_model = ""
     shared = threading.Lock()  # groups written at the same time share the model order and the log
 
@@ -1692,6 +1774,13 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         a spent quota doesn't stop the batch. Such a block is an edit of its original: the export's copy check keeps
         one that holds most of the original's words out of the AI data."""
         done = set()
+        if plan.engine == "Math":
+            status["model"] = MATH_MODEL
+            for key in group:
+                if not by_key[key]["previous"].strip():
+                    raise APIError(f"Math mode has no text to edit in {by_key[key]['label']}.")
+                yield key, _math_edit(by_key[key]["previous"], plan)[0], MATH_MODEL
+            return
         try:
             for item in write_group(group):
                 done.add(item[0])
@@ -1763,7 +1852,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         attacked, changes = run_attacks(texts, plan.attacks, ask, clean) if plan.attacks else (texts, {})
         if plan.rules:
             attacked, changes["rules"] = _rule_swaps(attacked)
-        if plan.math:
+        if plan.math and plan.engine != "Math":  # in Math the blocks are already its edits
             status["note"] = "Running the math script on the finished text…"
             edited = [_math_edit(text, plan)[0] for text in attacked]
             changes["math"] = sum(new != old for new, old in zip(edited, attacked, strict=True))
@@ -2488,7 +2577,9 @@ def render() -> None:
             else:
                 label, icon = "Generate", ":material/auto_awesome:"
             clicked = st.button(label, type="primary", icon=icon, width="stretch")
-            problem = _problem(plan, conn) if clicked else None
+            problem = None
+            if clicked:
+                problem = _math_problem(plan) if plan.engine == "Math" else _problem(plan, conn)
             if problem:
                 st.error(problem)
             system = None
@@ -2508,8 +2599,14 @@ def render() -> None:
                 if plan.batch:
                     _start_batch(plan, conn, jobs, path, checkpoint, system)
                     st.rerun()
-                _generate_sample(plan, conn, system)
-            if result := st.session_state.get(RESULT):
+                st.session_state.pop(MATH_RESULT, None)
+                if plan.engine == "Math":
+                    _math_sample(plan)
+                else:
+                    _generate_sample(plan, conn, system)
+            if math_result := st.session_state.get(MATH_RESULT):
+                _show_math_result(math_result)
+            elif result := st.session_state.get(RESULT):
                 _show_result(result, profile)
             else:
                 st.html('<div class="od-empty"><b>Nothing made yet</b>Choose Generate or Regenerate, fill in the '
