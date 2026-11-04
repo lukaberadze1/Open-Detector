@@ -23,7 +23,7 @@ from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 
-from eval.human_swaps import _CONTRACTIONS, _like, _tables, human_swaps
+from eval.human_swaps import _CONTRACTIONS, _like, _tables
 from eval.text_attacks import CLAUSES, run_attacks
 from opendetector.config import DATA_ROOT
 from opendetector.core.deterministic_engine import DeterministicEngine
@@ -44,8 +44,13 @@ BIGRAM_ANY = 10**9  # a word at the edge of a text has no neighbour to check on 
 BIGRAM_FLOOR = 3  # a swap's rarer pair must have been seen this often
 MIN_FIT = 0.05  # and at least this share as often as the original's
 _TOKEN = re.compile(r"[a-z0-9']+", re.I)
-PASSAGE_SENTENCES = 3
-GUIDED_BUDGET = 150  # detector passes on one text
+PASSAGE_SENTENCES = 1  # edits are judged a sentence at a time, so one bad swap doesn't veto a passage's good ones
+BURST_SENTENCES = 3  # but splitting and joining needs neighbours
+GUIDED_BUDGET = 300  # detector passes on one text
+_PLAIN = {"however": "But", "nevertheless": "Still,", "nonetheless": "Still,", "therefore": "So", "consequently": "So",
+          "thus": "So", "as a result": "So", "furthermore": "Also,", "moreover": "Also,", "additionally": "Also,",
+          "in addition": "Also,"}
+_PLAIN_START = re.compile(r"(^|(?<=[.!?]\s))(" + "|".join(_PLAIN) + r"),\s+(\S)", re.I | re.M)
 GUIDED_BELOW = 0.1
 _MARKER_START = re.compile(
     r"(^|(?<=[.!?]\s))(?:furthermore|moreover|additionally|in addition|consequently|therefore|thus|as a result|"
@@ -115,7 +120,7 @@ def math_attack(text: str, passes: tuple[str, ...] = PASSES, target: float = TAR
     engine = DeterministicEngine()
     steps: dict[str, Callable[[str], str]] = {
         "rules": lambda t: _sentence_rules(engine, t),
-        "swaps": human_swaps,
+        "swaps": fitted_swaps,
         "clauses": lambda t: run_attacks([t], (CLAUSES,), None, str)[0][0],
         "burst": lambda t: vary_lengths(t, target),
     }
@@ -177,6 +182,12 @@ def drop_markers(text: str) -> str:
     return _MARKER_START.sub(cut, text)
 
 
+def plain_markers(text: str) -> str:
+    """Linking words a sentence opens with, swapped for plain ones: rotating among 'however', 'nevertheless' and
+    'nonetheless' only trades one word an AI favours for another."""
+    return _PLAIN_START.sub(lambda m: f"{m.group(1)}{_PLAIN[m.group(2).lower()]} {m.group(3)}", text)
+
+
 def contract(text: str) -> str:
     return _CONTRACTION.sub(lambda m: _like(m.group(), _CONTRACTIONS[m.group().lower()]), text)
 
@@ -201,7 +212,8 @@ def guided_attack(text: str, score: Callable[[str], float], budget: int = GUIDED
     the text, the edits kept and the score after each."""
     engine = DeterministicEngine()
     edits: dict[str, Callable[[str], str]] = {
-        "drop": drop_markers, "rules": lambda t: _sentence_rules(engine, t), "contract": contract,
+        "plain": plain_markers, "drop": drop_markers, "rules": lambda t: _sentence_rules(engine, t),
+        "contract": contract,
         "clauses": lambda t: run_attacks([t], (CLAUSES,), None, str)[0][0],
         "burst": lambda t: vary_lengths(t, 9.0), **({"swaps": fitted_swaps} if swaps else {}),
     }
@@ -213,7 +225,8 @@ def guided_attack(text: str, score: Callable[[str], float], budget: int = GUIDED
     for name, edit in edits.items():
         at = 0
         while spent < budget and best >= below:
-            spans = [span for span in _passages(protected) if span[0] >= at]
+            size = BURST_SENTENCES if name == "burst" else PASSAGE_SENTENCES
+            spans = [span for span in _passages(protected, size) if span[0] >= at]
             if not spans:
                 break
             start, end = spans[0]
@@ -245,7 +258,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=OUT)
     parser.add_argument("--passes", default=",".join(PASSES))
     parser.add_argument("--target", type=float, default=TARGET_CV)
-    parser.add_argument("--score", action="store_true", help="score before and after with the detector")
+    parser.add_argument("--score", action="store_true",
+                        help="guide the edits with the detector (--passes then doesn't apply) and print the scores")
     parser.add_argument("--profile", default="slim", choices=("slim", "full"))
     args = parser.parse_args()
     passes = tuple(name.strip() for name in args.passes.split(",") if name.strip())
@@ -265,7 +279,11 @@ def main() -> None:
             if row.get("label") in (0, "0", "human"):
                 continue  # AI rewrites of human text would need their own decision; this attacks AI text only
             text = row["text"]
-            new, applied = math_attack(text, passes, args.target)
+            if detector and count_words(text) >= 150:  # the detector abstains on less, so it can't guide
+                new, applied, _ = guided_attack(text, detector.score)
+                applied = sorted(set(applied))
+            else:
+                new, applied = math_attack(text, passes, args.target)
             if new == text:
                 continue
             key = row.get("group_key") or hashlib.sha256(text.encode()).hexdigest()[:16]

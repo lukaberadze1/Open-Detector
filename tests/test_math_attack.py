@@ -1,6 +1,15 @@
 """The no-model attack: repeatable, keeps facts and protected spans, and moves sentence lengths."""
 
-from eval.math_attack import _cv, contract, drop_markers, fitted_swaps, guided_attack, math_attack, vary_lengths
+from eval.math_attack import (
+    _cv,
+    contract,
+    drop_markers,
+    fitted_swaps,
+    guided_attack,
+    math_attack,
+    plain_markers,
+    vary_lengths,
+)
 from opendetector.segment import count_words, split_sentences
 
 EVEN = ("Furthermore, the committee reviewed the 2024 budget in great detail last week, and the members did not find "
@@ -38,7 +47,7 @@ def test_numbers_negations_and_protected_spans_survive():
 
 def test_guided_keeps_only_edits_that_lower_the_score():
     new, kept, history = guided_attack(EVEN, lambda text: 0.9 - 0.1 * ("Furthermore" not in text), budget=20)
-    assert "Furthermore" not in new and kept[0] == "drop"
+    assert "Furthermore" not in new and kept[0] == "plain"
     assert history == sorted(history, reverse=True)
     unchanged, kept, _ = guided_attack(EVEN, lambda text: 0.9 + 0.01 * (text != EVEN), budget=20)
     assert unchanged == EVEN and kept == []
@@ -61,6 +70,16 @@ def test_fitted_swaps_refuse_what_human_writing_never_says():
     text = "Also, make sure you stay until the end of the day."
     assert "create sure" not in fitted_swaps(text)
     assert "the conclude of" not in fitted_swaps(text)
+
+
+def test_plain_markers_replace_rather_than_rotate():
+    assert plain_markers("However, it works. Moreover, it is fast.") == "But it works. Also, it is fast."
+
+
+def test_one_harmful_sentence_does_not_veto_the_others():
+    text = "It is late. They do not know. We are here. It is cold."
+    new, _, _ = guided_attack(text, lambda t: 0.9 - 0.01 * ("It's cold" in t) + 0.05 * ("don't" in t), budget=30)
+    assert "It's cold" in new and "don't" not in new
 
 
 def test_a_list_block_is_left_alone():
