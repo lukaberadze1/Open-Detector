@@ -105,6 +105,7 @@ model this code no longer uses.
 | `tests/` | pytest suite with stand-in engines: no model downloads, about 10–25 s. |
 | `DETECTOR.md` | User guide: setup, evaluation workflow, deployment, red-teaming, known limits. |
 | `ruff.toml`, `pytest.ini`, `requirements.txt` | Lint config, test config, and development dependencies (Python 3.12 venv in `.venv`). |
+| `requirements-attack.txt` | Optional packages for the Gemini website fallback and the math script's language-model stage. Out of `requirements.txt` because `gemini_webapi` conflicts with the Windows pins, which stopped the v1.2.0 Windows build. |
 | `requirements-train.txt` | `requirements.txt` plus `peft` and `accelerate`, for `eval/train_adapter.py` on a GPU machine. Not in the `.venv`, the app or the downloads. |
 
 If a nested `Open-Detector/` directory exists locally, it is a separate untracked clone and

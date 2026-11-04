@@ -111,3 +111,10 @@ def test_dark_mode_answers_on_windows():
 def test_the_executable_compiles(tmp_path):
     build_app.compile_executable(tmp_path / "Open Detector.exe", "312")
     assert (tmp_path / "Open Detector.exe").stat().st_size > 10_000
+
+
+def test_optional_attack_packages_stay_out_of_the_base_requirements():
+    """gemini_webapi once broke the Windows build: it can't be installed with the pinned anthropic."""
+    base = (ROOT / "requirements.txt").read_text().lower()
+    for name in ("gemini_webapi", "gemini-webapi", "browser-cookie3", "spacy", "lemminflect"):
+        assert name not in base

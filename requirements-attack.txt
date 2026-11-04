@@ -1,0 +1,12 @@
+# Optional, for private runs. Not part of the app, the downloads or the Windows build, whose pins they conflict with:
+# gemini_webapi needs an older pydantic than the pinned anthropic.
+#   uv pip install --python .venv/bin/python -r requirements-attack.txt
+#   .venv/bin/python -m spacy download en_core_web_sm
+
+# eval/gemini_fallback.py: the Gemini website, signed in with your Firefox session
+gemini_webapi==2.1.1
+browser-cookie3==0.20.1
+
+# eval/contextual_attack.py: the math script's language-model stage
+spacy
+lemminflect
