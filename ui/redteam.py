@@ -89,6 +89,7 @@ from eval.evasion_mode import PROFILE_ID, PROFILE_INSTRUCTIONS, generate_until_t
 from eval.text_attacks import CLAUSES, FREE_TRIP, GROUP_WORDS, PIVOTS, attack_label, attack_name, run_attacks
 from opendetector import DetectorConfig
 from opendetector.config import DATA_ROOT
+from opendetector.core.deterministic_engine import DeterministicEngine
 from opendetector.citations import citation_material, validate_references
 from opendetector.documents import (
     AnswerSlot,
@@ -271,6 +272,7 @@ class Plan:
     restyle: bool = False  # a sample from a prompt: rewrite the draft in the writer's sentences (redteam_batch.restyle)
     revise: int = 0  # a sample: rounds rewriting the passages the detector flags (redteam_batch.revise_flagged)
     attacks: tuple[str, ...] = ()  # applied to the finished text before revising (eval/text_attacks.py)
+    rules: bool = False  # phrase and discourse-marker swaps on the finished text (opendetector/core)
     top_p: float | None = None  # the models' nucleus sampling, when set
     top_k: int | None = None  # how many next words they choose from, when set
     style_path: Path | None = None
@@ -838,6 +840,13 @@ def _scoring(plan: Plan, profile: str) -> None:
                       else ""))
 
 
+def _rule_swaps(texts: list[str]) -> tuple[list[str], int]:
+    """The deterministic engine's swaps on each text, and how many texts they changed. No requests."""
+    engine = DeterministicEngine()
+    swapped = [engine.transform(text) for text in texts]
+    return swapped, sum(new != old for new, old in zip(swapped, texts, strict=True))
+
+
 def _attacks(plan: Plan) -> None:
     """The attacks on finished text and the sampling settings, all off to start with: none is measured yet."""
     with st.expander("More attacks"):
@@ -848,6 +857,10 @@ def _attacks(plan: Plan) -> None:
         clauses = st.toggle("Move clauses around", key=keep("keep:redteam:clauses", False),
                             help="Turns about half the sentences that can safely be turned around ('Because A, B.' "
                                  "and 'B because A.'). No words change, and it takes no requests.")
+        plan.rules = st.toggle("Swap stock phrases and linking words", key=keep("keep:redteam:rules", False),
+                               help="Runs the deterministic rules in opendetector/core/rules over the finished text: "
+                                    "set phrases, then discourse markers. Numbers, negations, math, citations and "
+                                    "code stay as they were, and it takes no requests.")
         free = False
         if plan.style_path and plan.style_path.parent == BUILTIN_STYLE_DIR:  # no writer's voice for it to lose
             free = st.toggle("Free translation round trip", key=keep("keep:redteam:free_trip", False),
@@ -856,7 +869,7 @@ def _attacks(plan: Plan) -> None:
                                   "check often refuses, and then the text stays as it was. Your text goes to Google.")
         plan.attacks = (((attack_name(pivot),) if pivot != "Off" else ()) + ((FREE_TRIP,) if free else ())
                         + ((CLAUSES,) if clauses else ()))
-        if plan.attacks:
+        if plan.attacks or plan.rules:
             plan.score = True
         with st.container(horizontal=True):
             top_p = st.slider("Top-p", 0.5, 1.0, step=0.05, key=keep("keep:redteam:top_p", 1.0),
@@ -1221,7 +1234,8 @@ def _settings(plan: Plan) -> dict:
             "register": plan.register, "examples": len(writer_samples(plan)[0]),
             "structure": structure(plan) if plan.rewrite_all_blocks else None,
             "restyle": plan.restyle if plan.task == "sample" else None,
-            "attacks": list(plan.attacks), "top_p": plan.top_p, "top_k": plan.top_k,
+            "attacks": list(plan.attacks), **({"rules": True} if plan.rules else {}),
+            "top_p": plan.top_p, "top_k": plan.top_k,
             "blocks_per_request": (1 if plan.evasion else plan.group_size) if plan.batch else None}
 
 
@@ -1250,7 +1264,8 @@ def _checkpoint_path(plan: Plan) -> Path:
     style = [plan.style_name] if plan.use_profile and plan.style_name != UNNAMED_STYLE else []
     follow = [structure(plan)] if plan.rewrite_all_blocks and structure(plan) != "free" else []
     follow += [f"revise{plan.revise}"] if plan.revise else []
-    follow += [*plan.attacks, *(f"{option}{value:g}" for option, value in (plan.sampling or {}).items())]
+    follow += [*plan.attacks, *(["rules"] if plan.rules else []),
+               *(f"{option}{value:g}" for option, value in (plan.sampling or {}).items())]
     return _store().batches / (
         batch_key(plan.source_hash, plan.fill_answer_boxes, plan.rewrite_all_blocks, plan.prompt.strip(),
                   plan.use_profile, plan.answer_words, plan.match_existing_lengths, *style, *follow) + ".json"
@@ -1283,7 +1298,7 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
         document_bytes = document_name = None
         st.warning(f"The answers are saved, but the document copy could not be exported: {exc}")
 
-    attack = (f"{mode_tag}+{plan.style_name}" + attack_label(plan.attacks)
+    attack = (f"{mode_tag}+{plan.style_name}" + attack_label(plan.attacks) + ("+rules" if plan.rules else "")
               + (f"+revise{plan.revise}" if plan.revise else ""))
     rows = []
     # A block handed back as the uploaded original is the writer's text, not AI text: never saved as AI.
@@ -1706,7 +1721,9 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         status["note"] = "Running the attacks on the finished text…"
         written = checkpoint.generated(keys)
         texts = [checkpoint.blocks[key]["text"] for key in written]
-        attacked, changes = run_attacks(texts, plan.attacks, ask, clean)
+        attacked, changes = run_attacks(texts, plan.attacks, ask, clean) if plan.attacks else (texts, {})
+        if plan.rules:
+            attacked, changes["rules"] = _rule_swaps(attacked)
         for key, before, text in zip(written, texts, attacked, strict=True):
             if text != before:
                 checkpoint.update(key, text=text, score=candidate_metrics(text, plan.profile, plan.style_path,
@@ -1735,7 +1752,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         checkpoint.save()
 
     def score_document() -> None:
-        if plan.attacks and "attack_changes" not in checkpoint.meta:
+        if (plan.attacks or plan.rules) and "attack_changes" not in checkpoint.meta:
             attack_document()
         if plan.revise and "revise_rounds" not in checkpoint.meta:
             revise_document()
@@ -1906,6 +1923,10 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
                     parts, attack_changes = run_attacks(essay.split("\n\n"), plan.attacks, attack_ask, clean)
                 essay = "\n\n".join(parts)
                 drafts[essay] = model
+            if plan.rules:
+                parts, attack_changes["rules"] = _rule_swaps(essay.split("\n\n"))
+                essay = "\n\n".join(parts)
+                drafts[essay] = model
             if plan.revise:
                 if conn.local_model and model == conn.local_model:
                     unload_local_model(conn.local_url, conn.local_model)  # the detector needs the memory it holds
@@ -1938,7 +1959,8 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     prompt_hash = hashlib.sha256(test_material.encode()).hexdigest()[:16]
     mode_tag = "regenerate_section" if target_section else "prompt"
     attack = (f"{mode_tag}+{plan.style_name}+{PROFILE_ID}" if plan.evasion
-              else f"{mode_tag}+{plan.style_name}" + attack_label(plan.attacks))
+              else f"{mode_tag}+{plan.style_name}" + attack_label(plan.attacks)
+              + ("+rules" if plan.rules else ""))
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     row = {
         "id": f"local-{timestamp}-{prompt_hash}-{model}-{attack}",

@@ -9,11 +9,14 @@ It should ask without a style profile, which would pull a translation away from 
 
 from __future__ import annotations
 
+import datetime
+import email.utils
 import hashlib
 import json
 import random
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable, Sequence
@@ -26,7 +29,7 @@ ROUND_TRIP = "roundtrip"
 CLAUSES = "clauses"
 FREE_TRIP = "freetrip"
 # Google Translate's public web endpoint: unofficial, and on 2026-11-02 its bot check answered 429 from the first
-# request, so `free_round_trip` changed nothing. It says who is asking: don't dress it up as a browser to get past that.
+# request, so `free_round_trip` changed nothing. Identify this client honestly rather than impersonating a browser.
 FREE_URL = "https://translate.googleapis.com/translate_a/single"
 FREE_AGENT = "OpenDetector/1.0 (+https://github.com/lukaberadze1/Open-Detector)"
 FREE_HOPS = ("en", "de", "fr", "en")  # after ClearRewriter's lib/formal-inversion.ts
@@ -124,13 +127,44 @@ def round_trip(paragraphs: Sequence[str], ask: Callable[[str], str], pivot: str 
     return result, changed
 
 
-def free_translate(text: str, source: str, target: str) -> str:
-    """`text` through Google Translate's public web endpoint. Raises OSError or ValueError when it refuses."""
+def free_translate(text: str, source: str, target: str, max_retries: int = 3) -> str:
+    """Use the public endpoint, retrying 429 only when it gives a Retry-After delay.
+
+    This endpoint is unofficial and may refuse requests. If it does, preserve the
+    input rather than retrying on an invented schedule or disguising the retries.
+    """
     query = urllib.parse.urlencode({"client": "gtx", "sl": source, "tl": target, "dt": "t", "q": text})
     request = urllib.request.Request(f"{FREE_URL}?{query}", headers={"User-Agent": FREE_AGENT})
-    with urllib.request.urlopen(request, timeout=20) as response:
-        data = json.load(response)
-    return "".join(part[0] for part in data[0] if part and part[0])
+    for attempt in range(max(1, max_retries)):
+        try:
+            with urllib.request.urlopen(request, timeout=12) as response:
+                data = json.load(response)
+            if not isinstance(data, list) or not data or not isinstance(data[0], list):
+                return text
+            return "".join(part[0] for part in data[0] if isinstance(part, list) and part and part[0])
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429 or attempt + 1 >= max(1, max_retries):
+                return text
+            retry_after = exc.headers.get("Retry-After")
+            if not retry_after:
+                return text
+            try:
+                delay = float(retry_after)
+            except ValueError:
+                try:
+                    retry_at = email.utils.parsedate_to_datetime(retry_after)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=datetime.timezone.utc)
+                    delay = (retry_at - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+                except (TypeError, ValueError, OverflowError):
+                    return text
+            # Don't retry sooner than requested; avoid blocking an evaluation for a long wait.
+            if delay < 0 or delay > 30:
+                return text
+            time.sleep(delay)
+        except (OSError, ValueError, IndexError, TypeError):
+            return text
+    return text
 
 
 def _free_chunks(text: str) -> list[str]:

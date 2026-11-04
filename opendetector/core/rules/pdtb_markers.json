@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "relations": {
+    "contrast": ["however", "nevertheless", "nonetheless"],
+    "cause_effect": ["therefore", "consequently", "thus"],
+    "addition": ["moreover", "furthermore", "additionally"]
+  }
+}

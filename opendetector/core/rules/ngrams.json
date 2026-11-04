@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "source": "in order to",
+      "replacement": "to",
+      "category": "purpose",
+      "domains": []
+    },
+    {
+      "source": "due to the fact that",
+      "replacement": "because",
+      "category": "cause",
+      "domains": []
+    },
+    {
+      "source": "at this point in time",
+      "replacement": "now",
+      "category": "time",
+      "domains": []
+    },
+    {
+      "source": "in the event that",
+      "replacement": "if",
+      "category": "condition",
+      "domains": []
+    },
+    {
+      "source": "as a result",
+      "replacement": "therefore",
+      "category": "cause",
+      "domains": []
+    },
+    {
+      "source": "in addition",
+      "replacement": "also",
+      "category": "addition",
+      "domains": []
+    }
+  ]
+}
