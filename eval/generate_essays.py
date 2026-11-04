@@ -57,6 +57,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from eval.gemini_fallback import WEB_MODEL, GeminiWebError, chat_web, web_available
 from eval.human_swaps import human_swaps
 from opendetector.env import load_env
 
@@ -786,6 +787,12 @@ def generate_with_fallback(base_url: str, api_key: str, models: list[str], promp
             fatal = ("HTTP 401",) if routed else ("HTTP 400", "HTTP 401", "HTTP 403")
             if any(status in message for status in fatal) or endpoint_unreachable:
                 break
+    if web_available():
+        attempted.append(WEB_MODEL)
+        try:
+            return chat_web(prompt, system, json_schema), WEB_MODEL, errors
+        except GeminiWebError as exc:
+            errors.append(f"{WEB_MODEL}: {exc}")
     if local_model:
         attempted.append(local_model)
         try:

@@ -22,3 +22,5 @@ anthropic>=2
 
 # Mac app (deploy/macos): the app's native window
 pywebview>=6; sys_platform == "darwin"
+gemini_webapi==2.1.1
+browser-cookie3==0.20.1

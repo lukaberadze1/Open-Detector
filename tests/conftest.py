@@ -18,3 +18,9 @@ def own_limits(monkeypatch, tmp_path_factory):
     from eval import generation_settings
 
     monkeypatch.setattr(generation_settings, "LIMITS", tmp_path_factory.mktemp("limits") / "model_limits.json")
+
+
+@pytest.fixture(autouse=True)
+def no_gemini_website(monkeypatch):
+    """Page tests load the real .env, so without this a failed model would use the owner's Firefox login."""
+    monkeypatch.setattr("eval.generate_essays.web_available", lambda: False)
