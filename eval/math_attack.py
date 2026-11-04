@@ -493,6 +493,10 @@ def main() -> None:
     parser.add_argument("--budget", type=int, default=GUIDED_BUDGET, help="detector passes per text in the search")
     parser.add_argument("--profile", default="slim", choices=("slim", "full"))
     parser.add_argument("--power", action="store_true", help="with --score, add the gradient word search (slower)")
+    parser.add_argument("--contextual", action="store_true",
+                        help="with --score, add the model-backed word search (needs its models downloaded)")
+    parser.add_argument("--paraphraser", choices=("t5", "pegasus", "dipper"),
+                        help="with --contextual, rewrite sentences first")
     args = parser.parse_args()
     passes = tuple(name.strip() for name in args.passes.split(",") if name.strip())
     if unknown := set(passes) - set(PASSES):
@@ -527,7 +531,16 @@ def main() -> None:
                 print(f"{i}: skipped, {count_words(text)} words is under the detector's 150")
                 continue
             if detector:
-                if args.power:
+                if args.contextual:
+                    from eval.contextual_attack import MeaningGuard, contextual_attack, paraphrase_stage
+
+                    scorer, guard = CachedScorer(detector, path=LOGITS), MeaningGuard()
+                    start_text, applied = text, ["contextual"]
+                    if args.paraphraser:
+                        start_text = paraphrase_stage(text, scorer, guard, name=args.paraphraser).text
+                        applied.append(args.paraphraser)
+                    new = contextual_attack(start_text, detector, scorer, guard).text
+                elif args.power:
                     from eval.gradient_attack import power_attack
 
                     result = power_attack(text, detector)

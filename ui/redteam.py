@@ -280,6 +280,7 @@ class Plan:
     rules: bool = False  # phrase and discourse-marker swaps on the finished text (opendetector/core)
     math: bool = False  # the no-model, detector-guided edits on the finished text (eval/math_attack.py)
     engine: str = "API"  # API: models only; Math: no model at all; Combo: models, then the math script
+    deep_math: bool = False  # Math and Combo: also the language-model word search and sentence rewrites
     source_is_ai: bool = False  # Math: the user says the source is AI text, so an edit of it counts as AI data
     top_p: float | None = None  # the models' nucleus sampling, when set
     top_k: int | None = None  # how many next words they choose from, when set
@@ -860,9 +861,23 @@ def _math_edit(text: str, plan: Plan) -> tuple[str, list[str]]:
     otherwise the rule passes alone. Word swaps only with the built-in profile, which has no writer's voice to lose."""
     builtin = bool(plan.style_path) and plan.style_path.parent == BUILTIN_STYLE_DIR
     if count_words(text) >= MIN_SCORED_WORDS:
-        new, kept, _ = guided_attack(text, CachedScorer(models.get_detector(plan.profile)), swaps=builtin)
+        detector = models.get_detector(plan.profile)
+        scorer = CachedScorer(detector)
+        new, kept, _ = guided_attack(text, scorer, swaps=builtin)
+        if plan.deep_math:
+            from eval.contextual_attack import MeaningGuard, Quality, contextual_attack, paraphrase_stage
+
+            guard = MeaningGuard()
+            new = paraphrase_stage(new, scorer, guard, quality=Quality()).text
+            new = contextual_attack(new, detector, scorer, guard).text
+            kept = [*kept, "contextual"]
         return new, kept
     return math_attack(text, ("rules", "clauses", "burst"))
+
+
+def _deep_math_offered() -> bool:
+    """Only where its downloads are: never a public deploy or the downloadable app, which don't carry them."""
+    return not public() and not packaged() and (ROOT / "data/vendor/counter-fitting/word_vectors").exists()
 
 
 def _math_source(plan: Plan) -> str:
@@ -992,6 +1007,11 @@ def _setup(profile: str) -> tuple[Plan, Connection]:
         plan.engine = engine
         if engine != "API":
             plan.math = plan.score = True
+        if engine != "API" and _deep_math_offered():
+            plan.deep_math = st.toggle(
+                "Use language models too", key=keep("keep:redteam:deep_math", False),
+                help="Adds sentence rewrites and a word search checked for meaning and grammar, on this computer with "
+                     "no quota. Much slower, and not yet measured enough to trust: read what it changes.")
         if engine == "Math":
             plan.evasion, plan.revise, plan.restyle, plan.attacks, plan.rules = False, 0, False, (), False
             plan.source_is_ai = st.toggle(

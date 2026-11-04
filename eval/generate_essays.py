@@ -956,6 +956,11 @@ def main() -> int:
     clean = styled_clean(args.style_profile, args.register)
 
     def write_essay(base_url: str, key: str, model: str, prompt: str) -> str:
+        if model == WEB_MODEL:
+            essay = clean(chat_web(prompt, system, temperature=args.temperature))
+            if args.style == "humanize":
+                essay = clean(chat_web(HUMANIZE.format(essay=essay), system, temperature=args.temperature))
+            return essay
         timeout = LOCAL_TIMEOUT if is_local(base_url) else REMOTE_TIMEOUT
         essay = clean(chat(base_url, key, model, prompt, args.temperature, system=system, timeout=timeout))
         if args.style == "humanize":
@@ -984,8 +989,12 @@ def main() -> int:
                         model = args.fallback_model
                         continue
                     failure = e
-                except APIError as e:
+                except (APIError, GeminiWebError) as e:
                     failure = e
+                if web_available() and model != WEB_MODEL and base_url != args.local_url:
+                    print(f"{failure}\nSwitching to the Gemini website for the rest of the run.", file=sys.stderr)
+                    model = WEB_MODEL
+                    continue
                 if not args.local_fallback or base_url == args.local_url:
                     hint = (f" Is the local server running? Start it with `ollama serve` and fetch the model with "
                             f"`ollama pull {model}`.") if base_url == args.local_url else ""

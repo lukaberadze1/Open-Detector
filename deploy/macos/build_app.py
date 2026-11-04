@@ -45,7 +45,7 @@ LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/Laun
 # theme. Development tools, evaluation data and everything under data/ stay out.
 APP_FILES = ("app.py", "LICENSE", ".streamlit/config.toml", "models/combiner.json", "models/combiner_slim.json",
              "models/generation_tuning.json",
-             "deploy/macos/launcher.py", "eval/__init__.py", "eval/generate_essays.py", "eval/gemini_fallback.py",
+             "deploy/macos/launcher.py", "eval/__init__.py", "eval/generate_essays.py", "eval/gemini_fallback.py", "eval/contextual_attack.py",
              "eval/redteam_batch.py",
              "eval/evasion_mode.py", "eval/generation_settings.py", "eval/text_attacks.py", "eval/human_swaps.py",
              "eval/math_attack.py", "eval/gradient_attack.py", "styles/human_default/bigrams.json.gz",
