@@ -5,6 +5,11 @@ import pytest
 from eval import gemini_fallback, generate_essays
 
 
+@pytest.fixture(autouse=True)
+def no_waits(monkeypatch):
+    monkeypatch.setattr(gemini_fallback, "RETRY_WAITS", (0, 0))
+
+
 @pytest.fixture
 def cookies(monkeypatch):
     monkeypatch.setenv("GEMINI_WEB_FALLBACK", "on")
@@ -30,7 +35,7 @@ def test_prompt_carries_system_and_schema():
 
 
 def test_errors_never_carry_the_exception_text(cookies, monkeypatch):
-    async def fails(message, timeout):
+    async def fails(*args):
         raise RuntimeError("cookie one was rejected")
 
     monkeypatch.setattr(gemini_fallback, "_ask", fails)
@@ -40,7 +45,7 @@ def test_errors_never_carry_the_exception_text(cookies, monkeypatch):
 
 
 def test_json_reply_loses_its_fence(cookies, monkeypatch):
-    async def fenced(message, timeout):
+    async def fenced(*args):
         return '```json\n{"a": 1}\n```'
 
     monkeypatch.setattr(gemini_fallback, "_ask", fenced)
@@ -48,12 +53,56 @@ def test_json_reply_loses_its_fence(cookies, monkeypatch):
 
 
 def test_the_websites_error_reply_is_a_failure_not_a_sample(cookies, monkeypatch):
-    async def apology(message, timeout):
+    async def apology(*args):
         return "I encountered an error doing what you asked. Could you try again?"
 
     monkeypatch.setattr(gemini_fallback, "_ask", apology)
     with pytest.raises(gemini_fallback.GeminiWebError):
         gemini_fallback.chat_web("Write.")
+
+
+def test_retries_before_giving_up_and_only_the_first_try_uses_a_gem(cookies, monkeypatch):
+    gems = []
+
+    async def flaky(prompt, system, schema, model, thinking, use_gem, timeout, temperature):
+        gems.append(use_gem)
+        if len(gems) < 3:
+            raise RuntimeError("busy")
+        return "Done."
+
+    monkeypatch.setattr(gemini_fallback, "_ask", flaky)
+    assert gemini_fallback.chat_web("Write.", "Be plain.") == "Done." and gems == [True, False, False]
+
+
+def test_a_reply_that_is_not_json_is_a_failure(cookies, monkeypatch):
+    async def prose(*args):
+        return "Sure, here it is."
+
+    monkeypatch.setattr(gemini_fallback, "_ask", prose)
+    with pytest.raises(gemini_fallback.GeminiWebError):
+        gemini_fallback.chat_web("Write.", json_schema={"type": "object"})
+
+
+@pytest.mark.parametrize("api, web", [("gemini-3.5-flash-lite", "gemini-flash-lite"),
+                                      ("gemini-3.8-flash", "gemini-flash"), ("gemini-3-pro", "gemini-pro"),
+                                      ("llama-4", None)])
+def test_web_model(api, web):
+    assert gemini_fallback.web_model(api) == web
+
+
+def test_only_a_high_temperature_varies_the_reply():
+    assert gemini_fallback.pick_reply(["a", "b"], 0.7) == "a"
+    assert gemini_fallback.pick_reply(["a", "b"], None) == "a"
+    assert {gemini_fallback.pick_reply(["a", "b"], 0.95) for _ in range(50)} == {"a", "b"}
+
+
+def test_a_reply_past_the_length_limit_is_a_failure(cookies, monkeypatch):
+    async def long(*args):
+        return "word " * 100
+
+    monkeypatch.setattr(gemini_fallback, "_ask", long)
+    with pytest.raises(gemini_fallback.GeminiWebError):
+        gemini_fallback.chat_web("Write.", max_tokens=10)
 
 
 def _hosted_fail(*args, **options):
@@ -63,7 +112,7 @@ def _hosted_fail(*args, **options):
 def test_chain_tries_the_website_before_the_local_model(monkeypatch):
     monkeypatch.setattr(generate_essays, "chat", _hosted_fail)
     monkeypatch.setattr(generate_essays, "web_available", lambda: True)
-    monkeypatch.setattr(generate_essays, "chat_web", lambda *args: "From the website.")
+    monkeypatch.setattr(generate_essays, "chat_web", lambda *args, **options: "From the website.")
     local = lambda *args, **options: pytest.fail("the local model should not run")  # noqa: E731
     monkeypatch.setattr(generate_essays, "chat_local", local)
     text, model, errors = generate_essays.generate_with_fallback("http://x/v1", "k", ["a"], "Write.", 0.8, None,
@@ -72,7 +121,7 @@ def test_chain_tries_the_website_before_the_local_model(monkeypatch):
 
 
 def test_chain_goes_on_to_the_local_model_when_the_website_fails(monkeypatch):
-    def web_fails(*args):
+    def web_fails(*args, **options):
         raise gemini_fallback.GeminiWebError("the Gemini website failed")
 
     monkeypatch.setattr(generate_essays, "chat", _hosted_fail)

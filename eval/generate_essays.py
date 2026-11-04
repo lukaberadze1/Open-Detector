@@ -790,7 +790,10 @@ def generate_with_fallback(base_url: str, api_key: str, models: list[str], promp
     if web_available():
         attempted.append(WEB_MODEL)
         try:
-            return chat_web(prompt, system, json_schema), WEB_MODEL, errors
+            reply = chat_web(prompt, system, json_schema, model=attempted[0], thinking=thinking,
+                             temperature=temperature,
+                             max_tokens=max_tokens)
+            return reply, WEB_MODEL, errors
         except GeminiWebError as exc:
             errors.append(f"{WEB_MODEL}: {exc}")
     if local_model:
