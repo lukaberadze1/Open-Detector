@@ -92,11 +92,14 @@ class DesklibAIDetectionModel(PreTrainedModel):
         self.classifier = nn.Linear(config.hidden_size, 1)
         self.post_init()
 
-    def forward(self, input_ids, attention_mask):
-        hidden = self.model(input_ids, attention_mask=attention_mask)[0]
+    def forward(self, input_ids=None, attention_mask=None, inputs_embeds=None):
+        hidden = self.model(input_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds)[0]
         mask = attention_mask.unsqueeze(-1).to(hidden.dtype)
         pooled = (hidden * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
         return self.classifier(pooled).squeeze(-1)
+
+    def get_input_embeddings(self):
+        return self.model.get_input_embeddings()
 
 
 def load_desklib(model_id: str, device: str, dtype: torch.dtype, batch_size: int) -> ClassifierEngine:
@@ -106,4 +109,7 @@ def load_desklib(model_id: str, device: str, dtype: torch.dtype, batch_size: int
     def log_odds(m, enc):
         return m(enc["input_ids"], enc["attention_mask"])
 
-    return ClassifierEngine("desklib", tokenizer, model, log_odds, device, 768, batch_size)
+    engine = ClassifierEngine("desklib", tokenizer, model, log_odds, device, 768, batch_size)
+    # For eval/gradient_attack.py: the log-odds from embeddings, so a gradient can reach the words.
+    engine.embedded_log_odds = lambda embedded, mask: engine.model(attention_mask=mask, inputs_embeds=embedded)
+    return engine
