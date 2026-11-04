@@ -211,6 +211,10 @@ def test_documents_join_a_groups_ai_blocks_only():
     assert [row["text"] for row in documents(rows)] == ["One.\n\nTwo.", "Alone."]
 
 
+def test_documents_leave_out_the_scripts_own_output():
+    assert documents([{"text": "Edited.", "label": 1, "model": "math-script", "group_key": "k"}]) == []
+
+
 def test_changed_passages_show_the_change_in_context():
     assert changed_passages("a b c d e", "a b X d e", context=1) == [("b c d", "b X d")]
     assert changed_passages("same", "same") == []

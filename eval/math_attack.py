@@ -460,7 +460,8 @@ def documents(rows: list[dict]) -> list[dict]:
     joined: dict[str, dict] = {}
     out: list[dict] = []
     for row in rows:
-        if row.get("label") not in (1, "1", "ai") or re.search(r"-draft\d+$", str(row.get("id", ""))):
+        if (row.get("label") not in (1, "1", "ai") or re.search(r"-draft\d+$", str(row.get("id", "")))
+                or row.get("model") == "math-script"):  # this script's own output isn't a draft to attack
             continue
         key = row.get("group_key")
         if not key:
