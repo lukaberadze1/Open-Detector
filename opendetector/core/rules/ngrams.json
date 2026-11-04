@@ -8,9 +8,6 @@
     {"source": "as a result", "replacement": "therefore", "category": "cause", "domains": []},
     {"source": "in addition", "replacement": "also", "category": "addition", "domains": []},
 
-    {"source": "it is important to note that", "replacement": "note that", "category": "mined", "domains": []},
-    {"source": "it is worth noting that", "replacement": "note that", "category": "mined", "domains": []},
-    {"source": "it should be noted that", "replacement": "note that", "category": "mined", "domains": []},
     {"source": "it is important to", "replacement": "it helps to", "category": "mined", "domains": []},
     {"source": "it's important to", "replacement": "it helps to", "category": "mined", "domains": []},
     {"source": "make sure to", "replacement": "be sure to", "category": "mined", "domains": []},

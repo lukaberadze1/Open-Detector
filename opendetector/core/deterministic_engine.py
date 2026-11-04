@@ -27,6 +27,10 @@ _PROTECTED = (
     ("MATH_DISPLAY", re.compile(r"\$\$(?:\\.|[^$\\])+\$\$", re.DOTALL)),
     ("MATH_INLINE", re.compile(r"(?<!\$)\$(?:\\.|[^$\\])+\$(?!\$)|"
                                 r"\\\((?:\\.|[^\\])+?\\\)|\\\[(?:\\.|[^\\])+?\\\]", re.DOTALL)),
+    ("CODE_INDENTED", re.compile(r"(?:^(?: {4}|\t)[^\n]*(?:\n|$))+", re.MULTILINE)),
+    ("CODE_INLINE", re.compile(r"`[^`\n]+`")),
+    ("URL", re.compile(r"\bhttps?://[^\s<>\"')\]]+")),
+    ("HTML_TAG", re.compile(r"</?[A-Za-z][^<>\n]*>")),
     ("CITATION", re.compile(r"\\(?:cite[a-z]*|parencite|textcite|autocite|eqref|autoref|ref)"
                             r"(?:\[[^\]]*\]){0,2}\{[^}]*\}")),
 )

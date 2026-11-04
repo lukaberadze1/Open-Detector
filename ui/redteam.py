@@ -86,7 +86,7 @@ from eval.redteam_batch import (
     worth_rewriting,
 )
 from eval.evasion_mode import PROFILE_ID, PROFILE_INSTRUCTIONS, generate_until_target
-from eval.math_attack import compression_change, guided_attack, math_attack
+from eval.math_attack import CachedScorer, compression_change, guided_attack, math_attack
 from eval.text_attacks import CLAUSES, FREE_TRIP, GROUP_WORDS, PIVOTS, attack_label, attack_name, run_attacks
 from opendetector import DetectorConfig
 from opendetector.config import DATA_ROOT
@@ -860,7 +860,7 @@ def _math_edit(text: str, plan: Plan) -> tuple[str, list[str]]:
     otherwise the rule passes alone. Word swaps only with the built-in profile, which has no writer's voice to lose."""
     builtin = bool(plan.style_path) and plan.style_path.parent == BUILTIN_STYLE_DIR
     if count_words(text) >= MIN_SCORED_WORDS:
-        new, kept, _ = guided_attack(text, models.get_detector(plan.profile).score, swaps=builtin)
+        new, kept, _ = guided_attack(text, CachedScorer(models.get_detector(plan.profile)), swaps=builtin)
         return new, kept
     return math_attack(text, ("rules", "clauses", "burst"))
 
@@ -1395,7 +1395,8 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
         document_bytes = document_name = None
         st.warning(f"The answers are saved, but the document copy could not be exported: {exc}")
 
-    attack = (f"{mode_tag}+{plan.style_name}" + attack_label(plan.attacks) + ("+rules" if plan.rules else "")
+    attack = (f"{mode_tag}+math" if plan.engine == "Math"  # no model, so no style profile was written in
+              else f"{mode_tag}+{plan.style_name}" + attack_label(plan.attacks) + ("+rules" if plan.rules else "")
               + ("+math" if plan.math else "") + (f"+revise{plan.revise}" if plan.revise else ""))
     rows = []
     # A block handed back as the uploaded original is the writer's text, not AI text: never saved as AI.

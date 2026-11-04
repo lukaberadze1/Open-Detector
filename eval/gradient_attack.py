@@ -15,8 +15,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import lru_cache
 
-from eval.human_swaps import _like, _tables
-from eval.math_attack import BIGRAM_ANY, _bigrams, guided_attack, sanitize
+from eval.human_swaps import _like
+from eval.math_attack import BIGRAM_ANY, SAFE_SYNONYMS, CachedScorer, _bigrams, fix_articles, guided_attack, sanitize
 from opendetector.core.deterministic_engine import _NEGATIONS, _PROTECTED
 from opendetector.normalize import normalize
 from opendetector.segment import sentence_windows, split_sentences
@@ -30,7 +30,6 @@ SEARCH_BUDGET = 240  # window evaluations
 CHECK_EVERY = 5  # accepted swaps between whole-document scores
 ROUNDS = 2
 _WORD = re.compile(r"[A-Za-z][a-z]+")
-_SUFFIXES = ("ing", "ed", "ly", "es", "s")
 _FUNCTION = frozenset(re.findall(r"\w+", (
     "the a an and or but if then than that this these those there here of in on at by for from to with without as is "
     "are was were be been being am do does did have has had will would can could may might must shall should it its he "
@@ -58,17 +57,12 @@ def _pair_index() -> tuple[dict, dict]:
     return dict(after), dict(before)
 
 
-def _suffix(word: str) -> str:
-    return next((suffix for suffix in _SUFFIXES if word.endswith(suffix)), "")
-
-
 def fitting_words(word: str, previous: str, following: str) -> list[str]:
     """Words human writers put between these neighbours, the same inflection as `word`, the best-fitting first."""
     after, before = _pair_index()
     left, right = after.get(previous, {}), before.get(following, {})
     # Only listed synonyms: words that merely fit the neighbours turned 'sang the song' into 'sang the season'.
-    fits = [w for w in _tables()[2].get(word, ()) if " " not in w and w.isalpha() and w not in _NEGATIONS
-            and _suffix(w) == _suffix(word) and (not previous or w in left) and (not following or w in right)]
+    fits = [w for w in SAFE_SYNONYMS.get(word, ()) if (not previous or w in left) and (not following or w in right)]
     return sorted(fits, key=lambda w: -min(left.get(w, BIGRAM_ANY), right.get(w, BIGRAM_ANY)))
 
 
@@ -171,7 +165,7 @@ def gradient_search(text: str, detector, budget: int = SEARCH_BUDGET, below: flo
             if not options:
                 continue
             word = chunk[start:end]
-            trials = [chunk[:start] + _like(word, option) + chunk[end:] for option in options]
+            trials = [fix_articles(chunk[:start] + _like(word, option) + chunk[end:]) for option in options]
             results = engine.window_logits(trials)
             spent += len(trials)
             pick = int(results.argmin())
@@ -214,8 +208,9 @@ def power_attack(text: str, detector, swaps: bool = True, budget: int = SEARCH_B
     """Rules, then the word search, then the rules again on what the search left, each keeping only what lowers the
     whole-document score."""
     result = PowerResult(sanitize(text))
+    scorer = CachedScorer(detector)
     for round_number in range(ROUNDS):
-        result.text, kept, history = guided_attack(result.text, detector.score, swaps=swaps)
+        result.text, kept, history = guided_attack(result.text, scorer, swaps=swaps)
         result.kept += kept
         result.history += history if not result.history else history[1:]
         searched, changed = gradient_search(result.text, detector, budget)
