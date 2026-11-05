@@ -133,3 +133,30 @@ def test_rewrite_quality_refuses_new_names_and_unfounded_words(monkeypatch):
 def test_locked_words_stay():
     assert not ca.allowed("days", "times", "seven days of mourning")
     assert not ca.allowed("keep", "remain", "we keep on working")
+
+
+def test_a_stalled_search_stops_early(monkeypatch):
+    monkeypatch.setattr(ca, "_fit", lambda *args: 100)
+    asked = []
+
+    def proposer(parts, i, bounds):
+        asked.append(i)
+        return ["massive"]
+
+    places = list(range(1, len(ca.Tokens(TEXT).parts), 2))
+    ca.beam_search(TEXT, places, lambda text: 0.9, Pass(), proposer=proposer, patience=2, beam=1)
+    assert len(asked) == 2
+
+
+def test_the_search_uses_a_batching_scorer():
+    class Batch:
+        def __init__(self):
+            self.batches = []
+
+        def many(self, texts):
+            self.batches.append(len(texts))
+            return [0.5] * len(texts)
+
+    score = Batch()
+    assert ca.score_all(score, ["a", "b"]) == [0.5, 0.5] and score.batches == [2]
+    assert ca.score_all(lambda text: 0.1, ["a"]) == [0.1]

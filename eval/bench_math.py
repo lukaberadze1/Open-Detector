@@ -15,6 +15,7 @@ import statistics
 import sys
 import time
 from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 
 from eval.gradient_attack import power_attack
@@ -25,6 +26,8 @@ CACHE = Path(__file__).resolve().parent / "cache"
 SAMPLES = CACHE / "bench_texts.jsonl"
 LOGITS = CACHE / "window_logits.jsonl"
 POOL = 200
+QUICK_BUDGET = 100
+QUICK_SENTENCES = 8
 
 
 def bench_texts(count: int) -> list[str]:
@@ -53,6 +56,12 @@ class ProgressBar:
     def start(self, number: int) -> None:
         self.text, self.calls = number, 0
 
+    def many(self, texts: list[str]) -> list[float]:
+        results = self.score.many(texts)
+        self.calls += len(texts)
+        self.draw()
+        return results
+
     def __call__(self, text: str) -> float:
         result = self.score(text)
         self.calls += 1
@@ -72,13 +81,19 @@ class ProgressBar:
 INDEPENDENT = "Hello-SimpleAI/chatgpt-detector-roberta"
 
 
+@lru_cache(maxsize=1)
+def _independent():
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+    model = AutoModelForSequenceClassification.from_pretrained(INDEPENDENT)
+    return AutoTokenizer.from_pretrained(INDEPENDENT), model.eval()
+
+
 def independent_scores(texts: list[str], words: int = 300) -> list[float]:
     """A second detector's AI chance for each text, averaged over chunks, since it reads about 512 tokens."""
     import torch
-    from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(INDEPENDENT)
-    model = AutoModelForSequenceClassification.from_pretrained(INDEPENDENT).eval()
+    tokenizer, model = _independent()
     at = {name.lower(): i for i, name in model.config.id2label.items()}["chatgpt"]
     scores = []
     for text in texts:
@@ -88,6 +103,27 @@ def independent_scores(texts: list[str], words: int = 300) -> list[float]:
         with torch.no_grad():
             scores.append(float(model(**encoded).logits.softmax(-1)[:, at].mean()))
     return scores
+
+
+def settings_of(args: argparse.Namespace) -> str:
+    """What makes two runs comparable: a saved text is reused only by a run with the same settings."""
+    method = "contextual" if args.contextual else "power" if args.power else "guided"
+    return "+".join(filter(None, ("math", method, args.paraphraser, "quick" if args.quick else "")))
+
+
+def finished_rows(path: Path | None, settings: str) -> dict[str, dict]:
+    """Texts an earlier run with these settings saved, so a stopped run carries on where it was. A half-written last
+    line, as a crash can leave, is skipped."""
+    rows: dict[str, dict] = {}
+    if path and path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("attack") == settings and "source_text" in row:
+                rows[row["source_text"]] = row
+    return rows
 
 
 def log_odds(p: float) -> float:
@@ -107,12 +143,15 @@ def main() -> None:
                         help="with --contextual, rewrite sentences first")
     parser.add_argument("--out", type=Path, help="save each text before and after, labelled AI, as .jsonl")
     parser.add_argument("--independent", action="store_true", help="also score with a detector the search never sees")
+    parser.add_argument("--no-cache", action="store_true", help="ignore saved scores, to time a run fairly")
+    parser.add_argument("--quick", action="store_true",
+                        help="a fast first look: smaller search, for screening an idea, not for final numbers")
     parser.add_argument("--show", action="store_true", help="print the first edited text")
     args = parser.parse_args()
     from opendetector import Detector, DetectorConfig
 
     detector = Detector.from_config(DetectorConfig.for_profile("slim"))
-    scorer = CachedScorer(detector, path=LOGITS)
+    scorer = CachedScorer(detector, path=None if args.no_cache else LOGITS)
     began = time.time()
     before, after, kept = [], [], Counter()
     pairs: list[tuple[str, str]] = []
@@ -121,8 +160,23 @@ def main() -> None:
     if args.band:
         texts = [text for text in texts if args.band[0] <= scorer(text) <= args.band[1]][:args.texts]
     thresholds = detector.thresholds
-    bar = ProgressBar(scorer, len(texts), 400 if args.contextual else GUIDED_BUDGET)
+    budget = QUICK_BUDGET if args.quick else 400
+    bar = ProgressBar(scorer, len(texts), budget if args.contextual else GUIDED_BUDGET)
+    settings = settings_of(args)
+    done = finished_rows(args.out, settings)
+    held: list[float] = []
     for number, text in enumerate(texts, 1):
+        if text in done:
+            row = done[text]
+            edited = row["text"]
+            pairs.append((text, edited))
+            before.append(row["score_before"])
+            after.append(row["score_after"])
+            if args.independent:
+                held += [row["independent_before"], row["independent_after"]] if "independent_after" in row \
+                    else independent_scores([text, edited])
+            print(f"{number:>3} {row['score_before']:.3f} -> {row['score_after']:.3f}  (saved earlier)", flush=True)
+            continue
         start, runs = time.time(), scorer.runs
         bar.start(number)
         if args.contextual:
@@ -131,9 +185,11 @@ def main() -> None:
             guard = MeaningGuard()
             start_text, prior = text, []
             if args.paraphraser:
-                stage = paraphrase_stage(text, bar, guard, quality=Quality(), name=args.paraphraser)
+                stage = paraphrase_stage(text, bar, guard, quality=Quality(), name=args.paraphraser,
+                                         budget=budget, max_sentences=QUICK_SENTENCES if args.quick else None)
                 start_text, prior = stage.text, stage.history
-            result = contextual_attack(start_text, detector, bar, guard)
+            search = {"budget": QUICK_BUDGET, "beam": 1, "patience": 5, "shortlist": 12} if args.quick else {}
+            result = contextual_attack(start_text, detector, bar, guard, **search)
             edited, history = result.text, [*prior, *result.history]
             edits = ["swap"] * len(result.swaps)
             if args.show:
@@ -147,6 +203,15 @@ def main() -> None:
         before.append(history[0])
         after.append(history[-1])
         kept.update(edits)
+        scores = independent_scores([text, edited]) if args.independent else []
+        held += scores
+        if args.out:  # after each text, so a stop or a crash loses only the one under way
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            with args.out.open("a", encoding="utf-8") as file:
+                file.write(json.dumps({"text": edited, "label": 1, "model": "math-contextual", "source_text": text,
+                                       "attack": settings, "score_before": history[0], "score_after": history[-1],
+                                       **({"independent_before": scores[0], "independent_after": scores[1]}
+                                          if scores else {})}, ensure_ascii=False) + "\n")
         print("\r", end="", file=sys.stderr)
         print(f"{number:>3} {history[0]:.3f} -> {history[-1]:.3f}  log-odds {log_odds(history[0]):+6.2f} -> "
               f"{log_odds(history[-1]):+6.2f}  {len(edits):>2} edits  "
@@ -162,21 +227,11 @@ def main() -> None:
           f"{statistics.median(after):.3f}, under 0.5: {sum(p < 0.5 for p in after)} of {len(after)}, "
           f"{time.time() - began:.0f}s, {scorer.runs} model runs, {scorer.hits} cached")
     print(dict(kept))
-    held = independent_scores([t for pair in pairs for t in pair]) if args.independent else []
     if held:
         print("independent detector (mean AI share of its windows; the search never saw it):")
         for number, (was, now) in enumerate(zip(held[::2], held[1::2], strict=True), 1):
             print(f"{number:>3} {was:.3f} -> {now:.3f}")
         print(f"mean {statistics.mean(held[::2]):.3f} -> {statistics.mean(held[1::2]):.3f}")
-    if args.out:
-        with args.out.open("a", encoding="utf-8") as file:
-            for i, (old, new) in enumerate(pairs):
-                attack = "math+contextual" + (f"+{args.paraphraser}" if args.paraphraser else "")
-                file.write(json.dumps({"text": new, "label": 1, "model": "math-contextual", "source_text": old,
-                                       "attack": attack,
-                                       "score_before": before[i], "score_after": after[i],
-                                       **({"independent_before": held[2 * i], "independent_after": held[2 * i + 1]}
-                                          if held else {})}, ensure_ascii=False) + "\n")
     if args.show:
         print(edited)
 

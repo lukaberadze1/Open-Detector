@@ -409,6 +409,35 @@ class CachedScorer:
                 name, key, value = json.loads(line)
                 self.logits.setdefault(name, {})[key] = value
 
+    def many(self, texts: list[str]) -> list[float]:
+        """Scores of several texts, with each window the model hasn't seen run once, in one batch. Versions of one
+        text share most of their windows, so this runs the model far less than scoring them in turn might."""
+        detector = self.detector
+        if getattr(detector, "binoculars", None) is None and detector.combiner is not None:
+            config = detector.config
+            chunks: dict[str, str] = {}
+            for text in texts:
+                clean, _, sentences = detector._prepare(text)
+                for window in sentence_windows(sentences, config.doc_window_words, config.doc_stride_words):
+                    chunk = clean[window.start:window.end]
+                    chunks[_key(chunk)] = chunk
+            for classifier in detector.classifiers:
+                known = self.logits.setdefault(classifier.name, {})
+                missing = [chunk for key, chunk in chunks.items() if key not in known]
+                if missing:
+                    self._learn(classifier, missing)
+        return [self(text) for text in texts]
+
+    def _learn(self, classifier, chunks: list[str]) -> None:
+        found = {_key(chunk): float(value)
+                 for chunk, value in zip(chunks, classifier.window_logits(chunks), strict=True)}
+        self.logits.setdefault(classifier.name, {}).update(found)
+        self.runs += len(chunks)
+        if self.path:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as file:
+                file.writelines(json.dumps([classifier.name, key, value]) + "\n" for key, value in found.items())
+
     def __call__(self, text: str) -> float:
         detector = self.detector
         if getattr(detector, "binoculars", None) is not None or detector.combiner is None:
@@ -426,15 +455,7 @@ class CachedScorer:
             missing = list(dict.fromkeys(chunk for chunk, key in zip(chunks, keys, strict=True) if key not in known))
             self.hits += len(chunks) - len(missing)
             if missing:
-                found = {_key(chunk): float(value)
-                         for chunk, value in zip(missing, classifier.window_logits(missing), strict=True)}
-                known.update(found)
-                self.runs += len(missing)
-                if self.path:
-                    self.path.parent.mkdir(parents=True, exist_ok=True)
-                    with self.path.open("a", encoding="utf-8") as file:
-                        file.writelines(json.dumps([classifier.name, key, value]) + "\n"
-                                        for key, value in found.items())
+                self._learn(classifier, missing)
             scores[classifier.name] = np.array([known[key] for key in keys])
         return float(detector._probabilities([detector._doc_features(scores, windows, {})])[0])
 

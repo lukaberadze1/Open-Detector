@@ -41,6 +41,7 @@ SPACY_MODEL = "en_core_web_sm"
 PROPOSALS = 30  # words asked of the fill-in-the-blank model at each place
 TRIED_PER_WORD = 4  # of those that pass, how many the detector scores
 BEAM = 3  # versions of the text kept at each step
+PATIENCE = 12  # word places in a row with no gain before a text is given up on
 SHORTLIST = 30  # words the gradient names, whose real effect is then measured
 BUDGET = 400  # detector passes on one text
 MAX_CHANGED = 0.15  # share of the text's words
@@ -315,7 +316,14 @@ class Quality:
         return all(any(close_word(word, base) for base in known) for word in words(new) - known)
 
 
-def ranked_places(text: str, tokens: Tokens, detector, score: Callable[[str], float]) -> list[int]:
+def score_all(score: Callable[[str], float], texts: list[str]) -> list[float]:
+    """Several scores at once when the scorer can batch them, otherwise in turn."""
+    many = getattr(score, "many", None)
+    return many(texts) if many else [score(text) for text in texts]
+
+
+def ranked_places(text: str, tokens: Tokens, detector, score: Callable[[str], float],
+                  shortlist_size: int = SHORTLIST) -> list[int]:
     """Word places by what taking the word out really does to the score. The gradient only shortlists: on its own it
     is spread across ordinary words. The hottest windows first, since they set the document's maximum feature."""
     engine = next((c for c in getattr(detector, "classifiers", ()) if hasattr(c, "embedded_log_odds")), None)
@@ -334,13 +342,15 @@ def ranked_places(text: str, tokens: Tokens, detector, score: Callable[[str], fl
             place = tokens.starts.get(window.start + start)
             if place is not None and tokens.editable(place):
                 pushes[place] = max(push, pushes.get(place, 0.0))
-    shortlist = sorted(pushes, key=pushes.get, reverse=True)[:SHORTLIST]
+    shortlist = sorted(pushes, key=pushes.get, reverse=True)[:shortlist_size]
     base = log_odds(score(text))
-    drops = {}
+    versions = []
     for place in shortlist:
         without = list(tokens.parts)
         without[place] = ""
-        drops[place] = base - log_odds(score(join(without)))
+        versions.append(join(without))
+    drops = {place: base - log_odds(value)
+             for place, value in zip(shortlist, score_all(score, versions), strict=True)}
     return sorted(shortlist, key=drops.get, reverse=True)
 
 
@@ -362,7 +372,7 @@ class ContextResult:
 def beam_search(text: str, places: list[int], score: Callable[[str], float], guard,
                 proposer: Callable = propose, quality: Quality | None = None, beam: int = BEAM,
                 budget: int = BUDGET, below: float = 0.1,
-                max_changed: float = MAX_CHANGED) -> ContextResult:
+                max_changed: float = MAX_CHANGED, patience: int = PATIENCE) -> ContextResult:
     """Try swaps place by place, keeping the `beam` lowest-scoring versions, unchanged ones included, so a swap that
     only pays off beside a later one can survive a step. Log-odds, since near 1 the probabilities all look alike."""
     tokens = Tokens(text)
@@ -373,14 +383,15 @@ def beam_search(text: str, places: list[int], score: Callable[[str], float], gua
     versions = [Version(log_odds(first), original)]
     history = [first]
     limit = log_odds(below)
+    stale = 0
     for place in places:
-        if spent >= budget or versions[0].logit < limit:
+        if spent >= budget or versions[0].logit < limit or stale >= patience:
             break
         bounds = tokens.sentence_of.get(place)
         if bounds is None:
             continue
         before = sentence_text(original, bounds)
-        found = []
+        trials: list[tuple[list[str], int]] = []
         for version in versions:
             if version.changed >= cap:
                 continue
@@ -400,13 +411,17 @@ def beam_search(text: str, places: list[int], score: Callable[[str], float], gua
             if quality:
                 kept = [a and b for a, b in zip(kept, quality.grammatical(before, sentences), strict=True)]
             passing = [o for o, ok in zip(options, kept, strict=True) if ok][:TRIED_PER_WORD]
-            for option in passing:
-                if spent >= budget:
-                    break
-                found.append(Version(log_odds(score(join(option))), option, version.changed + 1))
-                spent += 1
+            trials += [(option, version.changed + 1) for option in passing]
+        trials = trials[:max(0, budget - spent)]
+        values = score_all(score, [join(option) for option, _ in trials])
+        found = [Version(log_odds(value), option, changed)
+                 for (option, changed), value in zip(trials, values, strict=True)]
+        spent += len(trials)
+        previous = versions[0].logit
         unique = {join(v.parts): v for v in [*versions, *found]}
         versions = sorted(unique.values(), key=lambda v: v.logit)[:beam]
+        if trials:  # a place with nothing to try says nothing about whether the search has stalled
+            stale = 0 if versions[0].logit < previous else stale + 1
         history.append(1 / (1 + math.exp(-versions[0].logit)))
     best = versions[0]
     swaps = [(a, b) for i, (a, b) in enumerate(zip(original, best.parts, strict=True)) if i % 2 and a != b]
@@ -414,12 +429,14 @@ def beam_search(text: str, places: list[int], score: Callable[[str], float], gua
 
 
 def contextual_attack(text: str, detector, score: Callable[[str], float], guard=None, budget: int = BUDGET,
-                      below: float = 0.1) -> ContextResult:
+                      below: float = 0.1, beam: int = BEAM, patience: int = PATIENCE,
+                      shortlist: int = SHORTLIST) -> ContextResult:
     """The whole stage on one text: measure which words matter, then search their swaps."""
     clean = normalize(text)[0]
     guard = guard or MeaningGuard()
-    places = ranked_places(clean, Tokens(clean), detector, score)
-    return beam_search(clean, places, score, guard, quality=Quality(), budget=budget, below=below)
+    places = ranked_places(clean, Tokens(clean), detector, score, shortlist)
+    return beam_search(clean, places, score, guard, quality=Quality(), beam=beam, budget=budget, below=below,
+                       patience=patience)
 
 
 @lru_cache(maxsize=1)
@@ -454,7 +471,8 @@ def paraphrase(name: str, sentences: list[str], contexts: list[str] | None = Non
 
 def paraphrase_stage(text: str, score: Callable[[str], float], guard, rewrite: Callable | None = None,
                      quality: Quality | None = None,
-                     name: str = "t5", budget: int = BUDGET, below: float = 0.1) -> ContextResult:
+                     name: str = "t5", budget: int = BUDGET, below: float = 0.1,
+                     max_sentences: int | None = None) -> ContextResult:
     """Rewrite one sentence at a time, keeping a rewrite only if the meaning checks pass, its numbers and negations
     stay, and the whole text then scores lower."""
     rewrite = rewrite or (lambda sentences, contexts: paraphrase(name, sentences, contexts))
@@ -462,8 +480,8 @@ def paraphrase_stage(text: str, score: Callable[[str], float], guard, rewrite: C
     current = text
     best = score(current)
     history, spent = [best], 1
-    at = 0
-    while spent < budget and best >= below:
+    at = tried = 0
+    while spent < budget and best >= below and (max_sentences is None or tried < max_sentences):
         spans = [s for s in split_sentences(current) if s.start >= at]
         if not spans:
             break
@@ -472,6 +490,7 @@ def paraphrase_stage(text: str, score: Callable[[str], float], guard, rewrite: C
         sentence = current[start:end]
         if len(sentence.split()) < 6:
             continue
+        tried += 1
         options = rewrite([sentence], [current[max(0, start - 300):start]])[0]
         facts = engine._invariants(sentence)
         options = [o for o in dict.fromkeys(options) if o and o != sentence
@@ -483,15 +502,14 @@ def paraphrase_stage(text: str, score: Callable[[str], float], guard, rewrite: C
         if quality:
             kept = [a and b for a, b in zip(kept, quality.grammatical(sentence, options), strict=True)]
         trials = [(current[:start] + o + current[end:], o) for o, ok in zip(options, kept, strict=True) if ok]
-        for trial, option in trials:
-            if spent >= budget:
-                break
-            result = score(trial)
-            spent += 1
-            if result < best:
-                best, current = result, trial
-                at = start + len(option)
-                history.append(best)
+        trials = trials[:max(0, budget - spent)]
+        values = score_all(score, [trial for trial, _ in trials])
+        spent += len(trials)
+        if values and min(values) < best:
+            best = min(values)
+            current, option = trials[values.index(best)]
+            at = start + len(option)
+            history.append(best)
     return ContextResult(current, history, passes=spent)
 
 
