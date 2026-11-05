@@ -1,5 +1,5 @@
-"""Which words the slim detector's gradient blames most across the benchmark's AI texts, and whether the math script has
-a safe replacement for them: the list to write new `SAFE_SYNONYMS` from. No API.
+"""Which words lower the slim detector's score most when masked across the benchmark's AI texts, and whether the math
+script has a safe replacement for them: the list to write new `SAFE_SYNONYMS` from. No API.
 
     python -m eval.blamed_words --texts 40
 """
@@ -10,7 +10,7 @@ import argparse
 from collections import Counter
 
 from eval.bench_math import bench_texts
-from eval.gradient_attack import saliency, word_pushes
+from eval.gradient_attack import _WORD, masked_pushes, word_pushes
 from eval.math_attack import SAFE_SYNONYMS
 from opendetector.normalize import normalize
 from opendetector.segment import sentence_windows, split_sentences
@@ -29,9 +29,11 @@ def main() -> None:
     blame, seen = Counter(), Counter()
     for text in bench_texts(args.texts):
         clean = normalize(text)[0]
-        for window in sentence_windows(split_sentences(clean), config.doc_window_words, config.doc_stride_words)[:3]:
+        windows = sentence_windows(split_sentences(clean), config.doc_window_words, config.doc_stride_words)
+        for window in windows[:1]:  # hundreds of model runs a window
             chunk = clean[window.start:window.end]
-            for push, start, end in word_pushes(chunk, saliency(engine, chunk)):
+            spans = [match.span() for match in _WORD.finditer(chunk)]
+            for push, start, end in word_pushes(chunk, masked_pushes(engine, chunk, spans)):
                 word = chunk[start:end].lower()
                 blame[word] += push
                 seen[word] += 1

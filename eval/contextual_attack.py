@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from eval.gradient_attack import _FUNCTION, saliency, word_pushes
+from eval.gradient_attack import _FUNCTION
 from eval.human_swaps import _like
 from eval.math_attack import BIGRAM_FLOOR, _engine, _fit, fix_articles
 from opendetector.core.deterministic_engine import _NEGATIONS
@@ -341,8 +341,9 @@ def score_all(score: Callable[[str], float], texts: list[str]) -> list[float]:
 
 def ranked_places(text: str, tokens: Tokens, detector, score: Callable[[str], float],
                   shortlist_size: int = SHORTLIST) -> list[int]:
-    """Word places by what taking the word out really does to the score. The gradient only shortlists: on its own it
-    is spread across ordinary words. The hottest windows first, since they set the document's maximum feature."""
+    """Word places by what taking the word out really does to the score. Places are sampled evenly, since the gradient
+    ranking tracked real masking no better than chance. The hottest windows first, since they set the document's
+    maximum feature."""
     engine = next((c for c in getattr(detector, "classifiers", ()) if hasattr(c, "embedded_log_odds")), None)
     if engine is None:
         return []
@@ -351,15 +352,14 @@ def ranked_places(text: str, tokens: Tokens, detector, score: Callable[[str], fl
     if not windows:
         return []
     logits = engine.window_logits([text[w.start:w.end] for w in windows])
-    pushes: dict[int, float] = {}
+    places: set[int] = set()
     for hot in logits.argsort()[::-1][:2].tolist():
         window = windows[hot]
-        chunk = text[window.start:window.end]
-        for push, start, _ in word_pushes(chunk, saliency(engine, chunk)):
-            place = tokens.starts.get(window.start + start)
-            if place is not None and tokens.editable(place):
-                pushes[place] = max(push, pushes.get(place, 0.0))
-    shortlist = sorted(pushes, key=pushes.get, reverse=True)[:shortlist_size]
+        places |= {place for start, place in tokens.starts.items()
+                   if window.start <= start < window.end and tokens.editable(place)}
+    ordered = sorted(places)  # evenly through the hot windows: the removals below do the real ranking
+    step = max(1, len(ordered) // shortlist_size)
+    shortlist = ordered[::step][:shortlist_size]
     base = log_odds(score(text))
     versions = []
     for place in shortlist:

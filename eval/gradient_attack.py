@@ -91,20 +91,14 @@ def closest(engine, word: str, options: list[str], cache: dict) -> list[str]:
     return [option for _, option in sorted(scored, reverse=True)[:CANDIDATES]]
 
 
-def saliency(engine, text: str) -> list[tuple[int, int, float]]:
-    """(start, end, push toward AI) for each token of `text`: gradient times embedding of the classifier's log-odds."""
-    import torch
-
-    encoded = engine.tokenizer(text, truncation=True, max_length=engine.max_length, return_offsets_mapping=True,
-                               return_tensors="pt")
-    offsets = encoded.pop("offset_mapping")[0].tolist()
-    encoded = encoded.to(engine.device)
-    with torch.enable_grad():
-        embedded = engine.model.get_input_embeddings()(encoded["input_ids"]).detach().requires_grad_()
-        logit = engine.embedded_log_odds(embedded, encoded["attention_mask"])
-        gradient = torch.autograd.grad(logit.sum(), embedded)[0]
-    pushes = (gradient * embedded).sum(-1)[0].detach().float().cpu().tolist()
-    return [(start, end, push) for (start, end), push in zip(offsets, pushes, strict=True) if end > start]
+def masked_pushes(engine, text: str, spans: list[tuple[int, int]]) -> list[tuple[int, int, float]]:
+    """(start, end, push toward AI) for each span: how far masking it lowers the classifier's log-odds, one model run
+    each. Not gradient times embedding: DeBERTa normalizes embeddings first, so that came out near zero and tracked
+    real masking no better than chance (correlations from -0.35 to 0.00 on 4 texts, 2026-11-05)."""
+    if not spans:
+        return []
+    base, *masked = engine.window_logits([text] + [f"{text[:a]}[MASK]{text[b:]}" for a, b in spans])
+    return [(a, b, float(base) - float(score)) for (a, b), score in zip(spans, masked, strict=True)]
 
 
 def word_pushes(text: str, tokens: list[tuple[int, int, float]]) -> list[tuple[float, int, int]]:
@@ -154,9 +148,10 @@ def gradient_search(text: str, detector, budget: int = SEARCH_BUDGET, below: flo
             key = (match.group().lower(), previous, following)
             if key not in tried and (previous or following) and fitting_words(*key):
                 options_of[match.span()] = key
-        if not options_of:  # spares the gradient, the dearest step, on a window with nothing to try
+        if not options_of:
             return None
-        for _, start, end in word_pushes(chunk, saliency(engine, chunk)):
+        spent += len(options_of) + 1
+        for _, start, end in word_pushes(chunk, masked_pushes(engine, chunk, list(options_of))):
             key = options_of.get((start, end))
             if key is None or key in tried:
                 continue

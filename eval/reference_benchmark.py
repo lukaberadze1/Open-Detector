@@ -182,11 +182,12 @@ def build_scorer(name: str) -> tuple[Callable[[str], tuple[float, str]], Callabl
 
 
 def score_rows(rows: list[dict], name: str, version: str = "", cache: Path = CACHE,
-               build: Callable = build_scorer) -> dict[str, dict]:
-    """This detector's score for each text, by text, saving each as it comes so a stop loses at most one."""
+               build: Callable = build_scorer, cached_only: bool = False) -> dict[str, dict]:
+    """This detector's score for each text, by text, saving each as it comes so a stop loses at most one. With
+    `cached_only`, just the texts already scored, to report on a run that didn't finish."""
     known = read_cache(cache)
     todo = [item for item in rows if cache_key(name, version, item["text"]) not in known]
-    if todo:
+    if todo and not cached_only:
         score, free = build(name)
         cache.parent.mkdir(parents=True, exist_ok=True)
         began = time.time()
@@ -204,7 +205,7 @@ def score_rows(rows: list[dict], name: str, version: str = "", cache: Path = CAC
         print(file=sys.stderr)
         del score
         free()
-    return {item["text"]: known[cache_key(name, version, item["text"])] for item in rows}
+    return {item["text"]: known[key] for item in rows if (key := cache_key(name, version, item["text"])) in known}
 
 
 def read_external(path: Path) -> dict[str, dict]:
@@ -313,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--external", action="append", default=[], metavar="NAME=CSV",
                         help="an outside detector's scores")
     parser.add_argument("--report", type=Path, default=REPORT)
+    parser.add_argument("--cached-only", action="store_true", help="score nothing: report on the texts already scored")
     args = parser.parse_args(argv)
     rows = readable([*load_folder(), *([] if args.no_saved else load_saved()),
                      *(load_mage_side(args.mage) if args.mage else []), *load_daigt(args.daigt), *load_hc3(args.hc3)])
@@ -326,7 +328,8 @@ def main(argv: list[str] | None = None) -> int:
     if unknown := set(names) - set(DETECTORS):
         parser.error(f"unknown detectors: {sorted(unknown)}")
     print(f"{len(rows)} texts: {sum(r['label'] == 1 for r in rows)} AI, {sum(r['label'] == 0 for r in rows)} human")
-    results = {name: score_rows(rows, name, combiner_version(name) if name != "roberta" else "") for name in names}
+    results = {name: score_rows(rows, name, combiner_version(name) if name != "roberta" else "",
+                                cached_only=args.cached_only) for name in names}
     for item in args.external:
         name, _, path = item.partition("=")
         results[name] = read_external(Path(path))

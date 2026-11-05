@@ -37,14 +37,16 @@ from opendetector.segment import count_words, looks_like_prose
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = (DATA_ROOT / "data/essays/local_redteam.jsonl", DATA_ROOT / "data/essays/tuning_redteam.jsonl",
-           DATA_ROOT / "data/essays/adapter_redteam.jsonl", DATA_ROOT / "data/essays/math_redteam.jsonl")
+           DATA_ROOT / "data/essays/adapter_redteam.jsonl", DATA_ROOT / "data/essays/math_redteam.jsonl",
+           DATA_ROOT / "data/essays/humanizer_redteam.jsonl")
 CACHE = ROOT / "eval/cache/redteam_scores.jsonl"
 BREAKDOWNS = ("attack", "model", "thinking", "temperature", "blocks_per_request", "dataset")
 
 
 def load_samples(paths: list[Path]) -> list[dict]:
-    """Every saved sample the detector reads: 150 words or more of prose, once each by id. An AI-labelled
-    rewrite that hands back its original (redteam_batch.copied_row) is the writer's text and left out."""
+    """Every saved sample the detector reads: 150 words or more of prose, once each by id and text (older setups share
+    ids). An AI-labelled rewrite that hands back its original (redteam_batch.copied_row) is the writer's text
+    and left out."""
     rows = {}
     for path in paths:
         if not path.exists():
@@ -58,7 +60,8 @@ def load_samples(paths: list[Path]) -> list[dict]:
             if copied_row(row):
                 continue
             if count_words(text) >= DetectorConfig().min_words and looks_like_prose(text):
-                rows.setdefault(row.get("id") or hashlib.sha256(text.encode()).hexdigest(), row)
+                key = (row.get("id"), hashlib.sha256(text.encode()).hexdigest())
+                rows.setdefault(key, row)
     return list(rows.values())
 
 

@@ -147,6 +147,7 @@ def main() -> None:
     parser.add_argument("--quick", action="store_true",
                         help="a fast first look: smaller search, for screening an idea, not for final numbers")
     parser.add_argument("--show", action="store_true", help="print the first edited text")
+    parser.add_argument("--budget", type=int, default=GUIDED_BUDGET, help="detector passes per text, plain search")
     args = parser.parse_args()
     from opendetector import Detector, DetectorConfig
 
@@ -198,7 +199,7 @@ def main() -> None:
             result = power_attack(text, detector)
             edited, edits, history = result.text, result.kept, result.history
         else:
-            edited, edits, history = guided_attack(text, bar)
+            edited, edits, history = guided_attack(text, bar, budget=args.budget)
         pairs.append((text, edited))
         before.append(history[0])
         after.append(history[-1])
