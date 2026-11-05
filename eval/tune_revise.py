@@ -31,6 +31,7 @@ from eval.generate_essays import (GEMINI_API_URL, APIError, QuotaExhausted, load
                                   styled_clean)
 from eval.redteam_batch import (GROUP_SCHEMA, REVISE, REVISE_CANDIDATES, REVISE_KEEPING, WIN_BELOW, document_windows,
                                 revise_blocks, style_guard)
+from eval.trace import Trace, text_id
 from eval.text_attacks import (
     CLAUSES,
     FREE_TRIP,
@@ -192,6 +193,7 @@ def main(argv: list[str] | None = None) -> int:
                              "the requests")
     parser.add_argument("--drafts", type=int, default=1,
                         help="write this many first drafts and revise the lowest-scoring")
+    parser.add_argument("--trace", type=Path, help="record every version, rewrite and request here (eval/trace.py)")
     parser.add_argument("--no-log", action="store_true", help="save no labelled data: for testing this script")
     parser.add_argument("--note", choices=list(NOTES), action="append", default=[],
                         help="an instruction added to the style profile; repeat it to stack them")
@@ -245,6 +247,9 @@ def main(argv: list[str] | None = None) -> int:
         shapes = writer_shapes(args.style, args.register)
         clean = styled_clean(args.style, args.register, swaps=True)
 
+        trace = Trace(args.trace, setup=style, model=args.model) if args.trace else None
+        if trace:
+            trace.watch_requests()
         spent = Counter()  # requests after the first drafts, which run_trial counts: the price of revising
 
         def ask(prompt: str, pending: list[dict]) -> str:
@@ -271,14 +276,29 @@ def main(argv: list[str] | None = None) -> int:
                 """One repeat's scores, and its texts to log, kept until it is whole so a retry logs nothing twice."""
                 spent.clear()
                 began = time.monotonic()
+                if trace:
+                    trace.bind(run=trial["key"], document=path.name, repeat=trial["repeat"],
+                               thinking=args.thinking, temperature=args.temperature)
+                    trace.version("source", original, detector.analyze(original, sentences=False))
                 drafts = [run_trial({**trial, "key": f"{trial['key']}-draft{number}"} if number else trial, jobs, plan,
                                     system, api_key, args.temperature, sampling=sampling or None)
                           for number in range(args.drafts)]
-                draft_scores = [detector.analyze(draft["text"], sentences=False).ai_probability for draft in drafts]
+                reports = [detector.analyze(draft["text"], sentences=False) for draft in drafts]
+                draft_scores = [report.ai_probability for report in reports]
                 result = drafts[draft_scores.index(min(draft_scores))]
+                if trace:
+                    parent = trace.head
+                    for draft, report in zip(drafts, reports, strict=True):
+                        trace.head = parent
+                        trace.version("draft", draft["text"], report, keep=False, requests=draft["requests"],
+                                      chosen=draft is result, words_kept=draft.get("words_kept"),
+                                      structure_match=draft.get("structure_match"))
+                    trace.head = text_id(result["text"])
                 logs = [(draft, style) for draft in drafts]
                 pieces = result["text"].split("\n\n")
                 attacked, changes = run_attacks(pieces, args.attack, ask_plain, clean)
+                if trace and args.attack:
+                    trace.version("attack", "\n\n".join(attacked), attacks=args.attack, changes=changes)
                 parts = {f"{number:03d}": part for number, part in enumerate(attacked, 1)}
                 yardstick = StyleYardstick.build(args.style, count_words(result["text"]), args.register)
                 row = {"document": path.name, "source": source, "style": style, "model": args.model,
@@ -296,7 +316,8 @@ def main(argv: list[str] | None = None) -> int:
                         parts, detector.analyze, ask, clean, shapes, args.rounds, fits=fits,
                         windows=document_windows(detector) if method == "windows" else None,
                         prompt=REVISE_KEEPING if args.as_page else REVISE, facts=args.as_page,
-                        candidates=args.candidates, stats=outcomes, mask=args.mask_facts)
+                        candidates=args.candidates, stats=outcomes, mask=args.mask_facts,
+                        trace=trace)
                     # A run with --rounds 0 and nothing more measures the attack alone.
                     text = "\n\n".join(changed.get(key, part) for key, part in parts.items())
                     row[method] = {"history": history, "changed": len(changed), "words": count_words(text),
@@ -306,6 +327,11 @@ def main(argv: list[str] | None = None) -> int:
                                    "facts": facts_kept(original, text)}
                     logs.append(({**result, "key": f"{trial['key']}-{method}", "text": text},
                                  f"{style}+revise{args.rounds}-{method}"))
+                if trace:
+                    for method in methods:
+                        final = row[method]
+                        trace.version("final", final["text"], method=method, score=final["history"][-1],
+                                      facts=final["facts"], distance=final["distance"], outcomes=final["outcomes"])
                 row["revise_requests"], row["attack_requests"] = spent["revise"], spent["attack"]
                 row["seconds"] = round(time.monotonic() - began)
                 return row, logs

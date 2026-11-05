@@ -105,7 +105,8 @@ def draft_effect(rows: list[dict]) -> list[str]:
 def rejections(rows: list[dict]) -> list[str]:
     """Why rewrites get dropped, by document, hardest first: is the meaning check what stalls the hard documents?"""
     lines = ["| Document | Runs | Start % | End % | Rewrites | Dropped: facts | Dropped: style | Unchanged "
-             "| Passages kept | Not lower |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+             "| Passages kept | Not lower | Facts failures by kind |",
+             "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"]
     groups = defaultdict(list)
     for row in rows:
         groups[row["document"]].append(row)
@@ -113,11 +114,12 @@ def rejections(rows: list[dict]) -> list[str]:
         counts = Counter()
         for row in group:
             counts.update(row[METHOD].get("outcomes", {}))
+        kinds = ", ".join(f"{key.split(':')[1]} {value}" for key, value in counts.most_common() if ":" in key)
         total = counts["unchanged"] + counts["facts"] + counts["style"] + counts["scored"] or 1
         lines.append(f"| {document} | {len(group)} | {100 * mean(row['start'] for row in group):.0f} | "
                      f"{100 * mean(final(row) for row in group):.0f} | {total} | {counts['facts'] / total:.0%} | "
                      f"{counts['style'] / total:.0%} | {counts['unchanged'] / total:.0%} | {counts['kept']} | "
-                     f"{counts['not_lower']} |")
+                     f"{counts['not_lower']} | {kinds or '-'} |")
     return lines
 
 

@@ -543,9 +543,40 @@ def _openai_usage(counts: dict) -> dict:
             "total_thought_tokens": (counts.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0}
 
 
+OBSERVER: Callable[..., None] | None = None  # told of every request, for eval.trace; never set in public mode
+
+
 def chat(base_url: str, api_key: str, model: str, prompt: str, temperature: float, retries: int = 5,
          system: str | None = None, timeout: int = REMOTE_TIMEOUT, thinking: str | None = None,
          json_schema: dict | None = None, usage: dict | None = None, sampling: dict | None = None) -> str:
+    """`_chat`, with what became of the request told to OBSERVER if one is set."""
+    if OBSERVER is None:
+        return _chat(base_url, api_key, model, prompt, temperature, retries, system, timeout, thinking, json_schema,
+                     usage, sampling)
+    seen: dict = {"want_thoughts": True}
+    started, reply, error = time.monotonic(), None, None
+    try:
+        reply = _chat(base_url, api_key, model, prompt, temperature, retries, system, timeout, thinking, json_schema,
+                      seen, sampling)
+        return reply
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {str(exc)[:300]}"
+        raise
+    finally:
+        retried = seen.pop("retry_reasons", [])
+        thoughts = seen.pop("thought_summary", None)
+        seen.pop("want_thoughts", None)
+        if usage is not None:
+            usage.update(seen)
+        OBSERVER(model=model, thinking=thinking, temperature=temperature, sampling=sampling,
+                 json_reply=bool(json_schema),
+                 seconds=round(time.monotonic() - started, 2), retries=retried, error=error, tokens=seen,
+                 thoughts=thoughts, prompt=prompt, system=system, reply=reply)
+
+
+def _chat(base_url: str, api_key: str, model: str, prompt: str, temperature: float, retries: int = 5,
+          system: str | None = None, timeout: int = REMOTE_TIMEOUT, thinking: str | None = None,
+          json_schema: dict | None = None, usage: dict | None = None, sampling: dict | None = None) -> str:
     """Use Google's current Interactions API for Gemini, or another provider's OpenAI API. `thinking`
     is a thinking level and `json_schema` the JSON shape to reply in, for Gemini, Groq and OpenRouter; other
     providers get their own default thinking, and only the prompt asks them for JSON. `sampling` holds top_p
@@ -631,6 +662,8 @@ def _gemini_interaction(model: str, api_key: str, prompt: str, temperature: floa
         config.update(sampling or {})  # a model that sets its own temperature sets these too
     if thinking:
         config["thinking_level"] = thinking
+        if usage is not None and usage.get("want_thoughts"):
+            config["thinking_summaries"] = "auto"
     attempt = 0
     while attempt < retries:
         if config:
@@ -658,13 +691,16 @@ def _gemini_interaction(model: str, api_key: str, prompt: str, temperature: floa
                 raise APIError(f"empty response from {model}")
             if usage is not None:
                 usage.update(data.get("usage") or {})
+                if usage.get("want_thoughts"):
+                    usage["thought_summary"] = _thought_summary(data)
             return content
         except urllib.error.HTTPError as exc:
             message, delay = _error_details(exc)
             lower = message.lower()
             # A model without this thinking level or JSON mode: ask again without it. The prompt still
             # asks for JSON, and the reply is checked either way.
-            if exc.code == 400 and (("thinking" in lower and config.pop("thinking_level", None))
+            if exc.code == 400 and (("thinking" in lower and (config.pop("thinking_summaries", None)
+                                                              or config.pop("thinking_level", None)))
                                     or ("top_p" in lower and config.pop("top_p", None))
                                     or ("top_k" in lower and config.pop("top_k", None))
                                     or (("response_format" in lower or "schema" in lower)
@@ -686,8 +722,17 @@ def _gemini_interaction(model: str, api_key: str, prompt: str, temperature: floa
                 raise APIError(f"{model}'s reply was lost on the way: {exc!r}") from exc
             reason, wait = "reply lost on the way", 2 ** (attempt - 1) * 5
         print(f"  Gemini request failed ({reason}); retrying in {wait:.0f}s", file=sys.stderr)
+        if usage is not None and usage.get("want_thoughts"):
+            usage.setdefault("retry_reasons", []).append(reason)
         time.sleep(wait)
     raise AssertionError("unreachable")
+
+
+def _thought_summary(data: dict) -> str | None:
+    """The model's own summary of its thinking, which isn't a reliable account of why it wrote what it wrote."""
+    parts = [part.get("text", "") for step in data.get("steps", []) if step.get("type") == "thought"
+             for part in (step.get("summary") or []) if isinstance(part, dict)]
+    return "\n".join(part for part in parts if part) or None
 
 
 def answer_token_limit(words: int) -> int:

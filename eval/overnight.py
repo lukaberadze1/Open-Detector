@@ -103,7 +103,8 @@ def gemini_command(paths: Paths, smoke: bool, setup: str, extra: list, repeats: 
     documents = sorted(DOCUMENTS.glob("*.md"))[:1 if smoke else None]
     tiny = ["--rounds", 1, "--no-log"] if smoke else []
     return py("eval.tune_revise", *documents, "--as-page", "--repeats", repeats, "--model", model,
-              "--out", paths.revise, "--report", paths.out / f"{setup}_{model}.md", *extra, *tiny)
+              "--out", paths.revise, "--trace", paths.out / "trace.jsonl",
+              "--report", paths.out / f"{setup}_{model}.md", *extra, *tiny)
 
 
 def write_samples(paths: Paths, limit: int | None) -> str:

@@ -61,6 +61,7 @@ class Report:
     features: dict[str, float] = field(default_factory=dict)
     engines: dict[str, float] = field(default_factory=dict)
     sentences: list[SentenceScore] = field(default_factory=list)
+    windows: list[dict] = field(default_factory=list)  # each document window's span and engine scores
     normalization: NormalizationReport = field(default_factory=NormalizationReport)
 
     def to_dict(self) -> dict:
@@ -227,5 +228,7 @@ class Detector:
             for s, total, count in zip(sents, totals, counts, strict=True):
                 sentence_scores.append(SentenceScore(s.start, s.end, clean[s.start : s.end], float(total / count)))
 
+        windows = [{"start": w.start, "end": w.end, **{name: float(values[k]) for name, values in doc_scores.items()}}
+                   for k, w in enumerate(doc_windows)]
         return Report(verdict=self.verdict(p), ai_probability=p, features=feats, engines=engines,
-                      sentences=sentence_scores, **base)
+                      sentences=sentence_scores, windows=windows, **base)

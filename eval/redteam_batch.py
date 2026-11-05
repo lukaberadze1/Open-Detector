@@ -668,17 +668,17 @@ def stock_phrases(text: str) -> int:
     return sum(phrase in low for phrase in _STOCK)
 
 
-def meaning_kept(passage: str, revised: str, context: str = "") -> bool:
-    """keeps_facts and more, after ClearRewriter's check: no name or number that isn't in the passage or in `context`,
-    the document around it, no more than one negation gained or lost, no 'I', 'we' or 'you' the passage doesn't have,
-    and about the same length."""
+def meaning_problem(passage: str, revised: str, context: str = "") -> str | None:
+    """What keeps a rewrite from counting as the same passage, after ClearRewriter's check: `facts` (keeps_facts),
+    `length` (about the same), `new_fact` (a name or number that isn't in the passage or in `context`, the document
+    around it), `negation` (more than one gained or lost) or `person` ('I', 'we' or 'you' the passage doesn't have)."""
     if not keeps_facts(passage, revised):
-        return False
+        return "facts"
     if not 0.6 <= len(revised) / max(1, len(passage)) <= 1.6:
-        return False
+        return "length"
     known = passage + " " + context
     if any(term.rstrip(".,") not in known for term in _FACT.findall(revised.strip())):
-        return False
+        return "new_fact"
 
     def words(text: str) -> list[str]:
         return [word.split("'")[0] if word.endswith(("'re", "'ll", "'ve", "'m", "'d")) else word
@@ -686,7 +686,13 @@ def meaning_kept(passage: str, revised: str, context: str = "") -> bool:
 
     before, after = words(passage), words(revised)
     negations = [sum(word in _NEGATIONS or word.endswith("n't") for word in side) for side in (before, after)]
-    return abs(negations[0] - negations[1]) <= 1 and not (set(after) - set(before)) & _PERSONAL
+    if abs(negations[0] - negations[1]) > 1:
+        return "negation"
+    return "person" if (set(after) - set(before)) & _PERSONAL else None
+
+
+def meaning_kept(passage: str, revised: str, context: str = "") -> bool:
+    return meaning_problem(passage, revised, context) is None
 
 
 def _written_tries(plan, jobs_for: Callable[[int], list[dict]], ask, clean, tries: int) -> dict[str, list[str]]:
@@ -843,7 +849,8 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
                   windows: Callable[[str], list[tuple[int, int, float]]] | None = None,
                   fits: Callable[[str], bool] | None = None, prompt: str = REVISE, facts: bool = False,
                   candidates: int = 1, progress: Callable[[dict], None] | None = None,
-                  stats: Counter | None = None, mask: bool = False) -> tuple[dict[str, str], list[float | None]]:
+                  stats: Counter | None = None, mask: bool = False, trace=None,
+                  ) -> tuple[dict[str, str], list[float | None]]:
     """A document's rewritten blocks revised where the detector reads the whole as AI, as revise_flagged does
     a sample, keeping each block in its place in the document. `texts` holds each block's text by key, in
     document order. A long block is cut into passages (passage_spans), since whole it gets one all-or-nothing
@@ -879,6 +886,8 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
     if report.ai_probability is None:
         return {}, [None]
     best, history, touched = report.ai_probability, [report.ai_probability], set()
+    if trace:
+        trace.version("revise_start", whole(shown), report)
     for round_ in range(1, rounds + 1):
         if best < target:
             break
@@ -913,20 +922,37 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
                 if not new or new == shown[name]:
                     stats["unchanged"] += 1
                     continue
-                if facts and not meaning_kept(shown[name], new, whole(shown)):
+                problem = meaning_problem(shown[name], new, whole(shown)) if facts else None
+                if problem:
                     stats["facts"] += 1
+                    stats[f"facts:{problem}"] += 1
+                    if trace:
+                        trace.event("candidate", round=round_, passage=name, before=shown[name], text=new,
+                                    status="dropped", reason=problem)
                     continue
                 trial = {**shown, name: new}
                 if fits and not fits(whole(trial)):
                     stats["style"] += 1
+                    if trace:
+                        trace.event("candidate", round=round_, passage=name, before=shown[name], text=new,
+                                    status="dropped", reason="style")
                     continue
                 stats["scored"] += 1
-                candidate = analyze(whole(trial), sentences=False).ai_probability
+                scored = analyze(whole(trial), sentences=False)
+                candidate = scored.ai_probability
+                if trace:
+                    trace.event("candidate", round=round_, passage=name, before=shown[name], text=new,
+                                status="scored",
+                                score=candidate, passage_score=scores[name], best_before=best,
+                                windows=scored.windows)
                 if candidate is None:
                     continue
                 rank = (round(candidate, 2), stock_phrases(new))
                 if kept is None or rank < kept[0]:
                     kept = (rank, candidate, new)
+            if trace:
+                trace.event("passage", round=round_, passage=name, kept=bool(kept and kept[1] < best),
+                            lowest=kept[1] if kept else None, best_before=best)
             if kept and kept[1] < best:
                 best, shown[name] = kept[1], kept[2]
                 touched.add(blocks[name])
@@ -935,6 +961,9 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
                 stats["not_lower"] += 1
             tell({"round": round_, "rounds": rounds, "tested": tested, "passages": len(chosen), "likelihood": best})
         history.append(best)
+        if trace:
+            trace.version("revise_round", whole(shown), round=round_, score=best,
+                          chosen=[[name, round(scores[name], 4)] for name in chosen])
         if _stalled(history):
             break
         if best >= target and round_ < rounds:
