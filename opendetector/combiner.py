@@ -16,8 +16,11 @@ import numpy as np
 
 from .metrics import conformal_threshold
 
-# Verdict bands: "ai" is the flag threshold, "review" a looser band for a human look.
-DEFAULT_ALPHAS = {"ai": 0.01, "review": 0.05}
+# The "ai" threshold is calibrated to a false-positive rate. "review" is a fixed choice, not
+# calibrated: Likely human means an AI likelihood of 15% or under, and anything between the two
+# needs a human look.
+DEFAULT_ALPHAS = {"ai": 0.01}
+HUMAN_CUTOFF = 0.15
 
 
 @dataclass
@@ -88,7 +91,8 @@ def set_thresholds(combiner: Combiner, human_scores: np.ndarray,
     """Set each band's threshold from human texts' scores. The scores must come from a
     model that never saw those texts, or the false-positive guarantee is void."""
     human_scores = np.asarray(human_scores, dtype=float)
-    combiner.thresholds = {name: conformal_threshold(human_scores, a) for name, a in alphas.items()}
+    combiner.thresholds = {"review": HUMAN_CUTOFF,
+                           **{name: conformal_threshold(human_scores, a) for name, a in alphas.items()}}
     combiner.info["alphas"] = dict(alphas)
     combiner.info["n_calibration_human"] = len(human_scores)
     return combiner

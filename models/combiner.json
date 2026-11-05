@@ -42,7 +42,7 @@
   "intercept": 1.9724217503518398,
   "thresholds": {
     "ai": 0.8221154852161824,
-    "review": 0.35161373360969855
+    "review": 0.15
   },
   "info": {
     "n_fit": 1093,
@@ -52,8 +52,7 @@
     "fitted": "2026-10-23",
     "threshold_method": "5-fold out-of-fold conformal",
     "alphas": {
-      "ai": 0.01,
-      "review": 0.05
+      "ai": 0.01
     },
     "n_calibration_human": 480,
     "n_test": 300,

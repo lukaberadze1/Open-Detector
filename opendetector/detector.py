@@ -8,7 +8,7 @@ from typing import Protocol
 
 import numpy as np
 
-from .combiner import Combiner
+from .combiner import HUMAN_CUTOFF, Combiner
 from .config import DetectorConfig
 from .normalize import NormalizationReport, normalize
 from .segment import (
@@ -25,7 +25,7 @@ from .zippy import compression_readings
 
 # Used only when no combiner has been fitted yet: a plain average of the classifiers'
 # probabilities, with conservative cut-offs. The app labels these results uncalibrated.
-FALLBACK_THRESHOLDS = {"ai": 0.9, "review": 0.6}
+FALLBACK_THRESHOLDS = {"ai": 0.9, "review": HUMAN_CUTOFF}
 
 VERDICTS = ("insufficient_text", "not_prose", "likely_human", "needs_review", "likely_ai")
 

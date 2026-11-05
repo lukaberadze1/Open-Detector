@@ -75,7 +75,7 @@ rubric or example rows the template already had filled in, so name those if they
 
 Close with one or two lines of caveats, not a lecture:
 
-- A score is statistical evidence, not proof of authorship. The cut-offs target a 1% (likely AI)
-  and 5% (needs review) false-positive rate on the evaluation data.
+- A score is statistical evidence, not proof of authorship. The likely-AI cut-off targets a 1%
+  false-positive rate on the evaluation data. Likely human is a fixed 15% or under, not calibrated.
 - The weakest spot is AI paraphrasing of human writing. Formulaic writing (rubric language, test
   protocols) can read as AI-like. Sections under 150 words get no verdict of their own.

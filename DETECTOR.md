@@ -259,8 +259,8 @@ document into development (80%) and test (20%), so a text's attacked copies and 
 always land on the same side.
 
 Thresholds are cross-fitted. Each development text is scored by a model trained on the other
-four folds, and the 1% and 5% cut-offs come from those scores on every development human
-text, instead of from a small held-out slice. False-positive rates are reported per source
+four folds, and the 1% cut-off for *Likely AI* comes from those scores on every development human
+text, instead of from a small held-out slice. *Likely human* is a fixed 15% or under, not calibrated. False-positive rates are reported per source
 document, because attacked copies of one text aren't independent errors.
 
 Human writing rewritten by an AI paraphraser counts as **AI**: RAID's "human" texts under its

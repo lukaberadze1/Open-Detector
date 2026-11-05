@@ -180,10 +180,9 @@ def main() -> None:
         f"flags {src_fp}/{n_src} human documents, {src_fp / n_src:.2%} (95% CI {src_lo:.2%}–{src_hi:.2%}); "
         f"per text {fp}/{nh}, {fp / nh:.2%}. Catches {flagged[ai].mean():.1%} of AI texts."
         + verdict_on_target(src_fp / n_src, DEFAULT_ALPHAS["ai"], src_lo),
-        f"- **Needs review** when p > {combiner.thresholds['review']:.4f} (target FPR {DEFAULT_ALPHAS['review']:.0%}): "
+        f"- **Needs review** when p > {combiner.thresholds['review']:.4f} (a fixed cut-off, not calibrated): "
         f"flags {rev_fp}/{n_src} human documents, {rev_fp / n_src:.2%} (95% CI {rev_lo:.2%}–{rev_hi:.2%}). "
-        f"Catches {review[ai].mean():.1%} of AI texts."
-        + verdict_on_target(rev_fp / n_src, DEFAULT_ALPHAS["review"], rev_lo), "",
+        f"Catches {review[ai].mean():.1%} of AI texts.", "",
         "## Combiner weights (standardized features)", "",
         *[f"- `{f}`: {w:+.3f}" for f, w in weights], "",
     ]

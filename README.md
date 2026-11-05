@@ -93,8 +93,8 @@ apps** and delete those two folders.
 
 Three engines score overlapping windows of the whole text: GLYPH (DeBERTa-v3-base), Desklib
 (DeBERTa-v3-large) and Binoculars (a Qwen2.5-0.5B pair). A logistic-regression combiner turns
-their readings into one AI likelihood, with cut-offs set on held-out human writing for a 1%
-(*Likely AI*) and 5% (*Needs review*) false-positive rate. It gives no verdict on texts under 150
+their readings into one AI likelihood. *Likely AI* is set on held-out human writing for a 1%
+false-positive rate, *Likely human* means 15% or under, and between them is *Needs review*. It gives no verdict on texts under 150
 words or on non-prose such as poems and lists, and it strips hidden characters and look-alike
 letters before scoring. The *Slim* build runs Desklib alone on the CPU in about 1.5 GB.
 
