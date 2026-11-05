@@ -160,3 +160,22 @@ def test_the_search_uses_a_batching_scorer():
     score = Batch()
     assert ca.score_all(score, ["a", "b"]) == [0.5, 0.5] and score.batches == [2]
     assert ca.score_all(lambda text: 0.1, ["a"]) == [0.1]
+
+
+def test_pegasus_is_given_the_sentence_alone():
+    assert ca.paraphrase_prompt("pegasus", "Hi.") == "Hi."
+
+
+def test_listed_synonyms_are_added_after_the_models(monkeypatch):
+    class Fill:
+        class tokenizer:
+            mask_token = "<mask>"
+
+        def __call__(self, sentence):
+            return [{"token_str": " vast"}]
+
+    monkeypatch.setattr(ca, "_fill_model", Fill)
+    monkeypatch.setattr(ca, "_listed_synonyms", lambda: {"large": ("big", "vast")})
+    tokens = ca.Tokens(TEXT)
+    place = tokens.parts.index("large")
+    assert ca.propose(tokens.parts, place, tokens.sentence_of[place]) == ["vast", "big"]

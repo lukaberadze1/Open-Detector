@@ -58,21 +58,22 @@ MIN_PAIR_SHARE = 0.2  # a new word's rarer word pair, against the original's: 'r
 WORD_VECTORS = Path(__file__).resolve().parents[1] / "data/vendor/counter-fitting/word_vectors"
 # Words that carry a sentence's structure, not its content: swapping them passed the sentence-level checks but broke it
 # ('after' to 'now', 'around' to 'seen', 'due' to 'because').
-_STRUCTURAL = frozenset((
-    "after before during while since until because due around across along among between through "
-    "within without against toward towards behind beyond near now then still yet even ever never "
-    "something anything nothing everything someone anyone everyone got get gets went go goes comes "
-    "come came"
-).split())  # noqa: SIM905
+_STRUCTURAL = frozenset([
+    "after", "before", "during", "while", "since", "until", "because", "due", "around", "across", "along", "among",
+    "between", "through", "within", "without", "against", "toward", "towards", "behind", "beyond", "near", "now",
+    "then", "still", "yet", "even", "ever", "never", "something", "anything", "nothing", "everything", "someone",
+    "anyone", "everyone", "got", "get", "gets", "went", "go", "goes", "comes", "come", "came",
+])
 # Light verbs and units of time: 'keep on' and 'seven days' don't survive a synonym.
-_LOCKED = frozenset((
-    "keep keeps kept give gives gave take takes took make makes made have has had do does did days "
-    "weeks months years hours minutes times"
-).split())  # noqa: SIM905
-_IRREGULAR_PAST = frozenset((
-    "told said went came got made took gave knew thought found left felt kept held brought began "
-    "wrote saw ran won lost paid sold sent stood understood became"
-).split())  # noqa: SIM905
+_LOCKED = frozenset([
+    "keep", "keeps", "kept", "give", "gives", "gave", "take", "takes", "took", "make", "makes", "made", "have", "has",
+    "had", "do", "does", "did", "days", "weeks", "months", "years", "hours", "minutes", "times",
+])
+_IRREGULAR_PAST = frozenset([
+    "told", "said", "went", "came", "got", "made", "took", "gave", "knew", "thought", "found", "left", "felt", "kept",
+    "held", "brought", "began", "wrote", "saw", "ran", "won", "lost", "paid", "sold", "sent", "stood", "understood",
+    "became",
+])
 _TOKENS = re.compile(r"([A-Za-z]+)")
 _FORMS = ("ing", "ed", "ly", "s")
 
@@ -192,8 +193,23 @@ def _fill_model():
     return pipeline("fill-mask", model=FILL_MODEL, device="cpu", top_k=PROPOSALS)
 
 
+@lru_cache(maxsize=1)
+def _listed_synonyms() -> dict[str, tuple[str, ...]]:
+    """The counter-fitting project's PPDB synonym pairs, both ways, when they're there."""
+    path = WORD_VECTORS.parent / "linguistic_constraints/ppdb_synonyms.txt"
+    pairs: dict[str, set[str]] = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            words = line.split()
+            if len(words) == 2:
+                pairs.setdefault(words[0], set()).add(words[1])
+                pairs.setdefault(words[1], set()).add(words[0])
+    return {word: tuple(sorted(others)) for word, others in pairs.items()}
+
+
 def propose(parts: list[str], i: int, bounds: tuple[int, int]) -> list[str]:
-    """Words the fill-in-the-blank model would put at place `i` of its sentence, the likeliest first."""
+    """Words the fill-in-the-blank model would put at place `i` of its sentence, the likeliest first, then listed
+    synonyms it didn't think of. All of them still face the same checks."""
     fill = _fill_model()
     masked = list(parts)
     masked[i] = fill.tokenizer.mask_token
@@ -201,7 +217,8 @@ def propose(parts: list[str], i: int, bounds: tuple[int, int]) -> list[str]:
     if len(sentence.split()) > 200:  # past the model's length, where the blank could be cut off
         return []
     results = fill(sentence)
-    return [row["token_str"].strip() for row in results]
+    suggested = [row["token_str"].strip() for row in results]
+    return list(dict.fromkeys([*suggested, *_listed_synonyms().get(parts[i].lower(), ())]))
 
 
 class MeaningGuard:
@@ -462,7 +479,12 @@ def paraphrase(name: str, sentences: list[str], contexts: list[str] | None = Non
 
     tokenizer, model, device = _paraphraser(name)
     prompts = [paraphrase_prompt(name, s, (contexts or [""] * len(sentences))[i]) for i, s in enumerate(sentences)]
-    encoded = tokenizer(prompts, padding=True, truncation=True, max_length=512, return_tensors="pt").to(device)
+    # Pegasus reads 60 tokens at most. A longer sentence is left alone: rewriting its first part would lose the rest.
+    limit = getattr(model.config, "max_position_embeddings", 512) or 512
+    if any(len(ids) > limit for ids in tokenizer(prompts)["input_ids"]):
+        return [[] for _ in sentences]
+    encoded = tokenizer(prompts, padding=True, truncation=True, max_length=min(limit, 512),
+                        return_tensors="pt").to(device)
     with torch.no_grad():
         output = model.generate(**encoded, do_sample=True, top_p=0.75, num_return_sequences=options, max_new_tokens=128)
     texts = tokenizer.batch_decode(output, skip_special_tokens=True)
