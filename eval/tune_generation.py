@@ -476,7 +476,7 @@ def run_trial(trial: dict, jobs: list[dict], plan, system: str | None, api_key: 
     for keys in group_by_words(list(by_key), size, lambda key: count_words(by_key[key]["previous"])):
         group = [by_key[key] for key in keys]
         alone = group
-        if len(group) > 1:
+        if len(group) > 1 or getattr(plan, "mask_facts", False):
             written, alone = rewrite_group(plan, group, lambda prompt, jobs: ask(
                 prompt, json_schema=GROUP_SCHEMA, timeout=60 + 15 * len(jobs)), clean)
             texts.update(written)

@@ -39,6 +39,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+from eval.fact_mask import LOST, FactMask
 from opendetector.normalize import normalize
 from opendetector.segment import Sentence, count_words, sentence_windows, split_sentences
 
@@ -440,16 +441,28 @@ def rewrite_group(plan, group: list[dict], ask: Callable[[str, list[dict]], str]
     where asking for each copy on its own would send the profile and the document again per block. Gives
     each written block's text by key, a copy included if it comes back twice (it is never saved as AI),
     a block short of its plan asked for again too (off_plan), and the blocks a reply left out, to be
-    written on their own."""
+    written on their own. With `plan.mask_facts`, the blocks go out with their names and numbers as
+    placeholders (FactMask) and come back with them restored: a reply that loses one is asked for again
+    with the others, and one that loses it twice is written on its own, as a left-out block is."""
     texts, alone, pending, notes = {}, [], group, ""
+    originals = {job["key"]: job for job in group}
+    mask = None
+    if getattr(plan, "mask_facts", False):
+        mask = FactMask(plan.context_text, *(job["previous"] for job in group))
+        pending = [{**job, "previous": mask.hide(job["previous"])} for job in group]
     for attempt in range(2):
         prompt = group_prompt(plan, pending) + notes
+        if mask:
+            prompt += mask.legend([job["previous"] for job in pending])
         parsed = parse_group_reply(ask(prompt, pending), [f"B{number}" for number in range(1, len(pending) + 1)])
-        copies, short = [], []
+        copies, short, lost = [], [], []
         for number, job in enumerate(pending, 1):
             if not (text := follow_original(plan, job, clean(parsed.get(f"B{number}", "")))):
                 if job["key"] not in texts:
-                    alone.append(job)
+                    alone.append(originals[job["key"]])
+                continue
+            if mask and mask.lost(job["previous"], text):
+                lost.append(job)
                 continue
             if attempt and off_plan(plan, job, text) and count_words(text) < count_words(texts[job["key"]]):
                 continue  # asked again and came back shorter: the first was nearer the plan
@@ -458,11 +471,14 @@ def rewrite_group(plan, group: list[dict], ask: Callable[[str, list[dict]], str]
                 copies.append(job)
             elif off_plan(plan, job, text):
                 short.append(job)
-        if not copies and not short:
+        if not copies and not short and not lost:
             break
-        pending = copies + short
-        notes = (f"\n\n{AGAIN_ALL}" if copies else "") + (f"\n\n{ALL_OF_PLAN}" if short else "")
-    return texts, alone
+        if attempt:
+            alone += [originals[job["key"]] for job in lost if job["key"] not in texts]
+        pending = copies + short + lost
+        notes = ((f"\n\n{AGAIN_ALL}" if copies else "") + (f"\n\n{ALL_OF_PLAN}" if short else "")
+                 + (f"\n\n{LOST}" if lost else ""))
+    return {key: mask.restore(text) for key, text in texts.items()} if mask else texts, alone
 
 
 # Told to use plain words, a model doesn't: its vocabulary stayed about as varied whatever the prompt said
@@ -715,7 +731,7 @@ def revise_flagged(text: str, analyze: Callable[[str], object], ask: Callable[[s
                    clean: Callable[[str], str], shapes: list, rounds: int = 2, target: float = WIN_BELOW,
                    fits: Callable[[str], bool] | None = None, prompt: str = REVISE,
                    facts: bool = False, candidates: int = 1, above: float | None = None,
-                   max_requests: int | None = None) -> tuple[str, list[float | None]]:
+                   max_requests: int | None = None, mask: bool = False) -> tuple[str, list[float | None]]:
     """A text revised where the detector reads it as AI: each round rewrites its most AI-like passages
     (by sentence score, at most half of them) in new sentence plans borrowed from the writer, told what
     was flagged (REVISE), and keeps each rewritten passage only if the whole text then scores lower,
@@ -729,7 +745,8 @@ def revise_flagged(text: str, analyze: Callable[[str], object], ask: Callable[[s
     passage gets that many rewrites a round, in different plans, and the lowest-scoring that passes is the one tried.
     With `above`, every passage scoring at least that is
     rewritten, no others, and revising ends when none is left, whatever the whole text scores. `max_requests` stops
-    it before a round once that many requests have gone."""
+    it before a round once that many requests have gone. With `mask`, names and numbers go out as placeholders
+    (FactMask)."""
     sent = 0
     inner_ask = ask
 
@@ -763,7 +780,8 @@ def revise_flagged(text: str, analyze: Callable[[str], object], ask: Callable[[s
 
         plan = SimpleNamespace(prompt=prompt, context_text=base, blocks=[], answer_slots=[],
                                match_existing_lengths=True, answer_words=100, structure="writer" if shapes else "free",
-                               shapes=shapes)  # no stretch: a revised passage keeps its length, round after round
+                               # no stretch: a revised passage keeps its length, round after round
+                               shapes=shapes, mask_facts=mask)
         written = _written_tries(plan, jobs, ask, clean, candidates)
         passages = [base[start:end] for start, end in spans]
         gaps = [base[:spans[0][0]]] + [base[end:after[0]] for (_, end), after in pairwise(spans)] \
@@ -825,7 +843,7 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
                   windows: Callable[[str], list[tuple[int, int, float]]] | None = None,
                   fits: Callable[[str], bool] | None = None, prompt: str = REVISE, facts: bool = False,
                   candidates: int = 1, progress: Callable[[dict], None] | None = None,
-                  ) -> tuple[dict[str, str], list[float | None]]:
+                  stats: Counter | None = None, mask: bool = False) -> tuple[dict[str, str], list[float | None]]:
     """A document's rewritten blocks revised where the detector reads the whole as AI, as revise_flagged does
     a sample, keeping each block in its place in the document. `texts` holds each block's text by key, in
     document order. A long block is cut into passages (passage_spans), since whole it gets one all-or-nothing
@@ -839,8 +857,12 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
     a passage gets that many rewrites a round, in different plans, and the lowest-scoring that passes is the one tried.
     `progress`, if given, is told the round, rounds, passages tested, passages chosen and current AI likelihood
     as they change, since one round can take minutes.
+    `stats`, if given, counts what became of each rewrite: `unchanged`, `facts` and `style` (dropped by those checks),
+    `scored` (scored against the whole), then per passage `kept` or `not_lower`.
+    With `mask`, names and numbers go out as placeholders (FactMask).
     Gives the changed blocks' texts by key, and the AI likelihood after each round, the first before any."""
     tell = progress or (lambda _: None)
+    stats = Counter() if stats is None else stats
     shown, gaps, blocks = {}, {}, {}  # each passage's text and what follows it, by "block#number"
     for key, text in texts.items():
         plain = normalize(text)[0]
@@ -882,19 +904,23 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
 
         plan = SimpleNamespace(prompt=prompt, context_text=whole(shown), blocks=[], answer_slots=[],
                                match_existing_lengths=True, answer_words=100, structure="writer" if shapes else "free",
-                               shapes=shapes)
+                               shapes=shapes, mask_facts=mask)
         written = _written_tries(plan, jobs, ask, clean, candidates)
         for tested, name in enumerate(chosen, 1):
             kept = None
             for text in written.get(f"{name} revise {round_}", []):
                 new = normalize(text)[0]
                 if not new or new == shown[name]:
+                    stats["unchanged"] += 1
                     continue
                 if facts and not meaning_kept(shown[name], new, whole(shown)):
+                    stats["facts"] += 1
                     continue
                 trial = {**shown, name: new}
                 if fits and not fits(whole(trial)):
+                    stats["style"] += 1
                     continue
+                stats["scored"] += 1
                 candidate = analyze(whole(trial), sentences=False).ai_probability
                 if candidate is None:
                     continue
@@ -904,6 +930,9 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
             if kept and kept[1] < best:
                 best, shown[name] = kept[1], kept[2]
                 touched.add(blocks[name])
+                stats["kept"] += 1
+            elif kept:
+                stats["not_lower"] += 1
             tell({"round": round_, "rounds": rounds, "tested": tested, "passages": len(chosen), "likelihood": best})
         history.append(best)
         if _stalled(history):

@@ -293,6 +293,7 @@ class Plan:
     restyle: bool = False  # a sample from a prompt: rewrite the draft in the writer's sentences (redteam_batch.restyle)
     revise_above: float | None = None  # a sample: revise every passage at this score or more, and no others
     revise: int = 0  # a sample: rounds rewriting the passages the detector flags (redteam_batch.revise_flagged)
+    mask_facts: bool = False  # rewrites: names and numbers go out as placeholders (eval/fact_mask.py), not in public
     attacks: tuple[str, ...] = ()  # applied to the finished text before revising (eval/text_attacks.py)
     rules: bool = False  # phrase and discourse-marker swaps on the finished text (opendetector/core)
     math: bool = False  # the no-model, detector-guided edits on the finished text (eval/math_attack.py)
@@ -866,6 +867,11 @@ def _scoring(plan: Plan, profile: str) -> None:
                                            "the whole text is under the bar. Otherwise every passage at this score or "
                                            "more is rewritten, and no others.")
                     plan.revise_above = above / 100 or None
+            plan.mask_facts = st.toggle(
+                "Hold names and numbers exactly", key=keep("keep:redteam:mask_facts", False),
+                help="Rewrites and revisions get placeholders in place of names, numbers, citations and links, and the "
+                     "originals go back afterwards, so none can be dropped or changed. A rewrite that loses a "
+                     "placeholder is asked for again. Off by default until it has been measured.")
             _attacks(plan)
     if plan.evasion:
         st.caption("Every draft is saved as AI-labelled evaluation data; the kept one records the mode and scores. "
@@ -935,7 +941,7 @@ def _revise_existing(plan: Plan, conn: Connection, text: str, above: float, loca
         new, _ = revise_flagged(text, detector.analyze, ask, styled_clean(plan.style_path, plan.register, swaps=True),
                                 plan.shapes or [], REVISE_ROUNDS, prompt=REVISE_KEEPING, facts=True,
                                 candidates=REVISE_CANDIDATES, above=above, max_requests=REVISE_REQUESTS,
-                                fits=_style_fits(plan, text))
+                                fits=_style_fits(plan, text), mask=plan.mask_facts)
     after = detector.analyze(new, sentences=False).ai_probability
     saved = new != first.text and is_ai
     if saved:
@@ -1144,6 +1150,7 @@ def _setup(profile: str) -> tuple[Plan, Connection]:
                      "no quota. Much slower, and not yet measured enough to trust: read what it changes.")
         if engine == "Math":
             plan.evasion, plan.revise, plan.restyle, plan.attacks, plan.rules = False, 0, False, (), False
+            plan.mask_facts = False
             plan.source_is_ai = st.toggle(
                 "The source is AI text", key=keep("keep:redteam:source_is_ai", False),
                 help="Rule edits leave a text its original author's, so by default they aren't saved as AI data. "
@@ -1480,7 +1487,7 @@ def _settings(plan: Plan) -> dict:
             "structure": structure(plan) if plan.rewrite_all_blocks else None,
             "restyle": plan.restyle if plan.task == "sample" else None,
             "attacks": list(plan.attacks), **({"rules": True} if plan.rules else {}),
-            **({"math": True} if plan.math else {}),
+            **({"math": True} if plan.math else {}), **({"masked": True} if plan.mask_facts else {}),
             "top_p": plan.top_p, "top_k": plan.top_k,
             "blocks_per_request": (1 if plan.evasion else plan.group_size) if plan.batch else None}
 
@@ -1510,6 +1517,7 @@ def _checkpoint_path(plan: Plan) -> Path:
     style = [plan.style_name] if plan.use_profile and plan.style_name != UNNAMED_STYLE else []
     follow = [structure(plan)] if plan.rewrite_all_blocks and structure(plan) != "free" else []
     follow += [f"revise{plan.revise}"] if plan.revise else []
+    follow += ["masked"] if plan.mask_facts else []
     follow += [*plan.attacks, *(["rules"] if plan.rules else []), *(["math"] if plan.math else []),
                *(["mathonly"] if plan.engine == "Math" else []),
                *(f"{option}{value:g}" for option, value in (plan.sampling or {}).items())]
@@ -1547,7 +1555,8 @@ def _export_batch(plan: Plan, jobs: list[dict], checkpoint: Checkpoint, partial:
 
     attack = (f"{mode_tag}+math" if plan.engine == "Math"  # no model, so no style profile was written in
               else f"{mode_tag}+{plan.style_name}" + attack_label(plan.attacks) + ("+rules" if plan.rules else "")
-              + ("+math" if plan.math else "") + (f"+revise{plan.revise}" if plan.revise else ""))
+              + ("+math" if plan.math else "") + (f"+revise{plan.revise}" if plan.revise else "")
+              + ("+masked" if plan.mask_facts else ""))
     rows = []
     # A block handed back as the uploaded original is the writer's text, not AI text: never saved as AI.
     # So is a math edit, however few of its words stay, unless the user says an AI wrote the source.
@@ -1967,7 +1976,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         """Write a group of blocks in one request, and any it hands back as the original once more together
         (rewrite_group), then any block a reply leaves out or garbles on its own."""
         group_jobs = [by_key[key] for key in group]
-        if len(group_jobs) > 1:
+        if len(group_jobs) > 1 or plan.mask_facts:
             models: dict[str, str] = {}
 
             def ask(prompt: str, jobs: list[dict]) -> str:
@@ -2064,7 +2073,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
                                          plan.shapes or [], plan.revise, prompt=REVISE_KEEPING, facts=True,
                                          candidates=REVISE_CANDIDATES,
                                          fits=_style_fits(plan, "\n\n".join(texts.values())),
-                                         progress=lambda now: status.update(revising=now))
+                                         progress=lambda now: status.update(revising=now), mask=plan.mask_facts)
         status.pop("revising", None)
         for key, text in changed.items():
             checkpoint.update(key, text=text, score=candidate_metrics(text, plan.profile, plan.style_path,
@@ -2271,7 +2280,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
                         essay, models.get_detector(plan.profile).analyze, restyle_ask, clean,
                         plan.shapes or [], plan.revise, prompt=REVISE_KEEPING, facts=True,
                         candidates=REVISE_CANDIDATES, above=plan.revise_above, max_requests=REVISE_REQUESTS,
-                        fits=_style_fits(plan, essay))
+                        fits=_style_fits(plan, essay), mask=plan.mask_facts)
                 drafts[essay] = model
     except APIError as exc:
         st.error(str(exc), icon=":material/error:")
@@ -2330,6 +2339,8 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     if plan.revise:
         row["attack"] += f"+revise{plan.revise}"
         row["revise_rounds"] = revise_history  # the AI likelihood before revising and after each round
+    if plan.mask_facts:
+        row["attack"] += "+masked"
     if baseline_metrics is not None:
         row["baseline_ai_probability"] = baseline_metrics.get("ai_probability")
         row["baseline_style_match"] = baseline_metrics.get("style_match")

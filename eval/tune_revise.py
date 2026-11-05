@@ -23,6 +23,7 @@ import re
 import statistics
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 from eval import generate_essays
@@ -48,6 +49,9 @@ from opendetector.segment import count_words, split_sentences
 
 ROOT = Path(__file__).resolve().parents[1]
 GROUP = 8
+QUOTA_EXIT = 3  # so a runner can tell a spent quota from a crash
+DOWN_EXIT = 4  # and a model that stays overloaded from either
+GIVE_UPS = 2  # repeats in a row given up on before calling the model down: each has already waited out BUSY_WAITS
 METHODS = ("sentences", "windows")
 BUSY_WAITS = (60, 120, 300, 300)  # seconds before writing a repeat again after a model is overloaded or times out
 # Instructions tried on top of the style profile, by name (--note); each is labelled in the attack.
@@ -186,8 +190,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--candidates", type=int, default=REVISE_CANDIDATES,
                         help="rewrites a passage gets each round, the best kept: the page's three use three times "
                              "the requests")
+    parser.add_argument("--drafts", type=int, default=1,
+                        help="write this many first drafts and revise the lowest-scoring")
+    parser.add_argument("--no-log", action="store_true", help="save no labelled data: for testing this script")
     parser.add_argument("--note", choices=list(NOTES), action="append", default=[],
                         help="an instruction added to the style profile; repeat it to stack them")
+    parser.add_argument("--mask-facts", action="store_true",
+                        help="send names and numbers as placeholders, in writing and revising (eval/fact_mask.py)")
     parser.add_argument("--no-guard", action="store_true",
                         help="with --as-page, let a revision leave the style profile, for one with no writer to match")
     parser.add_argument("--as-page", action="store_true",
@@ -217,8 +226,10 @@ def main(argv: list[str] | None = None) -> int:
         system += f"\n\n{NOTES[note]}"
         style += f"+{note}"
     style += f"+t{args.temperature:g}" + ("+as-page" if args.as_page else "") + ("+no-guard" if args.no_guard else "")
+    style += "+masked" if args.mask_facts else ""
     sampling = {option: value for option, value in (("top_p", args.top_p), ("top_k", args.top_k)) if value is not None}
     style += f"+best{args.candidates}" if args.rounds else "+draft"
+    style += f"+drafts{args.drafts}" if args.drafts > 1 else ""
     style += attack_label(args.attack) + "".join(f"+{option}{value:g}" for option, value in sampling.items())
     methods = [method.strip() for method in args.methods.split(",") if method.strip()]
     saved = [json.loads(line) for line in args.out.open(encoding="utf-8")] if args.out.exists() else []
@@ -234,54 +245,69 @@ def main(argv: list[str] | None = None) -> int:
         shapes = writer_shapes(args.style, args.register)
         clean = styled_clean(args.style, args.register, swaps=True)
 
+        spent = Counter()  # requests after the first drafts, which run_trial counts: the price of revising
+
         def ask(prompt: str, pending: list[dict]) -> str:
+            spent["revise"] += 1
             return generate_essays.chat(GEMINI_API_URL, api_key, args.model, prompt, args.temperature, retries=2,
                                         system=system, thinking=args.thinking, json_schema=GROUP_SCHEMA,
                                         timeout=60 + 15 * len(pending), sampling=sampling or None)
 
         def ask_plain(prompt: str) -> str:
+            spent["attack"] += 1
             return generate_essays.chat(GEMINI_API_URL, api_key, args.model, prompt, args.temperature, retries=2,
                                         thinking=args.thinking, timeout=180, sampling=sampling or None)
 
+        given_up = 0
         for path in args.documents:
             data = path.read_bytes()
             source = hashlib.sha256(data).hexdigest()[:16]
             jobs, plan = sample_jobs(path.name, data, args.words, min_blocks=2 * GROUP, structure=args.structure)
-            plan.shapes, plan.clean = shapes, clean
+            plan.shapes, plan.clean, plan.mask_facts = shapes, clean, args.mask_facts
             original = data.decode("utf-8", "replace")
 
             def write_repeat(trial: dict, jobs=jobs, plan=plan, path=path, source=source,
                              original=original) -> tuple[dict, list[tuple[dict, str]]]:
                 """One repeat's scores, and its texts to log, kept until it is whole so a retry logs nothing twice."""
-                result = run_trial(trial, jobs, plan, system, api_key, args.temperature,
-                                   sampling=sampling or None)
-                logs = [(result, style)]
+                spent.clear()
+                began = time.monotonic()
+                drafts = [run_trial({**trial, "key": f"{trial['key']}-draft{number}"} if number else trial, jobs, plan,
+                                    system, api_key, args.temperature, sampling=sampling or None)
+                          for number in range(args.drafts)]
+                draft_scores = [detector.analyze(draft["text"], sentences=False).ai_probability for draft in drafts]
+                result = drafts[draft_scores.index(min(draft_scores))]
+                logs = [(draft, style) for draft in drafts]
                 pieces = result["text"].split("\n\n")
                 attacked, changes = run_attacks(pieces, args.attack, ask_plain, clean)
                 parts = {f"{number:03d}": part for number, part in enumerate(attacked, 1)}
                 yardstick = StyleYardstick.build(args.style, count_words(result["text"]), args.register)
                 row = {"document": path.name, "source": source, "style": style, "model": args.model,
-                       "repeat": trial["repeat"], "words": count_words(result["text"]),
-                       "start": detector.analyze(result["text"], sentences=False).ai_probability,
-                       "requests": result["requests"], "copied": result["copied"], "words_kept": result["words_kept"],
+                       "repeat": trial["repeat"], "words": count_words(result["text"]), "draft": result["text"],
+                       "start": min(draft_scores), "draft_scores": draft_scores,
+                       "requests": sum(draft["requests"] for draft in drafts),
+                       "copied": result["copied"], "words_kept": result["words_kept"],
                        "distance": yardstick.text_distance(result["text"]) if yardstick else None,
                        "facts": facts_kept(original, result["text"]), "attack_changes": changes}
                 for method in methods:
                     guarded = args.as_page and yardstick and not args.no_guard
                     fits = style_guard(yardstick.text_distance, result["text"]) if guarded else None
+                    outcomes = Counter()
                     changed, history = revise_blocks(
                         parts, detector.analyze, ask, clean, shapes, args.rounds, fits=fits,
                         windows=document_windows(detector) if method == "windows" else None,
                         prompt=REVISE_KEEPING if args.as_page else REVISE, facts=args.as_page,
-                        candidates=args.candidates)
+                        candidates=args.candidates, stats=outcomes, mask=args.mask_facts)
                     # A run with --rounds 0 and nothing more measures the attack alone.
                     text = "\n\n".join(changed.get(key, part) for key, part in parts.items())
                     row[method] = {"history": history, "changed": len(changed), "words": count_words(text),
+                                   "outcomes": dict(outcomes),
                                    "text": text,
                                    "distance": yardstick.text_distance(text) if yardstick else None,
                                    "facts": facts_kept(original, text)}
                     logs.append(({**result, "key": f"{trial['key']}-{method}", "text": text},
                                  f"{style}+revise{args.rounds}-{method}"))
+                row["revise_requests"], row["attack_requests"] = spent["revise"], spent["attack"]
+                row["seconds"] = round(time.monotonic() - began)
                 return row, logs
 
             done = {row["repeat"] for row in rows if row["source"] == source}
@@ -291,6 +317,8 @@ def main(argv: list[str] | None = None) -> int:
                 variant = "+".join(args.note) or "base"
                 variant += ("-as-page" if args.as_page else "") + ("-no-guard" if args.no_guard else "")
                 key = f"{args.style.stem}-{variant}-{args.model}-{args.thinking}-{GROUP}-{args.temperature:g}-{repeat}"
+                # Each setup its own ids: the saved-sample reports keep one row per id.
+                key += "-" + hashlib.sha256(style.encode()).hexdigest()[:8]
                 trial = {"key": f"revise-{key}",
                          "model": args.model, "thinking": args.thinking, "group_size": GROUP,
                          "temperature": args.temperature, "repeat": repeat}
@@ -303,18 +331,23 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"Out of quota at {path.name} repeat {repeat}: {exc}", file=sys.stderr)
                         if rows:
                             args.report.write_text(report(rows, methods[0]), encoding="utf-8")
-                        return 1
+                        return QUOTA_EXIT
                     except APIError as exc:
                         wait = next(waits, None)
                         if wait is None:
                             print(f"Giving up on {path.name} repeat {repeat}: {exc}", file=sys.stderr)
                             row = None
+                            given_up += 1
                             break
                         print(f"{path.name} repeat {repeat} failed, again in {wait} s: {str(exc)[:80]}", flush=True)
                         time.sleep(wait)
                 if row is None:
-                    continue
-                for logged, label in logs:
+                    if given_up < GIVE_UPS:
+                        continue
+                    print(f"{args.model} looks down: {GIVE_UPS} repeats in a row gave up", file=sys.stderr)
+                    return DOWN_EXIT
+                given_up = 0
+                for logged, label in [] if args.no_log else logs:
                     _log_labelled(logged, path.name, source, label)
                 rows.append(row)
                 with args.out.open("a", encoding="utf-8") as output:
