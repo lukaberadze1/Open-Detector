@@ -159,6 +159,13 @@ def test_other_work_is_in_the_plan(tmp_path):
     assert "masked" in [setup for setup, _ in overnight.gemini_setups(paths, True)]
 
 
+def test_errors_a_stage_caught_show_in_its_note(tmp_path):
+    log = tmp_path / "x.log"
+    log.write_text("old ValueError: earlier\nfine\nstealth-bart, m: ValueError: no\nGiving up on a.md\n")
+    assert overnight.problems_in(log, len("old ValueError: earlier\n")).startswith("2 errors logged")
+    assert overnight.problems_in(tmp_path / "absent.log") == ""
+
+
 def test_state_survives_as_json(tmp_path, monkeypatch):
     item = night(tmp_path, [Stage("s", "?", command=["s"])], lambda *a: 0, monkeypatch)
     item.run_all()

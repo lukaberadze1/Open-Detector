@@ -115,8 +115,8 @@ def test_generate_saves_each_output_resumes_and_passes_over_what_cant_start(tmp_
 
     monkeypatch.setattr(attack, "writer_for", writer_for)
     sources = [_source(), {**_source(), "id": "mage-2"}]
-    attack.generate(sources, ["stealth-bart", "stealth-rules"], out, args)
-    attack.generate(sources, ["stealth-rules"], out, args)
+    assert attack.generate(sources, ["stealth-bart", "stealth-rules"], out, args) == 1
+    assert attack.generate(sources, ["stealth-rules"], out, args) == 0
     rows = [json.loads(line) for line in out.read_text().splitlines()]
     assert calls == ["stealth-rules"] * 2, "a second run has nothing left to do"
     assert [row["source_id"] for row in rows] == ["mage-1", "mage-2"]
@@ -152,3 +152,64 @@ def test_write_report_scores_the_outputs_and_their_sources_together(tmp_path, mo
     monkeypatch.setattr(redteam_report, "score", score)
     assert attack.write_report(out, sources, path, "slim", tmp_path / "c.jsonl") == f"Wrote {path}."
     assert "| stealth-rules | 1 | 75 | 25 |" in path.read_text()
+
+
+def test_bart_samples_without_beams_since_these_models_default_to_four(monkeypatch):
+    import torch
+    import transformers
+
+    asked = {}
+
+    class Tokens(dict):
+        def __init__(self):
+            super().__init__(input_ids=torch.zeros((1, 5), dtype=torch.long))
+
+    class Tokenizer:
+        def __call__(self, *_, **__):
+            return Tokens()
+
+        def batch_decode(self, output, **_):
+            return ["A sentence."] * len(output)
+
+    class Model:
+        def eval(self):
+            return self
+
+        def generate(self, **options):
+            asked.update(options)
+            return [0] * options["num_return_sequences"]
+
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *_, **__: Tokenizer())
+    monkeypatch.setattr(transformers.AutoModelForSeq2SeqLM, "from_pretrained", lambda *_, **__: Model())
+    assert len(attack.bart_writer("m", samples=8)("text")) == 8
+    assert asked["num_beams"] == 1 and asked["num_return_sequences"] == 8
+
+
+def test_bart_writer_samples_even_when_the_models_config_asks_for_beam_search(monkeypatch):
+    import torch
+    import transformers
+    from transformers import BartConfig, BartForConditionalGeneration
+
+    class Tokenizer:
+        def __call__(self, text, return_tensors, truncation, max_length):
+            ids = torch.tensor([[1, *range(4, 4 + len(text.split())), 2]])
+            return {"input_ids": ids, "attention_mask": torch.ones_like(ids)}
+
+        def batch_decode(self, output, skip_special_tokens):
+            return [" ".join(f"word{int(token)}" for token in row if int(token) > 3) for row in output]
+
+    model = BartForConditionalGeneration(BartConfig(
+        vocab_size=60, d_model=16, encoder_layers=1, decoder_layers=1, encoder_attention_heads=2,
+        decoder_attention_heads=2, encoder_ffn_dim=16, decoder_ffn_dim=16, max_position_embeddings=128, bos_token_id=1,
+        eos_token_id=2, pad_token_id=0, decoder_start_token_id=2))
+    model.generation_config.num_beams = 4  # as both humanizers' generation_config.json do
+    loaded = {}
+
+    def from_pretrained(_, use_safetensors=None):
+        loaded["safetensors"] = use_safetensors
+        return model
+
+    monkeypatch.setattr(transformers.AutoModelForSeq2SeqLM, "from_pretrained", from_pretrained)
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda _: Tokenizer())
+    assert len(attack.bart_writer("tiny", samples=8)("The fleet sailed from Athens in spring.")) == 8
+    assert loaded["safetensors"] is True

@@ -20,6 +20,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -42,6 +43,7 @@ ATTEMPTS = 2
 RESERVE = 20  # minutes kept back at the end for the closing stages
 MEMORY_GB = 1.5  # wanted free before a stage starts; it starts anyway after MEMORY_PATIENCE seconds
 MEMORY_PATIENCE = 300
+PROBLEM = re.compile(r"^.*(?:\b\w+Error\b|Traceback|Giving up|can't start).*$", re.M)
 DOCUMENTS = ROOT / "data/essays/sources/revise"
 DAIGT_CSV = ROOT / "data/pairs/train_v2_drcat_02.csv"
 DEMOS = ROOT / "data/pairs/humanize_text_demo"
@@ -197,6 +199,17 @@ def plan(paths: Paths, smoke: bool) -> list[Stage]:
     ]
 
 
+def problems_in(log: Path, start: int = 0) -> str:
+    """A note if a stage that exited cleanly logged errors it caught: "done" shouldn't hide that."""
+    if not log.exists():
+        return ""
+    with log.open("rb") as file:
+        file.seek(start)
+        text = file.read().decode("utf-8", "replace")
+    count = len(PROBLEM.findall(text))
+    return f"{count} errors logged, check logs/{log.name}" if count else ""
+
+
 def available_gb() -> float | None:
     try:
         output = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=10).stdout
@@ -318,10 +331,12 @@ class Night:
             self.wait_for_memory()
             for path in stage.fresh:
                 path.unlink(missing_ok=True)
-            code = self.run_command(stage.command, self.paths.logs / f"{stage.name}.log", self.minutes_left(stage))
+            log = self.paths.logs / f"{stage.name}.log"
+            start = log.stat().st_size if log.exists() else 0
+            code = self.run_command(stage.command, log, self.minutes_left(stage))
             spent = (time.monotonic() - began) / 60
             if code == 0:
-                self.note(stage, "done", "", spent)
+                self.note(stage, "done", problems_in(log, start), spent)
                 return
             if code is None:
                 self.note(stage, "timed out", "what it saved is kept; resumes on the next start", spent)

@@ -264,7 +264,9 @@ def bart_writer(model_id: str, samples: int = BART_SAMPLES) -> Callable[[str], l
         tokens = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
         with torch.no_grad():
             output = model.generate(**tokens, max_length=min(1024, 2 * tokens["input_ids"].shape[1] + 32),
-                                    do_sample=True, temperature=0.9, top_p=0.95, num_return_sequences=samples)
+                                    do_sample=True, temperature=0.9, top_p=0.95,
+                                    num_beams=1,  # these models default to beams
+                                    num_return_sequences=samples)
         return [tidied(reply) for reply in tokenizer.batch_decode(output, skip_special_tokens=True)]
     return write
 
@@ -383,9 +385,11 @@ def _freed() -> None:
     free_memory()
 
 
-def generate(sources: list[dict], names: list[str], out: Path, args) -> None:
+def generate(sources: list[dict], names: list[str], out: Path, args) -> int:
     """Every humanizer over every source not yet done, saved as each finishes. One that can't start is reported and
-    passed over; a text it fails on is left for the next run."""
+    passed over; a text it fails on is left for the next run. Returns how many of these went wrong, so a run where
+    everything failed doesn't look finished."""
+    problems = 0
     done = {(row["source_id"], row["humanizer"].split("+")[0]) for row in _load_jsonl(out)}
     out.parent.mkdir(parents=True, exist_ok=True)
     for name in names:
@@ -396,12 +400,14 @@ def generate(sources: list[dict], names: list[str], out: Path, args) -> None:
             write, model, free = writer_for(name, args)
         except Exception as exc:  # a missing model or server shouldn't stop the others
             print(f"{name}: can't start ({type(exc).__name__}: {exc})", file=sys.stderr, flush=True)
+            problems += 1
             continue
         for number, source in enumerate(todo, 1):
             try:
                 written = write(source["text"], random.Random(f"{args.seed}:{name}:{source['id']}"))
             except Exception as exc:  # left for the next run
                 print(f"{name}, {source['id']}: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+                problems += 1
                 continue
             with out.open("a", encoding="utf-8") as output:
                 for variant, text in written.items():
@@ -409,6 +415,7 @@ def generate(sources: list[dict], names: list[str], out: Path, args) -> None:
             print(f"{name}: {number}/{len(todo)}", flush=True)
         del write
         free()
+    return problems
 
 
 def report(rows: list[dict], sources: list[dict], profile: str) -> str:
@@ -479,15 +486,16 @@ def main(argv: list[str] | None = None) -> int:
     from eval.redteam_report import CACHE
 
     sources_path = args.out.with_suffix(".sources.jsonl")
+    problems = 0
     if not args.report_only:
         names = [name.strip() for name in args.humanizers.split(",") if name.strip()]
         known = {*RULES, *BARTS, "stealth-gemma"}
         if unknown := set(names) - known:
             parser.error(f"unknown humanizers: {sorted(unknown)}")
-        generate(sources_for(sources_path, args.n, args.seed), names, args.out, args)
+        problems = generate(sources_for(sources_path, args.n, args.seed), names, args.out, args)
     if not args.no_report:
         print(write_report(args.out, sources_path, args.report, args.profile, CACHE))
-    return 0
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":
