@@ -547,7 +547,7 @@ def test_the_lowest_scoring_of_several_candidates_is_kept_each_in_its_own_plan()
 
     def ask(prompt, pending):
         keys.extend(job["key"] for job in pending)
-        return json.dumps({"blocks": [{"id": "B1", "text": next(replies)}]})
+        return json.dumps({"blocks": [{"id": f"B{n}", "text": next(replies)} for n in range(1, len(pending) + 1)]})
 
     def score(current):
         word = next((w for w in ("bus", "train", "car") if w in current), "")
@@ -566,7 +566,7 @@ def test_a_tie_between_candidates_goes_to_the_one_with_fewer_stock_phrases():
     replies = iter(["Furthermore, a crucial passage about the bus.", "A plain passage about the bus."])
 
     def ask(prompt, pending):
-        return json.dumps({"blocks": [{"id": "B1", "text": next(replies)}]})
+        return json.dumps({"blocks": [{"id": f"B{n}", "text": next(replies)} for n in range(1, len(pending) + 1)]})
 
     changed, _ = revise_blocks({"a": f"Tidy {words}"}, _document_detector(lambda text: 0.2 if "bus" in text else 0.5),
                                ask, str.strip, [], rounds=1, candidates=2)
@@ -810,3 +810,57 @@ def test_revise_blocks_reports_its_progress():
                   str.strip, [], rounds=2, progress=seen.append)
     assert seen[0] == {"round": 1, "rounds": 2, "tested": 0, "passages": 1, "likelihood": 0.5}
     assert seen[1]["tested"] == 1 and seen[1]["likelihood"] == 0.2
+
+
+class _Report:
+    def __init__(self, text, sentences, p):
+        self.text, self.sentences, self.ai_probability = text, sentences, p
+
+
+def test_tries_share_one_request_and_above_rewrites_only_what_passes_it():
+    from types import SimpleNamespace as NS
+
+    from eval.redteam_batch import passage_spans, revise_flagged
+
+    text = ("First passage with plenty of ordinary words in it right here today.\n\n"
+            "Second passage with plenty of ordinary words in it right here today.")
+    first, second = passage_spans(text)
+
+    def analyze(current):
+        hot = "Second passage" in current
+        sentences = [NS(start=first[0], ai_probability=0.1)]
+        if hot:
+            sentences.append(NS(start=second[0], ai_probability=0.9))
+        return _Report(current, sentences, 0.9 if hot else 0.1)
+
+    calls, seen = [], []
+
+    def ask(prompt, jobs):
+        calls.append(1)
+        seen.extend(job["previous"] for job in jobs)
+        return json.dumps({"blocks": [{"id": f"B{n}", "text": f"A rewrite number {n} of that long passage today."}
+                                      for n in range(1, len(jobs) + 1)]})
+
+    revised, _ = revise_flagged(text, analyze, ask, str.strip, [], rounds=4, candidates=3, above=0.6)
+    assert len(calls) == 1 and len(seen) == 3 and all("Second" in part for part in seen)
+    assert text.startswith("First passage") and revised.startswith("First passage") and "Second passage" not in revised
+
+
+def test_the_request_limit_ends_revising():
+    from types import SimpleNamespace as NS
+
+    from eval.redteam_batch import revise_flagged
+
+    text = "A passage with plenty of ordinary words in it right here today and more."
+    calls = []
+
+    def ask(prompt, jobs):
+        calls.append(1)
+        wording = f"Another wording {len(calls)} of the passage, long enough."
+        return json.dumps({"blocks": [{"id": "B1", "text": wording}]})
+
+    def analyze(current):
+        return _Report(current, [NS(start=0, ai_probability=0.9)], 0.9 - 0.01 * len(calls))
+
+    revise_flagged(text, analyze, ask, str.strip, [], rounds=9, max_requests=2)
+    assert len(calls) <= 3, "checked before a round, and a round can ask once more"

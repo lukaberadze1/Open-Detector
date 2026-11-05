@@ -445,6 +445,14 @@ def beam_search(text: str, places: list[int], score: Callable[[str], float], gua
     return ContextResult(join(best.parts), history, swaps, spent)
 
 
+def revise_above(text: str, detector, score: Callable[[str], float], above: float, name: str = "t5") -> ContextResult:
+    """No API: rewrite only the sentences the detector scores at `above` or more, on this computer, under the meaning
+    and grammar checks. Weaker than a hosted model, and it keeps whatever the checks refuse as it was."""
+    report = detector.analyze(text)
+    targets = {report.text[s.start:s.end].strip() for s in report.sentences if s.ai_probability >= above}
+    return paraphrase_stage(report.text, score, MeaningGuard(), quality=Quality(), name=name, targets=targets)
+
+
 def contextual_attack(text: str, detector, score: Callable[[str], float], guard=None, budget: int = BUDGET,
                       below: float = 0.1, beam: int = BEAM, patience: int = PATIENCE,
                       shortlist: int = SHORTLIST) -> ContextResult:
@@ -494,7 +502,7 @@ def paraphrase(name: str, sentences: list[str], contexts: list[str] | None = Non
 def paraphrase_stage(text: str, score: Callable[[str], float], guard, rewrite: Callable | None = None,
                      quality: Quality | None = None,
                      name: str = "t5", budget: int = BUDGET, below: float = 0.1,
-                     max_sentences: int | None = None) -> ContextResult:
+                     max_sentences: int | None = None, targets: set[str] | None = None) -> ContextResult:
     """Rewrite one sentence at a time, keeping a rewrite only if the meaning checks pass, its numbers and negations
     stay, and the whole text then scores lower."""
     rewrite = rewrite or (lambda sentences, contexts: paraphrase(name, sentences, contexts))
@@ -510,7 +518,7 @@ def paraphrase_stage(text: str, score: Callable[[str], float], guard, rewrite: C
         start, end = spans[0].start, spans[0].end
         at = end
         sentence = current[start:end]
-        if len(sentence.split()) < 6:
+        if len(sentence.split()) < 6 or (targets is not None and sentence.strip() not in targets):
             continue
         tried += 1
         options = rewrite([sentence], [current[max(0, start - 300):start]])[0]

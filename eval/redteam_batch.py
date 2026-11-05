@@ -569,26 +569,45 @@ def draft_jobs(text: str, words: int = 80) -> list[dict]:
              "key": f"{number:03d} draft"} for number, (start, end) in enumerate(passage_spans(text, words), 1)]
 
 
-def restyle(draft: str, shapes: list, ask: Callable[[str, list[dict]], str], clean: Callable[[str], str]) -> str:
+def restyle(draft: str, shapes: list, ask: Callable[[str, list[dict]], str], clean: Callable[[str], str],
+            candidates: int = 1, score: Callable[[str], float | None] | None = None) -> str:
     """A draft rewritten passage by passage in the writer's sentences (the "writer" structure), as a
     document rewrite does, the passages joined back into the draft's paragraphs. Written from a prompt
     alone, a sample keeps the model's own plan of what to say, which a detector reads whatever voice
     it is told to write in; rewriting a draft in borrowed skeletons breaks that plan up the way the
-    document rewrites that get past the detector do. A passage the reply leaves out stays as drafted."""
+    document rewrites that get past the detector do. A passage the reply leaves out stays as drafted. With
+    `candidates` and `score`, one request asks for that many versions of each passage, in different plans, and the
+    detector picks the lowest-scoring of each, so the first draft needs fewer revision rounds."""
     jobs = draft_jobs(draft)
     if not jobs:
         return draft
     plan = SimpleNamespace(prompt="", context_text=draft, blocks=[], answer_slots=[], match_existing_lengths=True,
                            answer_words=100, structure="writer", shapes=shapes, stretch=RESTYLE_STRETCH)
-    written, _ = rewrite_group(plan, jobs, ask, clean)
-    paragraphs, passage = [], 0
-    for part in (part.strip() for part in re.split(r"\n\s*\n", draft) if part.strip()):
-        pieces = []
-        while passage < len(jobs) and jobs[passage]["previous"] in part:
-            pieces.append(written.get(jobs[passage]["key"]) or jobs[passage]["previous"])
-            passage += 1
-        paragraphs.append(" ".join(pieces) or part)
-    return "\n\n".join(paragraphs)
+    tries = candidates if score and candidates > 1 else 1
+    versions = _written_tries(plan, lambda attempt: [{**job, "key": f"{job['key']} try {attempt}"} for job in jobs],
+                              ask, clean, tries)
+
+    def assembled(chosen: dict[str, str]) -> str:
+        paragraphs, passage = [], 0
+        for part in (part.strip() for part in re.split(r"\n\s*\n", draft) if part.strip()):
+            pieces = []
+            while passage < len(jobs) and jobs[passage]["previous"] in part:
+                pieces.append(chosen.get(jobs[passage]["key"]) or jobs[passage]["previous"])
+                passage += 1
+            paragraphs.append(" ".join(pieces) or part)
+        return "\n\n".join(paragraphs)
+
+    chosen = {key: texts[0] for key, texts in versions.items() if texts}
+    best = score(assembled(chosen)) if tries > 1 else None
+    if best is None:
+        return assembled(chosen)
+    for key, texts in versions.items():
+        for text in texts[1:]:
+            result = score(assembled({**chosen, key: text}))
+            if result is not None and result < best:
+                best, chosen = result, {**chosen, key: text}
+    return assembled(chosen)
+
 
 
 REVISE_PATIENCE = 2  # rounds in a row without a lower score before revising gives up: rounds cost a request each
@@ -655,11 +674,14 @@ def meaning_kept(passage: str, revised: str, context: str = "") -> bool:
 
 
 def _written_tries(plan, jobs_for: Callable[[int], list[dict]], ask, clean, tries: int) -> dict[str, list[str]]:
-    """What `tries` rewrites of the same passages came back as, by the part of each job's key before its ' try '."""
+    """What `tries` rewrites of the same passages came back as, by the part of each job's key before its ' try '. All
+    in one request, each in its own plan: asking once per try sent the whole profile and document again each time."""
     written: dict[str, list[str]] = {}
-    for attempt in range(tries):
-        for key, text in rewrite_group(plan, jobs_for(attempt), ask, clean)[0].items():
-            written.setdefault(key.split(" try ")[0], []).append(text)
+    jobs = [job for attempt in range(tries) for job in jobs_for(attempt)]
+    results = rewrite_group(plan, jobs, ask, clean)[0]
+    for job in jobs:
+        if job["key"] in results:
+            written.setdefault(job["key"].split(" try ")[0], []).append(results[job["key"]])
     return written
 
 
@@ -692,7 +714,8 @@ def passage_scores(spans: list[tuple[int, int]], sentences: list) -> list[float]
 def revise_flagged(text: str, analyze: Callable[[str], object], ask: Callable[[str, list[dict]], str],
                    clean: Callable[[str], str], shapes: list, rounds: int = 2, target: float = WIN_BELOW,
                    fits: Callable[[str], bool] | None = None, prompt: str = REVISE,
-                   facts: bool = False, candidates: int = 1) -> tuple[str, list[float | None]]:
+                   facts: bool = False, candidates: int = 1, above: float | None = None,
+                   max_requests: int | None = None) -> tuple[str, list[float | None]]:
     """A text revised where the detector reads it as AI: each round rewrites its most AI-like passages
     (by sentence score, at most half of them) in new sentence plans borrowed from the writer, told what
     was flagged (REVISE), and keeps each rewritten passage only if the whole text then scores lower,
@@ -703,20 +726,36 @@ def revise_flagged(text: str, analyze: Callable[[str], object], ask: Callable[[s
     detector's (with sentence scores), run once per rewritten passage. With `fits` (style_guard) a passage
     that takes the text away from the style profile is dropped too. Gives the kept text, normalized as the
     detector read it, and its AI likelihood after each round, the first before any. With `candidates`, a
-    passage gets that many rewrites a round, in different plans, and the lowest-scoring that passes is the one tried."""
+    passage gets that many rewrites a round, in different plans, and the lowest-scoring that passes is the one tried.
+    With `above`, every passage scoring at least that is
+    rewritten, no others, and revising ends when none is left, whatever the whole text scores. `max_requests` stops
+    it before a round once that many requests have gone."""
+    sent = 0
+    inner_ask = ask
+
+    def ask(prompt: str, jobs: list[dict]) -> str:
+        nonlocal sent
+        sent += 1
+        return inner_ask(prompt, jobs)
+
     report = analyze(text)
     if report.ai_probability is None:
         return text, [None]
     best, history = report, [report.ai_probability]
     for round_ in range(1, rounds + 1):
-        if best.ai_probability < target:
+        if (above is None and best.ai_probability < target) or (max_requests is not None and sent >= max_requests):
             break
         base, spans = best.text, passage_spans(best.text)
         if not spans:
             break
         scores = passage_scores(spans, best.sentences)
         order = sorted(range(len(spans)), key=lambda index: -scores[index])
-        chosen = [index for index in order if scores[index] >= target][:max(1, len(spans) // 2)] or order[:1]
+        if above is None:
+            chosen = [index for index in order if scores[index] >= target][:max(1, len(spans) // 2)] or order[:1]
+        else:
+            chosen = [index for index in order if scores[index] >= above]
+            if not chosen:
+                break
         def jobs(attempt: int, chosen=chosen, base=base, spans=spans, round_=round_) -> list[dict]:
             return [{"kind": "text_block", "label": f"Passage {index + 1}", "question": "",
                      "previous": base[slice(*spans[index])],

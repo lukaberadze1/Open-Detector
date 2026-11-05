@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import os
 
 import streamlit as st
 
@@ -12,7 +13,7 @@ from opendetector.documents import extract_answer_slots, extract_document
 from opendetector.forensics import inspect_document
 from opendetector.segment import count_words
 
-from . import models, style
+from . import models, nav, style
 from .components import (
     VERDICTS,
     Reading,
@@ -298,6 +299,10 @@ def _details(result: dict) -> None:
 def show_result(result: dict, digest: str | None = None) -> None:
     """The verdict, the engines' readings and the tabs. With `digest`, says when the input has moved on."""
     report = result["report"]
+    offered = not style.public() and os.environ.get("OPENDETECTOR_REDTEAM", "").lower() != "off"
+    if offered and report.sentences and st.button("Revise flagged passages in the Lab", icon=":material/rule:"):
+        st.session_state["keep:redteam:revise_text"] = report.text
+        st.switch_page(nav.redteam_page())
     with st.container(horizontal=True, vertical_alignment="center"):
         st.html(f'<div class="od-section-title"><b>Result</b><span>{html.escape(result["source"])} · '
                 f'{models.PROFILE_LABELS[result["profile"]]} build</span></div>')

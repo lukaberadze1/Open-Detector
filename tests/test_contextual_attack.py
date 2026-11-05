@@ -179,3 +179,16 @@ def test_listed_synonyms_are_added_after_the_models(monkeypatch):
     tokens = ca.Tokens(TEXT)
     place = tokens.parts.index("large")
     assert ca.propose(tokens.parts, place, tokens.sentence_of[place]) == ["vast", "big"]
+
+
+def test_a_paraphrase_can_be_limited_to_chosen_sentences():
+    text = "The plan went well for everybody in the whole region. The second part went well for everybody there too."
+    asked = []
+
+    def rewrite(sentences, contexts):
+        asked.append(sentences[0])
+        return [[]]
+
+    wanted = "The second part went well for everybody there too."
+    ca.paraphrase_stage(text, lambda t: 0.9, Pass(), rewrite, targets={wanted})
+    assert asked == [wanted]

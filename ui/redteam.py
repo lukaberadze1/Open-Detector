@@ -76,6 +76,8 @@ from eval.redteam_batch import (
     REVISE_CANDIDATES,
     REVISE_PATIENCE,
     REVISE_KEEPING,
+    passage_scores,
+    passage_spans,
     WIN_BELOW,
     revise_blocks,
     revise_flagged,
@@ -127,6 +129,8 @@ MATH_RESULT = "redteam:math_result"
 EVASION_TARGET = WIN_BELOW  # configured detector-challenge benchmark target
 STYLE_FLOOR = 35  # minimum style-profile percentile used to rank challenge candidates
 REVISE_BY_DEFAULT = True  # measured on eval/tune_revise.py: 81% to 7% on an AI-written source
+REVISE_REQUESTS = 6  # requests a sample's revising may spend, however many rounds are left
+FIRST_DRAFT_TRIES = 3  # versions of each passage asked for in the first draft's one request, the lowest-scoring kept
 REVISE_ROUNDS = 10  # "Revise what the detector flags": rounds at most, until under the bar or it stalls
 DEFAULT_FALLBACK_MODELS = PROVIDERS["gemini"].fallbacks
 DOCUMENT_TYPES = ("txt", "md", "docx", "pptx")
@@ -276,6 +280,7 @@ class Plan:
     structure: str = "writer"  # how closely rewritten text blocks follow the original (redteam_batch.STRUCTURES)
     shapes: list | None = None  # for "writer": the sentence shapes of the profile writer's own paragraphs
     restyle: bool = False  # a sample from a prompt: rewrite the draft in the writer's sentences (redteam_batch.restyle)
+    revise_above: float | None = None  # a sample: revise every passage at this score or more, and no others
     revise: int = 0  # a sample: rounds rewriting the passages the detector flags (redteam_batch.revise_flagged)
     attacks: tuple[str, ...] = ()  # applied to the finished text before revising (eval/text_attacks.py)
     rules: bool = False  # phrase and discourse-marker swaps on the finished text (opendetector/core)
@@ -843,6 +848,13 @@ def _scoring(plan: Plan, profile: str) -> None:
                      "Every revision is saved as AI-labelled evaluation data.") else 0
             if plan.revise:
                 plan.score = True
+                if plan.task == "sample" and not plan.batch:
+                    above = st.slider("Only revise passages above", 0, 95, step=5,
+                                      key=keep("keep:redteam:revise_above", 0), format="%d%%",
+                                      help="0 leaves the choice to the page: the most flagged half each round, until "
+                                           "the whole text is under the bar. Otherwise every passage at this score or "
+                                           "more is rewritten, and no others.")
+                    plan.revise_above = above / 100 or None
             _attacks(plan)
     if plan.evasion:
         st.caption("Every draft is saved as AI-labelled evaluation data; the kept one records the mode and scores. "
@@ -874,6 +886,98 @@ def _math_edit(text: str, plan: Plan) -> tuple[str, list[str]]:
             kept = [*kept, "contextual"]
         return new, kept
     return math_attack(text, ("rules", "clauses", "burst"))
+
+
+REVISE_TEXT = "keep:redteam:revise_text"
+REVISE_RESULT = "redteam:revise_result"
+
+
+def _revise_existing(plan: Plan, conn: Connection, text: str, above: float, local: bool, is_ai: bool) -> None:
+    """Rewrite only the passages of `text` scoring at `above` or more, with a model or on this computer alone, and
+    save the result as AI data only if the user says the source is AI text."""
+    detector = models.get_detector(plan.profile)
+    first = detector.analyze(text)
+    if first.ai_probability is None:
+        st.warning("The detector needs 150 words of prose to score this.")
+        return
+    flagged = sum(score >= above for score in passage_scores(passage_spans(first.text), first.sentences))
+    sent = 0
+    if local:
+        from eval.contextual_attack import revise_above
+
+        new = revise_above(text, detector, CachedScorer(detector), above).text
+        model = "local-t5"
+    else:
+        system = (style_instructions(load_style_profile(plan.style_path), plan.register, *writer_samples(plan))
+                  if plan.use_profile else None)
+        model = conn.model
+
+        def ask(prompt: str, jobs: list[dict]) -> str:
+            nonlocal model, sent
+            sent += 1
+            reply, model, _ = generate_with_fallback(
+                conn.base_url, conn.api_key, _model_order(plan, conn), prompt, plan.temperature, system, conn.local_url,
+                conn.local_model, answer_token_limit(sum(count_words(job["previous"]) for job in jobs)),
+                thinking=plan.thinking, json_schema=GROUP_SCHEMA, timeout=60 + 15 * len(jobs), sampling=plan.sampling)
+            return reply
+
+        new, _ = revise_flagged(text, detector.analyze, ask, styled_clean(plan.style_path, plan.register, swaps=True),
+                                plan.shapes or [], REVISE_ROUNDS, prompt=REVISE_KEEPING, facts=True,
+                                candidates=REVISE_CANDIDATES, above=above, max_requests=REVISE_REQUESTS,
+                                fits=_style_fits(plan, text))
+    after = detector.analyze(new, sentences=False).ai_probability
+    saved = new != first.text and is_ai
+    if saved:
+        key = hashlib.sha256(text.encode()).hexdigest()[:16]
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        store = _store()
+        store.output.parent.mkdir(parents=True, exist_ok=True)
+        with store.output.open("a", encoding="utf-8") as output:
+            output.write(json.dumps({
+                "id": f"local-{stamp}-{key}-{model}", "text": new, "label": 1, "dataset": "local_redteam",
+                "model": model, "attack": f"revise_above{above:.0%}", "group_key": key, "ai_probability": after,
+                "baseline_ai_probability": first.ai_probability, "detector_profile": plan.profile,
+                **_settings(plan)}, ensure_ascii=False) + "\n")
+    st.session_state[REVISE_RESULT] = {"text": new, "before": first.ai_probability, "after": after, "saved": saved,
+                                       "flagged": flagged, "requests": sent, "changed": new != first.text}
+
+
+def _revise_panel(plan: Plan, conn: Connection) -> None:
+    """Revise a text you already have: only what scores above a chosen percentage."""
+    with st.expander("Revise a text above a percentage", icon=":material/rule:",
+                     expanded=bool(st.session_state.get(REVISE_TEXT))):
+        text = st.text_area("Text", key=keep(REVISE_TEXT, ""), height=180)
+        above = st.slider("Revise passages above", 5, 95, step=5, key=keep("keep:redteam:panel_above", 60),
+                          format="%d%%", help="Passages under this stay word for word. Passage scores are less "
+                                              "reliable than the whole text's.")
+        where = "With the model"
+        if _deep_math_offered():
+            where = st.segmented_control("Rewrite", ("With the model", "On this computer"), required=True,
+                                         key=keep("keep:redteam:panel_where", "With the model"),
+                                         help="On this computer uses no API or quota, but it's far weaker and much "
+                                              "slower: it leaves anything its meaning checks refuse as it was.")
+        is_ai = st.toggle("The source is AI text", key=keep("keep:redteam:panel_is_ai", False),
+                          help="Turn this on only for text an AI wrote. Otherwise the result isn't saved as AI data.")
+        if st.button("Revise", icon=":material/auto_fix_high:", disabled=not text.strip()):
+            problem = None if where == "On this computer" else _problem(plan, conn)
+            if problem:
+                st.error(problem)
+            else:
+                with st.spinner("Revising the passages above that score…"):
+                    try:
+                        _revise_existing(plan, conn, text, above / 100, where == "On this computer", is_ai)
+                    except APIError as exc:
+                        st.error(str(exc), icon=":material/error:")
+        if result := st.session_state.get(REVISE_RESULT):
+            first, second, third = st.columns(3)
+            first.metric("Before", f"{result['before']:.1%}")
+            second.metric("After", f"{result['after']:.1%}" if result["after"] is not None else "n/a")
+            third.metric("Requests", result["requests"])
+            st.caption(f"{result['flagged']} passages were above the line."
+                       + (" Saved as AI-labelled evaluation data." if result["saved"] else ""))
+            if not result["changed"]:
+                st.info("No revision lowered the score, so the text is as it was.")
+            st.text_area("Revised text", result["text"], height=220, disabled=True)
 
 
 def _deep_math_offered() -> bool:
@@ -2113,7 +2217,10 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
                 essay = generate(user_prompt)
             if plan.restyle and plan.shapes and not target_section:
                 with st.spinner("Rewriting it in the writer's sentences…"):
-                    essay = restyle(essay, plan.shapes, restyle_ask, clean)
+                    # Several versions up front, when a model that shares no memory with the detector wrote them.
+                    picks = plan.score and not public() and not (conn.local_model and model == conn.local_model)
+                    pick = models.get_detector(plan.profile).score if picks else None
+                    essay = restyle(essay, plan.shapes, restyle_ask, clean, FIRST_DRAFT_TRIES, pick)
                 drafts[essay] = model
             if plan.attacks:
                 with st.spinner("Running the attacks on the finished text…"):
@@ -2138,7 +2245,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
                     essay, revise_history = revise_flagged(
                         essay, models.get_detector(plan.profile).analyze, restyle_ask, clean,
                         plan.shapes or [], plan.revise, prompt=REVISE_KEEPING, facts=True,
-                        candidates=REVISE_CANDIDATES,
+                        candidates=REVISE_CANDIDATES, above=plan.revise_above, max_requests=REVISE_REQUESTS,
                         fits=_style_fits(plan, essay))
                 drafts[essay] = model
     except APIError as exc:
@@ -2652,6 +2759,8 @@ def render() -> None:
             else:
                 label, icon = "Generate", ":material/auto_awesome:"
             clicked = st.button(label, type="primary", icon=icon, width="stretch")
+            if not public():
+                _revise_panel(plan, conn)
             problem = None
             if clicked:
                 problem = _math_problem(plan) if plan.engine == "Math" else _problem(plan, conn)
