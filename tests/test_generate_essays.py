@@ -852,3 +852,109 @@ def test_a_reply_lost_on_the_way_moves_on_to_the_next_model(monkeypatch):
     monkeypatch.setattr(generate_essays.urllib.request, "urlopen", lambda request, timeout: replies.pop(0))
     text, model, errors = generate_essays.generate_with_fallback(OPENROUTER, "key", ["a", "b"], "Write.", 0.8, None)
     assert (text, model, len(errors)) == ("Written.", "b", 1)
+
+
+# -- several keys -----------------------------------------------------------------------
+
+
+def keys_used(server):
+    return [(request["body"]["model"], request["auth"]) for request in server.requests]
+
+
+def test_a_key_pool_goes_round_its_keys_per_model():
+    pool = generate_essays.KeyPool(["k1", "k2", "k1", ""])
+    assert pool.keys == ["k1", "k2", ""] and len(pool) == 3
+    assert [pool.next_key("a") for _ in range(4)] == ["k1", "k2", "", "k1"]
+    pool.spend("k1", "a")
+    assert [pool.next_key("a") for _ in range(2)] == ["k2", ""] and pool.next_key("b") == "k1", "spent on a only"
+    pool.reject("k2")
+    assert pool.next_key("a") == "" and pool.open_keys("a") == 1 and pool.open_keys("b") == 2
+    notes = pool.take_notes()
+    assert len(notes) == 2 and not any("k1" in note or "k2" in note for note in notes), "keys never in messages"
+    assert pool.take_notes() == []
+
+
+def test_a_model_runs_on_every_key_before_the_next_model():
+    hosted = FakeServer([gemini_quota_error("23h1m"), completion("From key two.")])
+    pool, spent = generate_essays.KeyPool(["k1", "k2"]), set()
+    try:
+        text, model, errors = generate_essays.generate_with_fallback(hosted.url, pool, ["a", "b"], "Write.", 0.8,
+                                                                     None, spent=spent)
+    finally:
+        hosted.close()
+    assert (text, model, errors, spent) == ("From key two.", "a", [], set())
+    assert keys_used(hosted) == [("a", "Bearer k1"), ("a", "Bearer k2")]
+
+
+def test_the_next_model_comes_only_when_every_key_is_spent_and_the_pool_remembers():
+    hosted = FakeServer([gemini_quota_error("23h1m"), gemini_quota_error("23h1m"), completion("From b."),
+                         completion("From b again.")])
+    pool, spent = generate_essays.KeyPool(["k1", "k2"]), set()
+    try:
+        _, model, errors = generate_essays.generate_with_fallback(hosted.url, pool, ["a", "b"], "Write.", 0.8, None,
+                                                                  spent=spent)
+        _, again, _ = generate_essays.generate_with_fallback(hosted.url, pool, ["a", "b"], "Write.", 0.8, None)
+    finally:
+        hosted.close()
+    assert (model, again, spent) == ("b", "b", {"a"}) and len(errors) == 1
+    assert keys_used(hosted) == [("a", "Bearer k1"), ("a", "Bearer k2"), ("b", "Bearer k1"), ("b", "Bearer k2")]
+
+
+def test_with_several_keys_a_per_minute_limit_waits_rather_than_moving_down(monkeypatch):
+    monkeypatch.setattr(generate_essays, "RATE_MARGIN", 0)
+    hosted = FakeServer([gemini_quota_error("0.2s"), gemini_quota_error("0.2s"), completion("Held.")])
+    waits = []
+
+    def pause(seconds, model):
+        waits.append(model)
+        generate_essays.time.sleep(seconds)
+
+    try:
+        text, model, _ = generate_essays.generate_with_fallback(
+            hosted.url, generate_essays.KeyPool(["k1", "k2"]), ["a", "b"], "Write.", 0.8, None, pause=pause)
+    finally:
+        hosted.close()
+    assert (text, model, waits) == ("Held.", "a", ["a"])
+    assert [m for m, _ in keys_used(hosted)] == ["a", "a", "a"]
+
+
+def test_one_key_still_moves_down_on_a_per_minute_limit():
+    hosted = FakeServer([gemini_quota_error("20s"), completion("From b.")])
+    try:
+        _, model, _ = generate_essays.generate_with_fallback(
+            hosted.url, "key", ["a", "b"], "Write.", 0.8, None, pause=lambda *_: pytest.fail("one key never waits"))
+    finally:
+        hosted.close()
+    assert model == "b"
+
+
+def test_repeated_per_minute_refusals_count_as_spent():
+    pool = generate_essays.KeyPool(["k1", "k2"])
+    for _ in range(generate_essays.RATE_STRIKES):
+        pool.cool("k1", "a", 0)
+    assert pool.open_keys("a") == 1 and pool.next_key("a") == "k2"
+
+
+def test_a_rejected_key_is_left_out_and_the_others_carry_on():
+    hosted = FakeServer([(400, {"error": "API key not valid. Please pass a valid API key."}), completion("One."),
+                         completion("Two.")])
+    pool = generate_essays.KeyPool(["bad", "good"])
+    try:
+        assert generate_essays.generate_with_fallback(hosted.url, pool, ["a"], "W.", 0.8, None)[0] == "One."
+        assert generate_essays.generate_with_fallback(hosted.url, pool, ["a"], "W.", 0.8, None)[0] == "Two."
+    finally:
+        hosted.close()
+    assert [auth for _, auth in keys_used(hosted)] == ["Bearer bad", "Bearer good", "Bearer good"]
+
+
+def test_a_daily_limit_with_a_short_retry_is_still_a_spent_quota():
+    hosted = FakeServer([(429, {"error": {"message": "Quota exceeded for quota id "
+                                                     "'GenerateRequestsPerDayPerProjectPerModel-FreeTier'. "
+                                                     "Please retry in 31s."}}), completion("From b.")])
+    spent = set()
+    try:
+        _, model, _ = generate_essays.generate_with_fallback(hosted.url, "key", ["a", "b"], "Write.", 0.8, None,
+                                                             spent=spent)
+    finally:
+        hosted.close()
+    assert (model, spent) == ("b", {"a"})

@@ -1143,3 +1143,29 @@ def test_a_document_batch_records_its_style_at_each_stage(stub_model, tmp_path, 
     assert row["domain"] == "document_combined"
     assert [stage["stage"] for stage in row["style_stages"]][:2] == ["written", "source"]
     assert any(expander.label == "Style at each stage" for expander in at.expander)
+
+
+def test_several_gemini_keys_reach_the_models_as_one_pool(stub_model, monkeypatch, tmp_path):
+    from functools import partial
+
+    from eval.generate_essays import KeyPool
+    from opendetector import env
+
+    monkeypatch.setenv("GEMINI_API_KEYS", "second-key")
+    monkeypatch.setattr("ui.redteam.save_extra_keys", partial(env.save_extra_keys, path=tmp_path / ".env"))
+    monkeypatch.setattr("ui.guide.check_key", lambda key: (True, None))
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.run()
+    assert not at.exception, at.exception
+    assert any("Using 2 keys" in caption.value for caption in at.caption)
+    at.text_input(key=next(t.key for t in at.text_input if t.label == "Add a key from another account")).input("third")
+    button(at, "Check and add key").click()
+    at.run()
+    assert (tmp_path / ".env").read_text() == "GEMINI_API_KEYS=second-key,third\n"
+    at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
+    button(at, "Generate").click()
+    at.run()
+    assert not at.exception, at.exception
+    pool = stub_model.keys[-1]
+    assert isinstance(pool, KeyPool) and pool.keys == ["test-key", "second-key", "third"]

@@ -16,6 +16,7 @@ import contextlib
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import subprocess
@@ -39,6 +40,7 @@ from eval.generate_essays import (
     REGISTER_NAMES,
     THINKING_LEVELS,
     APIError,
+    KeyPool,
     answer_token_limit,
     generate_with_fallback,
     is_local,
@@ -115,7 +117,7 @@ from opendetector.documents import (
     rewritable_blocks,
 )
 from opendetector.generator_inputs import extract_generation_source
-from opendetector.env import load_env, save_env
+from opendetector.env import env_keys, extra_keys_name, load_env, save_env, save_extra_keys
 from opendetector.segment import count_words
 
 from . import detect, models, nav, style
@@ -259,6 +261,12 @@ class Connection:
     local_url: str
     api_key_env: str
     api_key: str
+    pool: KeyPool | None = None  # with more than one key: every key, the first being api_key
+
+    @property
+    def credentials(self) -> str | KeyPool:
+        """What generate_with_fallback takes: the pool when there are several keys, else the one key."""
+        return self.pool or self.api_key
 
 
 @dataclass
@@ -544,11 +552,15 @@ def _connection() -> Connection:
     api_key_env = st.text_input("API key environment variable",
                                 key=keep("keep:redteam:key_env", "GEMINI_API_KEY"))
     fallback_models = [line.strip() for line in fallback_text.replace(",", "\n").splitlines() if line.strip()]
-    api_key = os.environ.get(api_key_env, "")
+    keys = env_keys(api_key_env)
+    api_key = keys[0] if keys else ""
     with status:
         st.caption(f":material/smart_toy: **{model}**, then {len(fallback_models)} fallback models"
                    + (f" and {local_model} locally." if local_model else "."))
-        if api_key:
+        if len(keys) > 1:
+            st.caption(f":material/key: Using {len(keys)} keys, from {api_key_env} and {extra_keys_name(api_key_env)}. "
+                       "Each model runs on every key before the next model is tried.")
+        elif api_key:
             st.caption(f":material/key: Using your key in {api_key_env}.")
         else:
             st.caption(f":material/key_off: No {api_key_env} yet. Local endpoints work without a key.")
@@ -556,6 +568,8 @@ def _connection() -> Connection:
                 _key_box(name)
             else:
                 st.page_link(nav.guide_page(), label="Add your Gemini API key", icon=":material/key:")
+        if api_key and name == "gemini":
+            _gemini_keys(api_key_env, keys)
         if api_key and name in ("groq", "openrouter") and (names := _models_on_offer(name, api_key)):
             with st.popover(f"{len(names)} models on offer", icon=":material/list:"):
                 st.caption("Copy a name into Model or the fallbacks." + (
@@ -566,7 +580,44 @@ def _connection() -> Connection:
                 st.caption(f":orange[:material/cloud_off: The local fallback can't run: {problem}]")
             else:
                 st.caption(f":material/check_circle: Local fallback ready: {local_model}.")
-    return Connection(base_url, model, fallback_models, local_model, local_url, api_key_env, api_key)
+    return Connection(base_url, model, fallback_models, local_model, local_url, api_key_env, api_key,
+                      KeyPool(keys) if len(keys) > 1 else None)
+
+
+def _remove_key(name: str, key: str) -> None:
+    save_extra_keys(name, [other for other in env_keys(name)[1:] if other != key])
+
+
+def _gemini_keys(name: str, keys: list[str]) -> None:
+    """More Gemini keys, from other Google accounts: listed by their last four characters, added after Google
+    accepts them, and kept in .env beside the first, which the Guide page sets."""
+    from .guide import check_key
+
+    with st.popover(f"{len(keys)} Gemini key{'s' * (len(keys) != 1)}", icon=":material/key:"):
+        st.caption("Keys from other Google accounts add their free allowances together. A batch uses each model on "
+                   "every key, taking turns, and moves to the next model only when all of them are out of quota. "
+                   "Keys made in the same Cloud project share one allowance, so make each in its own project.")
+        for place, key in enumerate(keys, 1):
+            with st.container(horizontal=True, vertical_alignment="center"):
+                st.markdown(f"**Key {place}** · …{key[-4:]}" + (" · from the Guide page" if place == 1 else ""),
+                            width="stretch")
+                if place > 1:
+                    st.button("Remove", key=f"redteam:remove_key:{place}", type="tertiary",
+                              icon=":material/delete:", on_click=_remove_key, args=(name, key))
+        with st.form("redteam:add_key", clear_on_submit=True, border=False):
+            new = st.text_input("Add a key from another account", type="password", placeholder="Paste a key here",
+                                help="Get one at aistudio.google.com/apikey, signed in with the other account. "
+                                     "It stays on this computer, in .env.")
+            added = st.form_submit_button("Check and add key", icon=":material/add:")
+        if added and (new := new.strip()):
+            if new in keys:
+                st.info("That key is already in the list.")
+            else:
+                accepted, message = check_key(new)
+                if accepted:
+                    save_extra_keys(name, [*keys[1:], new])
+                    st.rerun()
+                st.error(message, icon=":material/key_off:")
 
 
 PUBLIC_KEY, REMEMBER_KEY, DEVICE_ACTION = "keep:redteam:api_key", "keep:redteam:remember_key", "redteam:device_action"
@@ -933,8 +984,8 @@ def _revise_existing(plan: Plan, conn: Connection, text: str, above: float, loca
             nonlocal model, sent
             sent += 1
             reply, model, _ = generate_with_fallback(
-                conn.base_url, conn.api_key, _model_order(plan, conn), prompt, plan.temperature, system, conn.local_url,
-                conn.local_model, answer_token_limit(sum(count_words(job["previous"]) for job in jobs)),
+                conn.base_url, conn.credentials, _model_order(plan, conn), prompt, plan.temperature, system,
+                conn.local_url, conn.local_model, answer_token_limit(sum(count_words(job["previous"]) for job in jobs)),
                 thinking=plan.thinking, json_schema=GROUP_SCHEMA, timeout=60 + 15 * len(jobs), sampling=plan.sampling)
             return reply
 
@@ -1270,7 +1321,9 @@ def _priorities(plan: Plan, conn: Connection) -> None:
     """What the run favours. Points spread over the detector, the style profile, speed and quota pick
     a setting from the measured table (eval/generation_settings.py); without one, or by choice, the
     thinking level, blocks per request and requests at once are set by hand."""
-    table = generation_settings.load_table()
+    table = generation_settings.with_keys(  # the table is Gemini's, so its limits are Gemini keys'
+        generation_settings.load_table(),
+        len(conn.pool) if conn.pool and provider_for(conn.base_url) == "gemini" else 1)
     models_on_offer = [name for name in (conn.model, *conn.fallback_models) if name]
     if table is None:
         st.caption("Set by hand until the settings are measured: run `python -m eval.tune_generation` on a document "
@@ -1347,7 +1400,8 @@ def _readout(plan: Plan, table: dict, setting: generation_settings.Setting, bloc
               f"style match {setting.style:.0f}%" if setting.style is not None else None]
     requests = max(1, round(estimate["requests"]))
     limit = estimate["daily_limit"]
-    allowance = (f" ({min(1.0, requests / limit):.0%} of its {limit:,} free requests a day)" if limit else
+    across = f" across {table['keys']} keys" if table.get("keys", 1) > 1 else ""
+    allowance = (f" ({min(1.0, requests / limit):.0%} of its {limit:,} free requests a day{across})" if limit else
                  " (its daily limit isn't known yet)")
     st.caption(f"About {duration(estimate['seconds'])}, {requests} request{'s' * (requests != 1)}{allowance} and "
                f"{estimate['tokens'] / 1000:,.0f}k tokens for this {'document' if plan.batch else 'sample'}. "
@@ -1865,16 +1919,25 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         if not public():
             generation_settings.record_limits(generation_settings.limits_in(errors))
 
+    def hold(seconds: float, model: str) -> None:
+        """With several keys, wait for one to come off its per-minute limit on `model` rather than move down."""
+        for second in range(math.ceil(seconds), 0, -1):
+            if worker.stopping:
+                raise StopRequested
+            status["note"] = f"Every key is at its per-minute limit on {model}. Asking again in {duration(second)}."
+            time.sleep(1)
+        status["note"] = None
+
     def write(prompt: str, max_tokens: int, profile: str | None = system, **options) -> tuple[str, str, list[str]]:
-        """Ask the models in turn. A model whose quota is spent for hours is dropped for the rest of the
-        batch; when the ones left are only busy or rate-limited, wait and ask again."""
+        """Ask the models in turn. A model whose quota is spent for hours (on every key) is dropped for the
+        rest of the batch; when the ones left are only busy or rate-limited, wait and ask again."""
         for retry in range(BUSY_RETRIES + 1):
             spent: set[str] = set()
             try:
                 reply, used_model, model_errors = generate_with_fallback(
-                    conn.base_url, conn.api_key, list(status["order"]), prompt, plan.temperature, profile,
+                    conn.base_url, conn.credentials, list(status["order"]), prompt, plan.temperature, profile,
                     conn.local_url, local_model, max_tokens, local_context, spent, thinking=plan.thinking,
-                    sampling=plan.sampling, **options)
+                    sampling=plan.sampling, pause=hold, **options)
                 learn_limits("\n".join(model_errors))
                 return reply, used_model, model_errors
             except APIError as exc:
@@ -1883,10 +1946,14 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
                 if retry == BUSY_RETRIES or not (left or local_model):
                     raise
             finally:
-                if spent:
+                news = conn.pool.take_notes() if conn.pool else []
+                if spent or news:
                     with shared:
-                        status["log"].append(f"Dropping {', '.join(sorted(spent))} for this batch: quota spent.")
-                        status["order"] = [model for model in status["order"] if model not in spent]
+                        status["log"].extend(news)
+                        if spent:
+                            status["log"].append(f"Dropping {', '.join(sorted(spent))} for this batch: quota spent"
+                                                 + (" on every key." if conn.pool else "."))
+                            status["order"] = [model for model in status["order"] if model not in spent]
             for second in range(BUSY_WAIT * (retry + 1), 0, -1):
                 if worker.stopping:
                     raise StopRequested
@@ -2182,7 +2249,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     def generate(prompt: str) -> str:
         nonlocal model, model_errors
         reply, model, model_errors = generate_with_fallback(
-            conn.base_url, conn.api_key, _model_order(plan, conn), prompt,
+            conn.base_url, conn.credentials, _model_order(plan, conn), prompt,
             0.95 if plan.evasion else plan.temperature,
             system, conn.local_url, conn.local_model, answer_token_limit(plan.words), thinking=plan.thinking,
             sampling=plan.sampling,
@@ -2194,7 +2261,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     def restyle_ask(prompt: str, jobs: list[dict]) -> str:
         nonlocal model, model_errors
         reply, model, model_errors = generate_with_fallback(
-            conn.base_url, conn.api_key, _model_order(plan, conn), prompt, plan.temperature, system, conn.local_url,
+            conn.base_url, conn.credentials, _model_order(plan, conn), prompt, plan.temperature, system, conn.local_url,
             conn.local_model, answer_token_limit(sum(count_words(job["previous"]) for job in jobs)),
             thinking=plan.thinking, json_schema=GROUP_SCHEMA, timeout=60 + 15 * len(jobs), sampling=plan.sampling)
         return reply
@@ -2202,7 +2269,7 @@ def _generate_sample(plan: Plan, conn: Connection, system: str | None) -> None:
     def attack_ask(prompt: str) -> str:
         nonlocal model, model_errors
         reply, model, model_errors = generate_with_fallback(
-            conn.base_url, conn.api_key, _model_order(plan, conn), prompt, plan.temperature, None, conn.local_url,
+            conn.base_url, conn.credentials, _model_order(plan, conn), prompt, plan.temperature, None, conn.local_url,
             conn.local_model, answer_token_limit(3 * GROUP_WORDS), thinking=plan.thinking, timeout=180,
             sampling=plan.sampling)
         return reply

@@ -465,3 +465,10 @@ def test_reading_gives_a_texts_numbers_against_the_yardstick(tmp_path):
     assert reading["match"] == yardstick.match(text) and reading["distance"] == round(yardstick.text_distance(text), 2)
     assert reading["words"] > 0 and {"short_pct", "spread", "mattr"} <= set(reading)
     assert yardstick.reading("   ") is None
+
+
+def test_several_keys_multiply_each_models_daily_allowance():
+    table = {"rows": TABLE["rows"], "daily_requests": {"a": 20}}
+    assert generation_settings.with_keys(table, 1) is table
+    doubled = generation_settings.with_keys(table, 2)
+    assert doubled["daily_requests"] == {"a": 40} and doubled["keys"] == 2 and table["daily_requests"] == {"a": 20}

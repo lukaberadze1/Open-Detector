@@ -45,3 +45,21 @@ def save_env(name: str, value: str, path: Path | str = ENV_PATH) -> None:
     path.touch(mode=0o600, exist_ok=True)
     path.chmod(0o600)
     path.write_text("".join(f"{line}\n" for line in kept), encoding="utf-8")
+
+
+def extra_keys_name(name: str) -> str:
+    """Where more keys for the same provider are kept, comma-separated: GEMINI_API_KEYS beside GEMINI_API_KEY."""
+    return f"{name}S"
+
+
+def env_keys(name: str) -> list[str]:
+    """Every key for `name`'s provider: `name` itself first, then the extra ones, each once."""
+    keys = [os.environ.get(name, ""), *os.environ.get(extra_keys_name(name), "").split(",")]
+    return list(dict.fromkeys(key.strip() for key in keys if key.strip()))
+
+
+def save_extra_keys(name: str, keys: list[str], path: Path | str = ENV_PATH) -> None:
+    """Keep `keys` as the extra keys beside `name` (empty removes them), never repeating `name`'s own."""
+    main = os.environ.get(name, "").strip()
+    kept = [key for key in dict.fromkeys(key.strip() for key in keys) if key and key != main]
+    save_env(extra_keys_name(name), ",".join(kept), path)

@@ -38,6 +38,7 @@ style-imitating essays separately.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import http.client
 import json
@@ -449,6 +450,159 @@ class QuotaExhausted(APIError):
     pass
 
 
+class RateLimited(APIError):
+    """A 429 that asks for a short wait (a per-minute limit), with the seconds it asked for, if it said."""
+
+    def __init__(self, message: str, wait: float | None = None):
+        super().__init__(message)
+        self.wait = wait
+
+
+_DAILY = re.compile(r"per[ -]?day", re.I)  # Gemini's "requests per day", its "PerDay" quota ids, OpenRouter's "per-day"
+# Per-minute refusals in a row before a key counts as spent on a model, since a daily limit can look alike.
+RATE_STRIKES = 3
+MAX_HOLDS = 3  # waits for a rate-limited model's keys before one request moves on to the next model
+DEFAULT_RATE_WAIT = 30  # seconds, when a 429 doesn't say how long
+RATE_MARGIN = 1  # seconds added to the wait a 429 asks for
+
+
+class KeyPool:
+    """Several API keys for one provider, from different accounts, each with its own allowance on each model.
+    Requests go round the keys in turn, which also spreads the per-minute limits. A key out of quota on a model
+    is left out for that model only, so the model is used on every other key before generate_with_fallback
+    moves to the next one; a key the provider rejects is left out for every model. Shared by a batch's
+    threads. Keys from one Google Cloud project share one allowance, so only keys from different projects add
+    up. Never holds a key in a message: keys are named by their place in the list."""
+
+    def __init__(self, keys: list[str] | tuple[str, ...]):
+        self.keys = list(dict.fromkeys(keys)) or [""]
+        self._spent: set[tuple[int, str]] = set()
+        self._rejected: set[int] = set()
+        self._cooling: dict[tuple[int, str], float] = {}
+        self._strikes: dict[tuple[int, str], int] = {}
+        self._turn: dict[str, int] = {}
+        self._notes: list[str] = []
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        return len(self.keys)
+
+    def name(self, key: str) -> str:
+        return f"key {self.keys.index(key) + 1} of {len(self.keys)}"
+
+    def _open(self, index: int, model: str) -> bool:
+        return index not in self._rejected and (index, model) not in self._spent
+
+    def next_key(self, model: str) -> str | None:
+        """The next key that can ask `model` now, round the list, or None while each is spent or cooling."""
+        with self._lock:
+            now = time.monotonic()
+            ready = [i for i in range(len(self.keys))
+                     if self._open(i, model) and self._cooling.get((i, model), 0) <= now]
+            if not ready:
+                return None
+            index = next((i for i in ready if i >= self._turn.get(model, 0)), ready[0])
+            self._turn[model] = index + 1
+            return self.keys[index]
+
+    def soonest(self, model: str) -> float | None:
+        """Seconds until a key cooling on `model` may ask again, or None if no key is only cooling. A single
+        key never waits: one key's per-minute limit sends the request on to the next model, as it always has."""
+        with self._lock:
+            if len(self.keys) < 2:
+                return None
+            ends = [end for (i, name), end in self._cooling.items() if name == model and self._open(i, model)]
+            return max(0.0, min(ends) - time.monotonic()) if ends else None
+
+    def worked(self, key: str, model: str) -> None:
+        with self._lock:
+            self._strikes.pop((self.keys.index(key), model), None)
+
+    def spend(self, key: str, model: str) -> None:
+        with self._lock:
+            index = self.keys.index(key)
+            if (index, model) not in self._spent:
+                self._spent.add((index, model))
+                self._notes.append(f"{model} is out of quota on {self.name(key)}"
+                                   + (", so the next key takes over." if self.open_keys(model, locked=True)
+                                      else ", the last key it had."))
+
+    def cool(self, key: str, model: str, wait: float | None) -> None:
+        """A per-minute refusal. RATE_STRIKES of them in a row and the key counts as spent on the model."""
+        with self._lock:
+            index = self.keys.index(key)
+            strikes = self._strikes[(index, model)] = self._strikes.get((index, model), 0) + 1
+            wait = DEFAULT_RATE_WAIT if wait is None else wait
+            self._cooling[(index, model)] = time.monotonic() + wait + RATE_MARGIN
+        if strikes >= RATE_STRIKES:
+            self.spend(key, model)
+
+    def reject(self, key: str) -> None:
+        with self._lock:
+            index = self.keys.index(key)
+            if index not in self._rejected:
+                self._rejected.add(index)
+                self._notes.append(f"The provider rejected {self.name(key)}; it is left out of this run.")
+
+    def open_keys(self, model: str, locked: bool = False) -> int:
+        """How many keys may still ask `model`, now or after a wait."""
+        with contextlib.nullcontext() if locked else self._lock:
+            return sum(self._open(i, model) for i in range(len(self.keys)))
+
+    def usable(self) -> bool:
+        """Whether any key is left that the provider hasn't rejected."""
+        with self._lock:
+            return len(self._rejected) < len(self.keys)
+
+    def take_notes(self) -> list[str]:
+        """What happened to the keys since the last call: one line per key spent or rejected."""
+        with self._lock:
+            notes, self._notes = self._notes, []
+            return notes
+
+
+def _key_trouble(message: str) -> bool:
+    """Whether an error is about the key itself (invalid, revoked, leaked) rather than the request."""
+    lower = message.lower()
+    return "http 401" in lower or (("http 400" in lower or "http 403" in lower) and "key" in lower)
+
+
+def _on_every_key(pool: KeyPool, model: str, ask: Callable[[str], str], pause: Callable[[float, str], None]) -> str:
+    """Ask `model` with each key it still has, in turn, until one answers. A key out of quota, rate-limited or
+    unable to use the model passes the request to the next key; an error that is the model's own (busy,
+    timed out, unreachable) or the request's ends the model's turn, since another key wouldn't help. While
+    every key left is only rate-limited, waits up to MAX_HOLDS times for the soonest, through `pause`."""
+    holds, last = 0, None
+    while True:
+        key = pool.next_key(model)
+        if key is None:
+            wait = pool.soonest(model)
+            if wait is None or wait > MAX_WAIT or holds == MAX_HOLDS:
+                raise last or APIError(f"every key is out of quota or rate-limited on {model}")
+            holds += 1
+            pause(wait, model)
+            continue
+        try:
+            reply = ask(key)
+        except QuotaExhausted as exc:
+            pool.spend(key, model)
+            last = exc
+        except RateLimited as exc:
+            pool.cool(key, model, exc.wait)
+            last = exc
+        except APIError as exc:
+            if _key_trouble(str(exc)):
+                pool.reject(key)
+            elif "HTTP 403" in str(exc) and len(pool) > 1:  # this key's project can't use the model
+                pool.spend(key, model)
+            else:
+                raise
+            last = exc
+        else:
+            pool.worked(key, model)
+            return reply
+
+
 def is_local(base_url: str) -> bool:
     return urllib.parse.urlparse(base_url).hostname in ("localhost", "127.0.0.1", "::1")
 
@@ -627,8 +781,10 @@ def _chat(base_url: str, api_key: str, model: str, prompt: str, temperature: flo
                 continue
             # 402 is OpenRouter out of credits. Its free models' daily cap can come without a time to wait.
             if exc.code == 402 or (exc.code == 429 and ((delay is not None and delay > MAX_WAIT)
-                                                        or "per-day" in message.lower())):
+                                                        or _DAILY.search(message))):
                 raise QuotaExhausted(f"{model} is out of quota: {message}") from exc
+            if exc.code == 429 and attempt == retries:
+                raise RateLimited(f"HTTP 429 from {base_url}: {message}", delay) from exc
             # Bad requests, unknown models and rejected keys will never succeed; don't retry them.
             if exc.code not in RETRYABLE_STATUS or attempt == retries:
                 raise APIError(f"HTTP {exc.code} from {base_url}: {message}") from exc
@@ -708,8 +864,10 @@ def _gemini_interaction(model: str, api_key: str, prompt: str, temperature: floa
                 attempt -= 1
                 payload.pop("generation_config", None)
                 continue
-            if exc.code == 429 and delay is not None and delay > MAX_WAIT:
+            if exc.code == 429 and ((delay is not None and delay > MAX_WAIT) or _DAILY.search(message)):
                 raise QuotaExhausted(f"{model} is out of quota: {message}") from exc
+            if exc.code == 429 and attempt == retries:
+                raise RateLimited(f"HTTP 429 from Gemini Interactions API: {message}", delay) from exc
             if exc.code not in RETRYABLE_STATUS or attempt == retries:
                 raise APIError(f"HTTP {exc.code} from Gemini Interactions API: {message}") from exc
             reason, wait = f"HTTP {exc.code}", delay if delay is not None else 2 ** (attempt - 1) * 5
@@ -795,31 +953,44 @@ def _chat_local(local_url: str, model: str, prompt: str, temperature: float, sys
     return content
 
 
-def generate_with_fallback(base_url: str, api_key: str, models: list[str], prompt: str, temperature: float,
-                           system: str | None, local_url: str = "", local_model: str = "",
+def _sleep(seconds: float, model: str) -> None:
+    print(f"  every key is rate-limited on {model}; waiting {seconds:.0f}s", file=sys.stderr)
+    time.sleep(seconds)
+
+
+def generate_with_fallback(base_url: str, api_key: str | KeyPool, models: list[str], prompt: str,
+                           temperature: float, system: str | None, local_url: str = "", local_model: str = "",
                            max_tokens: int | None = None, local_context: int | None = None,
                            spent: set[str] | None = None, *, thinking: str | None = None,
                            json_schema: dict | None = None, timeout: int = 60,
-                           sampling: dict | None = None) -> tuple[str, str, list[str]]:
+                           sampling: dict | None = None,
+                           pause: Callable[[float, str], None] = _sleep) -> tuple[str, str, list[str]]:
     """Try the hosted models in order, advancing past quota and transient failures, then the local
-    model, which needs no key and has no quota. `max_tokens` caps the local model's answer, and
+    model, which needs no key and has no quota. `api_key` is one key, or a KeyPool of several: then each
+    model is tried on every key it has left before the next model, and while its keys are only at their
+    per-minute limits the request waits for them through `pause(seconds, model)` rather than moving down.
+    `max_tokens` caps the local model's answer, and
     `local_context` fixes its context window (a batch passes one size for all its blocks). Models whose
-    quota is spent for hours, not just busy for a moment, are added to `spent`. `thinking` and
+    quota is spent for hours on every key, not just busy for a moment, are added to `spent`. `thinking` and
     `json_schema` go to `chat`, as does `sampling` (top_p, top_k; to the local model too), and `timeout` is
     each hosted request's. Returns the text, the model
     that wrote it and the errors of the models that failed before it."""
     attempted = []
     errors = []
     extra = {"sampling": sampling} if sampling else {}
+    pool = api_key if isinstance(api_key, KeyPool) else KeyPool([api_key])
     for model_name in dict.fromkeys(name.strip() for name in models if name.strip()):
         attempted.append(model_name)
+
+        def ask(key: str, model_name: str = model_name) -> str:
+            return chat(base_url, key, model_name, prompt, temperature, retries=1, system=system,
+                        timeout=timeout, thinking=thinking, json_schema=json_schema, **extra)
+
         try:
-            result = chat(base_url, api_key, model_name, prompt, temperature, retries=1, system=system,
-                          timeout=timeout, thinking=thinking, json_schema=json_schema, **extra)
-            return result, model_name, errors
+            return _on_every_key(pool, model_name, ask, pause), model_name, errors
         except APIError as exc:
             errors.append(f"{model_name}: {exc}")
-            if isinstance(exc, QuotaExhausted) and spent is not None:
+            if spent is not None and not pool.open_keys(model_name) and pool.usable():
                 spent.add(model_name)
             message = str(exc)
             lower_message = message.lower()
@@ -827,10 +998,12 @@ def generate_with_fallback(base_url: str, api_key: str, models: list[str], promp
                 word in lower_message for word in ("timed out", "timeout")
             )
             # One model's refusal says nothing about the next on Groq and OpenRouter, which host many makers'
-            # models; a rejected key does. On Gemini a 400 or 403 is the key too.
+            # models; a rejected key does. On Gemini a 400 or 403 is the key too. With several keys, only
+            # running out of keys the provider takes ends the hosted models.
             routed = urllib.parse.urlparse(base_url).hostname in (GROQ_HOST, OPENROUTER_HOST)
             fatal = ("HTTP 401",) if routed else ("HTTP 400", "HTTP 401", "HTTP 403")
-            if any(status in message for status in fatal) or endpoint_unreachable:
+            if endpoint_unreachable or (any(status in message for status in fatal)
+                                        and (len(pool) == 1 or not pool.usable())):
                 break
     if web_available():
         attempted.append(WEB_MODEL)

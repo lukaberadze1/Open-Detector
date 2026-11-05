@@ -216,6 +216,12 @@ The older 2.5 Flash models are omitted because Google restricts them for new use
 falls back to a local Ollama model (`gemma3:4b` by default), and the sidebar says whether that can
 run. `OPENDETECTOR_REDTEAM=off` leaves the page out, as the Hugging Face deploy does.
 
+Keys from other Google accounts can be added under Model & connection (kept in `GEMINI_API_KEYS`,
+comma-separated). The page then uses each model on every key, taking turns, and moves to the next
+model only once every key is out of quota on it; while the keys are only at their per-minute
+limits, a batch waits for them rather than moving down. Keys made in the same Cloud project share
+one allowance, so each needs its own project. Public mode keeps to the visitor's one key.
+
 On a local run, **Provider** under Model & connection switches to Groq or OpenRouter (keys in `GROQ_API_KEY` and
 `OPENROUTER_API_KEY`, or paste them there). Try a provider's models first with
 `python -m eval.check_providers groq openrouter`; `--list` shows what is on offer. OpenRouter's defaults are free

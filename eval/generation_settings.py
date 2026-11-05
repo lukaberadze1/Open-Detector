@@ -79,6 +79,15 @@ def load_table(path: Path = TABLE, limits: Path | None = None) -> dict | None:
     return table
 
 
+def with_keys(table: dict | None, keys: int) -> dict | None:
+    """`table` for `keys` API keys from different accounts. A daily limit is one key's (one Cloud project's),
+    and a batch uses each model on every key, so each model's allowance is `keys` times larger."""
+    if table is None or keys <= 1:
+        return table
+    return {**table, "keys": keys,
+            "daily_requests": {model: limit * keys for model, limit in (table.get("daily_requests") or {}).items()}}
+
+
 def limits_in(text: str) -> dict[str, int]:
     """The daily request limits that quota errors in `text` state, by model: the lines
     generate_with_fallback writes as "<model>: <error>" and the benchmark as "<model> is out of quota:"."""

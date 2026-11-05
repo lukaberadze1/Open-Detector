@@ -89,7 +89,8 @@ def _key_panel() -> None:
             save_env(KEY_NAME, "")
             st.rerun()
         st.caption(f"The key is kept only on this computer, in {_where()}. The Adversarial Lab sends your "
-                   "instructions to Google to write each sample; checking a text sends nothing anywhere.")
+                   "instructions to Google to write each sample; checking a text sends nothing anywhere. Keys from "
+                   "other Google accounts can be added in the Adversarial Lab, under Model & connection.")
 
 
 def _public_key_panel() -> None:

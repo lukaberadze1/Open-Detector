@@ -41,3 +41,18 @@ def test_opendetector_home_moves_the_data_folder():
 
     assert data_root() == str(root)
     assert data_root(OPENDETECTOR_HOME="~/Somewhere") == str(Path.home() / "Somewhere")
+
+
+def test_more_keys_sit_beside_the_first_each_once(tmp_path, monkeypatch):
+    from opendetector.env import env_keys, save_extra_keys
+
+    monkeypatch.setenv("GEMINI_API_KEY", "main")
+    monkeypatch.delenv("GEMINI_API_KEYS", raising=False)
+    path = tmp_path / ".env"
+    save_extra_keys("GEMINI_API_KEY", ["two", "main", " three ", "two"], path)
+    assert path.read_text() == "GEMINI_API_KEYS=two,three\n"
+    assert env_keys("GEMINI_API_KEY") == ["main", "two", "three"]
+    monkeypatch.delenv("GEMINI_API_KEY")
+    assert env_keys("GEMINI_API_KEY") == ["two", "three"], "the extras work without the first"
+    save_extra_keys("GEMINI_API_KEY", [], path)
+    assert path.read_text() == "" and env_keys("GEMINI_API_KEY") == []
