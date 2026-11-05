@@ -99,26 +99,61 @@ def test_a_spent_model_hands_on_and_the_next_measures_every_setup(tmp_path, monk
 
     item = night(tmp_path, [Stage("round", "?", gemini=1)], run, monkeypatch)
     item.run_all()
-    first, second = overnight.MODELS
+    first, second = overnight.MODELS[:2]
     assert calls == [("baseline", first), ("multistart", first), ("baseline", second), ("multistart", second),
                      ("roundtrip", second), ("masked", second)]
     assert status(item, "round") == "done" and item.spent(first) and not item.spent(second)
 
 
-def test_an_overloaded_model_puts_the_round_off_and_a_later_start_tries_it_again(tmp_path, monkeypatch):
+def test_an_overloaded_model_hands_on_for_this_round_and_is_tried_first_again(tmp_path, monkeypatch):
     calls = []
+    first, second = overnight.MODELS[:2]
 
     def run(command, log, minutes):
-        calls.append(command[0])
-        return overnight.DOWN_EXIT if command[0] == "baseline" else 0
+        calls.append(tuple(command))
+        return overnight.DOWN_EXIT if command[1] == first else 0
 
-    stages = [Stage("round", "?", gemini=1), Stage("next", "?", command=["next"])]
+    stages = [Stage("round", "?", gemini=1)]
     item = night(tmp_path, stages, run, monkeypatch)
     item.run_all()
-    assert calls == ["baseline", "next"]
-    assert status(item, "round") == "model down" and not item.spent(overnight.MODELS[0])
-    night(tmp_path, stages, run, monkeypatch).run_all()
-    assert calls == ["baseline", "next", "baseline"]
+    setups = [name for name, _ in overnight.gemini_setups(item.paths, True)]
+    assert calls == [("baseline", first), *[(name, second) for name in setups]]
+    assert status(item, "round") == "partly done" and not item.spent(first)
+    calls.clear()
+    item.state["stages"].pop("round")
+    item.run_all()
+    assert calls[0] == ("baseline", first), "next round, the first model gets another chance"
+
+
+def test_a_model_that_refuses_the_request_is_out_for_the_night(tmp_path, monkeypatch):
+    calls = []
+    first, second = overnight.MODELS[:2]
+
+    def run(command, log, minutes):
+        calls.append(command[1])
+        return overnight.UNUSABLE_EXIT if command[1] == first else 0
+
+    item = night(tmp_path, [Stage("round", "?", gemini=1)], run, monkeypatch)
+    item.run_all()
+    assert calls[0] == first and set(calls[1:]) == {second} and item.spent(first)
+
+
+def test_every_model_overloaded_only_notes_it(tmp_path, monkeypatch):
+    stages = [Stage("round", "?", gemini=1), Stage("next", "?", command=["next"])]
+    item = night(tmp_path, stages, lambda c, _l, _m: 0 if c[0] == "next" else overnight.DOWN_EXIT, monkeypatch)
+    item.run_all()
+    assert status(item, "round") == "model down" and status(item, "next") == "done"
+
+
+def test_a_provider_model_goes_out_on_its_own_api(tmp_path):
+    paths = Paths(True)
+    command = [str(part) for part in overnight.gemini_command(paths, True, "baseline", [], 1,
+                                                              "openrouter:cohere/north-mini-code:free")]
+    assert command[command.index("--provider") + 1] == "openrouter"
+    assert command[command.index("--model") + 1] == "cohere/north-mini-code:free"
+    assert "/" not in command[command.index("--report") + 1].rsplit("/", 1)[-1]
+    gemini = [str(part) for part in overnight.gemini_command(paths, True, "baseline", [], 1, overnight.MODELS[0])]
+    assert gemini[gemini.index("--provider") + 1] == "gemini"
 
 
 def test_when_every_model_is_spent_the_night_goes_on_and_the_reset_brings_them_back(tmp_path, monkeypatch):
@@ -128,6 +163,7 @@ def test_when_every_model_is_spent_the_night_goes_on_and_the_reset_brings_them_b
     item = night(tmp_path, stages, run, monkeypatch, clock=clock)
     item.run_all()
     assert status(item, "round") == "quota spent" and status(item, "next") == "done"
+    assert sum(item.spent(model) for model in overnight.MODELS) == len(overnight.MODELS)
     clock.time = datetime(2026, 11, 6, 9, 30)
     assert not item.spent(overnight.MODELS[0])
 

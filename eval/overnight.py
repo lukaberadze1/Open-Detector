@@ -1,15 +1,15 @@
 """The overnight tests: one model-heavy job at a time, most decision-worthy first, and no failure ends the night.
 
-Each stage has a time limit and a log of its own (eval/cache/overnight/logs/), a crash is tried again, and a stage that
-still fails is noted and passed by, along with anything that needs its result. Stages save as they go, so running this
-again carries on: finished stages are skipped. Gemini's comparisons run in rounds, one repeat of every setup each, so a
-quota that runs out leaves the setups equally measured. A spent model hands on to the next, which starts its comparison
-afresh, since scores aren't compared across models. An overloaded model isn't swapped out, since that would split the
-comparison: the round is put off and a later round writes the repeats it missed. eval/cache/overnight/BRIEF.md is
-rewritten after every stage, so
-there is something to read whenever you look. It keeps the Mac awake on mains power itself.
+Each stage has a time limit and a log of its own (eval/cache/overnight/logs/), a crash is tried again, and a stage
+that still fails is noted and passed by, along with anything that needs its result. Stages save as they go, so running
+this again carries on: finished stages are skipped. Gemini's comparisons run in rounds, one repeat of every setup
+each, so a quota that runs out leaves the setups equally measured. A spent or overloaded model hands on to the next
+(Gemini, then OpenRouter), which starts its comparison afresh, since scores aren't compared across models.
+An overloaded one is tried first again next round, which writes the repeats it missed. eval/cache/overnight/BRIEF.md
+is rewritten after every stage, so there is something to read whenever you look. It keeps the Mac awake on mains power
+itself.
 
-    python -m eval.overnight --until 10:00
+    python -m eval.overnight --until 07:40
     python -m eval.overnight --status
     python -m eval.overnight --smoke          # every stage, tiny, in its own folder: about 30 minutes
 """
@@ -35,8 +35,12 @@ ROOT = Path(__file__).resolve().parents[1]
 PYTHON = sys.executable
 QUOTA_EXIT = 3  # as eval.tune_revise exits on a spent quota
 DOWN_EXIT = 4  # and on a model that stays overloaded
-MODELS = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
-QUOTA_RESET = (9, 5)  # local hour and minute: Gemini's daily quota resets at midnight Pacific, 09:00 in Georgia's west
+UNUSABLE_EXIT = 5  # and on one that refuses the request itself, which no wait fixes
+# In the order to use them. Scores are only compared within a model, so each measures every setup itself. Tried on a
+# real document on 2026-11-05: Groq's free tier refuses requests this size (HTTP 413, tokens per minute), and the other
+# OpenRouter models were rate-limited or took over a minute a reply. A "provider:" prefix picks the API.
+MODELS = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "openrouter:cohere/north-mini-code:free")
+QUOTA_RESET = (9, 5)  # local hour and minute: Gemini's daily quota resets at midnight Pacific, 09:00 CET
 QUOTA_WAIT = 600  # seconds before believing a spent quota, since a per-minute limit can read the same
 CRASH_WAIT = 120
 ATTEMPTS = 2
@@ -102,9 +106,12 @@ def gemini_setups(paths: Paths, smoke: bool) -> list[tuple[str, list[str]]]:
 def gemini_command(paths: Paths, smoke: bool, setup: str, extra: list, repeats: int, model: str) -> list[str]:
     documents = sorted(DOCUMENTS.glob("*.md"))[:1 if smoke else None]
     tiny = ["--rounds", 1, "--no-log"] if smoke else []
-    return py("eval.tune_revise", *documents, "--as-page", "--repeats", repeats, "--model", model,
+    provider, name = model.split(":", 1) if model.split(":")[0] in ("groq", "openrouter") else ("gemini", model)
+    label = re.sub(r"[^\w.-]", "-", name)
+    return py("eval.tune_revise", *documents, "--as-page", "--repeats", repeats, "--provider", provider,
+              "--model", name,
               "--out", paths.revise, "--trace", paths.out / "trace.jsonl",
-              "--report", paths.out / f"{setup}_{model}.md", *extra, *tiny)
+              "--report", paths.out / f"{setup}_{label}.md", *extra, *tiny)
 
 
 def write_samples(paths: Paths, limit: int | None) -> str:
@@ -131,62 +138,62 @@ def plan(paths: Paths, smoke: bool) -> list[Stage]:
         Stage("tests", "Is the code sound before trusting anything below?", 10,
               py("pytest", "-q", "--no-header", "-p", "no:cacheprovider")),
         Stage("reference_before", "Where do we stand, before tonight's samples? Do guided samples fool only Desklib "
-              "(the transfer gap against RoBERTa)?", 90,
+              "(the transfer gap against RoBERTa)?", 30,
               py("eval.reference_benchmark", "--detectors", "slim,roberta", "--report", paths.reference_before,
                  *reference_small)),
         Stage("humanize_demo", "What does a trained humanizer's output do to the detector, and does it flag the human "
-              "rewrites?", 90,
+              "rewrites?", 20,
               py("eval.score_demo", "--report", paths.humanize_demo, *(["--limit", 2] if small else [])),
               needs=[DEMOS / "kto_seed_demo.jsonl"]),
         Stage("local_hop", "Does the local translation hop move AI text, and does it bring text into the math script's "
-              "range?", 120,
-              py("eval.bench_hop", "--texts", 1 if small else 20, "--pivots", *(["German"] if small else
+              "range?", 25,
+              py("eval.bench_hop", "--texts", 1 if small else 10, "--pivots", *(["German"] if small else
                  ["German", "Finnish"]), "--math", "--budget", 10 if small else 150, "--independent",
                  "--out", paths.out / "hop.jsonl", "--report", paths.local_hop)),
-        Stage("humanizer_rules", "How do the public rule-based humanizers fare? No model, so it is quick.", 30,
+        Stage("humanizer_rules", "How do the public rule-based humanizers fare? No model, so it is quick.", 10,
               py("eval.humanizer_attack", "--n", 2 if small else 40, "--no-report", "--out", paths.humanizers)),
         Stage("gemini_round_1", "Does multi-start, the German round trip or holding names and numbers beat the current "
-              "recipe?", 360, gemini=1),
+              "recipe?", 130, gemini=1),
         board(1),
-        Stage("anatomy", "What does Desklib read: words, order, punctuation? Which edits can move it?", 150,
-              py("eval.detector_anatomy", "--texts", 2 if small else 20, "--out", paths.out / "anatomy.jsonl",
+        Stage("anatomy", "What does Desklib read: words, order, punctuation? Which edits can move it?", 40,
+              py("eval.detector_anatomy", "--texts", 2 if small else 16, "--out", paths.out / "anatomy.jsonl",
                  "--report", paths.anatomy)),
-        Stage("borderline_math", "With the ranking fixed, how far does math alone move borderline text, and does the "
-              "move survive a detector it never saw?", 150,
-              py("eval.bench_math", "--band", 0.6, 0.95, "--texts", 1 if small else 17, "--independent",
-                 "--out", paths.out / "borderline.jsonl", *(["--budget", 10] if small else []))),
-        Stage("humanizer_bart", "Do the public BART humanizers beat the detector without using its scores?", 180,
-              py("eval.humanizer_attack", "--n", 1 if small else 40, "--no-report", "--humanizers",
-                 "stealth-bart,cive-bart", "--out", paths.humanizers)),
-        Stage("humanizer_report", "The humanizers' scores, the same texts before and after.", 45,
-              py("eval.humanizer_attack", "--report-only", "--out", paths.humanizers, "--report",
-                 paths.humanizer_report), needs=[paths.humanizers]),
-        Stage("gemini_round_2", "The same comparison with a second repeat: is the first round's answer stable?", 300,
-              gemini=2),
-        Stage("export_revised", "Hands the revised texts to the next stage.", 2, call=lambda: export_revised(paths),
-              needs_rows=True, again=True),
-        Stage("math_after_revision", "Does the math script finish off what revision leaves between 15% and 95%?", 120,
-              py("eval.math_attack", paths.revised, "--score", "--band", 0.15, 0.95, "--out", paths.revised_math,
-                 *(["--budget", 10] if small else [])), needs=[paths.revised], fresh=[paths.revised_math]),
-        board(2),
-        Stage("daigt_scoring", "Scores the new training essays for the trial fit.", 270,
-              py("eval.featurize", "daigt", "--n", 4 if small else 3000, "--engines", "desklib", "--device", "cpu",
+        Stage("daigt_scoring", "Scores the new training essays for the trial fit.", 150,
+              py("eval.featurize", "daigt", "--n", 4 if small else 2000, "--engines", "desklib", "--device", "cpu",
                  "--dtype", "float32", "--out", paths.daigt), needs=[DAIGT_CSV]),
         Stage("trial_fit", "Fits a trial slim combiner on the wider data; the shipped ones stay as they are.", 10,
               py("eval.fit_combiner", "eval/cache/raid.jsonl", "eval/cache/mage.jsonl", paths.daigt, "--features",
                  "desklib_mean,desklib_max", "--out", paths.trial, "--report", paths.trial_fit), needs=[paths.daigt]),
+        Stage("borderline_math", "With the ranking fixed, how far does math alone move borderline text, and does the "
+              "move survive a detector it never saw?", 35,
+              py("eval.bench_math", "--band", 0.6, 0.95, "--texts", 1 if small else 8, "--independent",
+                 "--out", paths.out / "borderline.jsonl", *(["--budget", 10] if small else []))),
+        Stage("humanizer_bart", "Do the public BART humanizers beat the detector without using its scores?", 45,
+              py("eval.humanizer_attack", "--n", 1 if small else 15, "--no-report", "--humanizers",
+                 "stealth-bart,cive-bart", "--out", paths.humanizers)),
+        Stage("humanizer_report", "The humanizers' scores, the same texts before and after.", 15,
+              py("eval.humanizer_attack", "--report-only", "--out", paths.humanizers, "--report",
+                 paths.humanizer_report), needs=[paths.humanizers]),
+        Stage("gemini_round_2", "The same comparison with a second repeat: is the first round's answer stable?", 50,
+              gemini=2),
+        Stage("export_revised", "Hands the revised texts to the next stage.", 2, call=lambda: export_revised(paths),
+              needs_rows=True, again=True),
+        Stage("math_after_revision", "Does the math script finish off what revision leaves between 15% and 95%?", 25,
+              py("eval.math_attack", paths.revised, "--score", "--band", 0.15, 0.95, "--out", paths.revised_math,
+                 *(["--budget", 10] if small else [])), needs=[paths.revised], fresh=[paths.revised_math]),
+        board(2),
         Stage("collect_samples", "Gathers every saved sample, including tonight's.", 5,
               call=lambda: write_samples(paths, 3 if small else None), again=True),
-        Stage("redteam_scoring", "Scores those samples for the comparison below.", 120,
+        Stage("redteam_scoring", "Scores those samples for the comparison below.", 40,
               py("eval.featurize", "local", "--path", paths.samples, "--engines", "desklib", "--device", "cpu",
                  "--dtype", "float32", "--out", paths.features), needs=[paths.samples]),
         Stage("trial_compare", "Does refitting the combiner catch guided samples, or is retraining the model the only "
               "way?", 10,
               py("eval.trial_compare", paths.trial, paths.daigt, "eval/cache/mage.jsonl", "eval/cache/raid.jsonl",
                  "--redteam", paths.features, "--report", paths.trial_report), needs=[paths.trial, paths.features]),
-        Stage("redteam_report", "How much of everything saved gets through, by attack?", 45,
+        Stage("redteam_report", "How much of everything saved gets through, by attack?", 20,
               py("eval.redteam_report", *([paths.samples] if small else []), "--report", paths.redteam)),
-        Stage("gemini_round_3", "A third repeat, if quota and time allow.", 240, gemini=3),
+        Stage("gemini_round_3", "A third repeat, if quota and time allow.", 30, gemini=3),
         board(3),
         Stage("reference_full", "The same grading on the full build; it picks up from its saved scores and takes the "
               "hours left over.", 600,
@@ -363,7 +370,7 @@ class Night:
         began = time.monotonic()
         runs_before = self.finished_runs()
         self.note(stage, "running")
-        finished, failures = 0, []
+        finished, failures, down = 0, [], False
         setups = gemini_setups(self.paths, self.smoke)
         names = [name for name, _ in setups]
         model = next((m for m in self.models if not self.spent(m)), None)
@@ -385,13 +392,22 @@ class Night:
                     self.sleep(QUOTA_WAIT)
                     continue
                 self.state["spent"][model] = self.now().isoformat()
-                model = next((m for m in self.models if not self.spent(m)), None)
+                model = next((m for m in self.models[self.models.index(model) + 1:] if not self.spent(m)), None)
                 index = 0  # a new model's comparison needs all its setups
                 continue
+            if code == UNUSABLE_EXIT:  # out for the night, like a spent quota
+                failures.append(f"{model} refused the request")
+                self.state["spent"][model] = self.now().isoformat()
+                model = next((m for m in self.models[self.models.index(model) + 1:] if not self.spent(m)), None)
+                index = 0
+                continue
             if code == DOWN_EXIT:
-                self.note(stage, "model down", f"{model} overloaded; a later round catches up. "
-                          f"{self.finished_runs() - runs_before} new runs", (time.monotonic() - began) / 60)
-                return
+                failures.append(f"{model} overloaded")
+                untried = self.models[self.models.index(model) + 1:]
+                model = next((m for m in untried if not self.spent(m)), None)
+                index = 0
+                down = True
+                continue
             if code == 0:
                 finished += 1
             elif code is None:
@@ -401,7 +417,9 @@ class Night:
             index += 1
         spent = (time.monotonic() - began) / 60
         new = f"{self.finished_runs() - runs_before} new runs"
-        if model is None:
+        if model is None and down:
+            self.note(stage, "model down", f"{new}; {'; '.join(failures)}", spent)
+        elif model is None:
             self.note(stage, "quota spent", f"{new}; every model is out until the reset", spent)
         else:
             self.note(stage, "done" if not failures else "partly done", "; ".join([model, new, *failures]), spent)
@@ -452,7 +470,7 @@ def deadline(text: str, now: datetime) -> datetime:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--until", default="10:00", help="stop starting work this long before the closing stages")
+    parser.add_argument("--until", default="07:40", help="stop starting work this long before the closing stages")
     parser.add_argument("--smoke", action="store_true", help="every stage, tiny, in its own folder")
     parser.add_argument("--status", action="store_true", help="print the brief's stage table and stop")
     parser.add_argument("--again", action="append", default=[], metavar="STAGE", help="run a finished stage once more")

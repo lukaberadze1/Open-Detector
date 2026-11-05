@@ -27,7 +27,7 @@ from collections import Counter
 from pathlib import Path
 
 from eval import generate_essays
-from eval.generate_essays import (GEMINI_API_URL, APIError, QuotaExhausted, load_style_profile, style_instructions,
+from eval.generate_essays import (PROVIDERS, APIError, QuotaExhausted, load_style_profile, style_instructions,
                                   styled_clean)
 from eval.redteam_batch import (GROUP_SCHEMA, REVISE, REVISE_CANDIDATES, REVISE_KEEPING, WIN_BELOW, document_windows,
                                 revise_blocks, style_guard)
@@ -52,6 +52,8 @@ ROOT = Path(__file__).resolve().parents[1]
 GROUP = 8
 QUOTA_EXIT = 3  # so a runner can tell a spent quota from a crash
 DOWN_EXIT = 4  # and a model that stays overloaded from either
+UNUSABLE_EXIT = 5  # and one that refuses the request itself: too large, unknown model, rejected key
+_REFUSED = re.compile(r"HTTP (400|401|403|404|413)\b")
 GIVE_UPS = 2  # repeats in a row given up on before calling the model down: each has already waited out BUSY_WAITS
 METHODS = ("sentences", "windows")
 BUSY_WAITS = (60, 120, 300, 300)  # seconds before writing a repeat again after a model is overloaded or times out
@@ -182,6 +184,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--register", default="finalized")
     parser.add_argument("--structure", default="writer")
     parser.add_argument("--model", default="gemini-3.5-flash-lite")
+    parser.add_argument("--provider", choices=list(PROVIDERS), default="gemini",
+                        help="whose API --model is on; its key comes from .env unless --api-key-env says otherwise")
     parser.add_argument("--thinking", default="low")
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--words", type=int, default=250)
@@ -210,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="run on each rewrite before revising (eval/text_attacks.py); repeat it to stack them")
     parser.add_argument("--top-p", type=float, help="the models' top-p, unset by default")
     parser.add_argument("--top-k", type=int, help="the models' top-k, unset by default")
-    parser.add_argument("--api-key-env", default="GEMINI_API_KEY")
+    parser.add_argument("--api-key-env")
     parser.add_argument("--out", type=Path, default=ROOT / "eval/cache/tune_revise.jsonl")
     parser.add_argument("--report", type=Path, default=ROOT / "eval/reports/revise.md")
     parser.add_argument("--report-only", action="store_true", help="write the report from what --out holds")
@@ -238,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
     rows = [row for row in saved if row["style"] == style and row["model"] == args.model and "document" in row]
 
     if not args.report_only:
+        provider = PROVIDERS[args.provider]
+        args.api_key_env = args.api_key_env or provider.key_env
         api_key = os.environ.get(args.api_key_env, "")
         if not api_key:
             parser.error(f"${args.api_key_env} is not set")
@@ -254,13 +260,13 @@ def main(argv: list[str] | None = None) -> int:
 
         def ask(prompt: str, pending: list[dict]) -> str:
             spent["revise"] += 1
-            return generate_essays.chat(GEMINI_API_URL, api_key, args.model, prompt, args.temperature, retries=2,
+            return generate_essays.chat(provider.base_url, api_key, args.model, prompt, args.temperature, retries=2,
                                         system=system, thinking=args.thinking, json_schema=GROUP_SCHEMA,
                                         timeout=60 + 15 * len(pending), sampling=sampling or None)
 
         def ask_plain(prompt: str) -> str:
             spent["attack"] += 1
-            return generate_essays.chat(GEMINI_API_URL, api_key, args.model, prompt, args.temperature, retries=2,
+            return generate_essays.chat(provider.base_url, api_key, args.model, prompt, args.temperature, retries=2,
                                         thinking=args.thinking, timeout=180, sampling=sampling or None)
 
         given_up = 0
@@ -281,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
                                thinking=args.thinking, temperature=args.temperature)
                     trace.version("source", original, detector.analyze(original, sentences=False))
                 drafts = [run_trial({**trial, "key": f"{trial['key']}-draft{number}"} if number else trial, jobs, plan,
-                                    system, api_key, args.temperature, sampling=sampling or None)
+                                    system, api_key, args.temperature, provider.base_url, sampling or None)
                           for number in range(args.drafts)]
                 reports = [detector.analyze(draft["text"], sentences=False) for draft in drafts]
                 draft_scores = [report.ai_probability for report in reports]
@@ -359,6 +365,11 @@ def main(argv: list[str] | None = None) -> int:
                             args.report.write_text(report(rows, methods[0]), encoding="utf-8")
                         return QUOTA_EXIT
                     except APIError as exc:
+                        if _REFUSED.search(str(exc)):  # waiting can't fix it: Groq's 413 cost 13 minutes a repeat
+                            print(f"{args.model} refused the request: {str(exc)[:200]}", file=sys.stderr)
+                            if rows:
+                                args.report.write_text(report(rows, methods[0]), encoding="utf-8")
+                            return UNUSABLE_EXIT
                         wait = next(waits, None)
                         if wait is None:
                             print(f"Giving up on {path.name} repeat {repeat}: {exc}", file=sys.stderr)
