@@ -11,6 +11,7 @@ never leak from fitting data into test data.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import random
@@ -178,6 +179,36 @@ def load_persuade(csv_path: str, n: int | None = None, seed: int = 0) -> pd.Data
         "domain": df.get("prompt_name", "essay"),
         "model": "human",
         "group": group,
+    })
+    return _finish(out)
+
+
+def load_daigt(csv_path: str, n: int | None = None, min_words: int = 150, seed: int = 0) -> pd.DataFrame:
+    """DAIGT V2 (Kaggle thedrcat/daigt-v2-train-dataset, `train_v2_drcat_02.csv`): student essays, human and
+    from many models. It already holds the LLM-DAIGT competition's `train_essays`, and a few of those also sit under
+    `persuade_corpus`, so texts equal but for spacing are dropped. `n` takes half from each label, with the AI half
+    spread evenly over `source`, and counts only texts of `min_words` or more, so a sample isn't lost to the skip
+    in `eval.featurize`. Ids hash the text, so they don't change with the sample."""
+    df = pd.read_csv(csv_path).dropna(subset=["text", "label"])
+    spaced = df["text"].str.split().str.join(" ")
+    df = df[~spaced.duplicated()]
+    df = df[df["text"].str.split().str.len() >= min_words]
+    if n:
+        shuffled = df.sample(frac=1, random_state=seed)
+        ai = shuffled[shuffled["label"] == 1]
+        turn = ai.groupby("source").cumcount()
+        ai = ai.loc[turn.sort_values(kind="stable").index].head(n - n // 2)
+        df = pd.concat([shuffled[shuffled["label"] == 0].head(n // 2), ai])
+    ids = df["text"].map(lambda t: "daigt-" + hashlib.sha1(t.encode()).hexdigest()[:16])
+    out = pd.DataFrame({
+        "id": ids,
+        "text": df["text"],
+        "label": df["label"],
+        "dataset": "daigt",
+        "domain": df["prompt_name"],
+        "model": df["source"].where(df["label"] == 1, "human"),
+        "group": df["source"],
+        "group_key": ids,
     })
     return _finish(out)
 

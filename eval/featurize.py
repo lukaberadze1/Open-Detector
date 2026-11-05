@@ -33,16 +33,19 @@ def load(args: argparse.Namespace):
         return datasets.load_mage(split=args.split or "test", n=args.n or 2000, seed=args.seed)
     if args.dataset == "persuade":
         return datasets.load_persuade(args.path, n=args.n, seed=args.seed)
+    if args.dataset == "daigt":
+        return datasets.load_daigt(args.path or "data/pairs/train_v2_drcat_02.csv", n=args.n,
+                                   min_words=args.min_words, seed=args.seed)
     return datasets.load_local(args.path)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("dataset", choices=["raid", "mage", "persuade", "local"])
+    parser.add_argument("dataset", choices=["raid", "mage", "persuade", "daigt", "local"])
     parser.add_argument("--out", required=True)
     parser.add_argument("--path", help="CSV/JSONL for persuade/local, or a raid-bench CSV for raid")
     parser.add_argument("--split")
-    parser.add_argument("--n", type=int, help="sample size (mage, persuade)")
+    parser.add_argument("--n", type=int, help="sample size (mage, persuade, daigt)")
     parser.add_argument("--ai-per-bucket", type=int, default=3)
     parser.add_argument("--human-per-bucket", type=int, default=30)
     parser.add_argument("--raid-chunks", type=int, default=300, help="random 1 MB slices of RAID to read")
@@ -138,8 +141,14 @@ def annotate_prose(out: Path, df) -> None:
 def read_jsonl(path: Path) -> dict[str, dict]:
     if not path.exists():
         return {}
-    rows = (json.loads(line) for line in path.read_text().splitlines() if line.strip())
-    return {r.pop("id"): r for r in rows}
+    rows = {}
+    for line in path.read_text().splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:  # a process killed mid-write leaves half a line, redone on resume
+            continue
+        rows[row.pop("id")] = row
+    return rows
 
 
 if __name__ == "__main__":
