@@ -1,10 +1,12 @@
 """Attacks on finished AI text, applied after it is written and before it is revised, to see what they do to the
-detector: a round trip through another language, one with no model and no quota (`free_round_trip`), and moving
-clauses around. Each returns the attacked text with
+detector: a round trip through another language, one with no model and no quota (`free_round_trip`), one through
+translation models on this computer (`local_round_trip`), one where a model rewrites in the other language and a
+translation model brings it back (`rewrite_trip`), and moving clauses around. Each returns the attacked text with
 what it did; what comes out is still AI text, and is logged as such with the attack in its label.
 
-Nothing here runs a model itself: `ask` is the caller's, so the page and the benchmarks use their own connections.
-It should ask without a style profile, which would pull a translation away from its source. Pure Python.
+Nothing here runs a model itself: `ask` is the caller's, so the page and the benchmarks use their own connections,
+and the translation models are in eval/local_translate.py, imported only when used.
+`ask` should go without a style profile, which would pull a translation away from its source. Pure Python.
 """
 
 from __future__ import annotations
@@ -22,10 +24,14 @@ import urllib.request
 from collections.abc import Callable, Iterable, Sequence
 from itertools import pairwise
 
+from eval.redteam_batch import keeps_facts
 from opendetector.segment import count_words, split_sentences
 
 PIVOTS = ("German", "Japanese", "Russian", "Finnish")
+LOCAL_PIVOTS = ("German", "Finnish", "Russian", "Chinese")  # with both directions in eval/local_translate.py
 ROUND_TRIP = "roundtrip"
+LOCAL_TRIP = "localtrip"
+REWRITE_TRIP = "rewritetrip"
 CLAUSES = "clauses"
 FREE_TRIP = "freetrip"
 # Google Translate's public web endpoint: unofficial, and on 2026-11-02 its bot check answered 429 from the first
@@ -42,8 +48,15 @@ CLAUSE_SHARE = 0.5  # of the sentences that can be turned around
 TRANSLATE = ("Translate each numbered paragraph below into {language}. Translate faithfully and completely, in natural "
              "{language}: keep every name and number, and add nothing. Keep each paragraph inside its own <p1>...</p1> "
              "tags, with the same numbers, and return only the tagged paragraphs.\n\n{paragraphs}")
+REWRITE_THERE = ("Rewrite each numbered paragraph below in {language}, as someone would write it in {language} from "
+                 "the start and not as a translation: build the sentences differently, split or join them. Keep every "
+                 "name and number and the meaning, and add nothing. Keep each paragraph inside its own <p1>...</p1> "
+                 "tags, with the same numbers, and return only the tagged paragraphs.\n\n{paragraphs}")
 _TAGGED = re.compile(r"<p(\d+)>(.*?)</p\1>", re.S)
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+_OTHER_SCRIPT = re.compile("[" + "".join(f"{chr(low)}-{chr(high)}" for low, high in (  # Greek, Cyrillic, CJK, Hangul
+    (0x0370, 0x03ff), (0x0400, 0x052f), (0x3040, 0x30ff), (0x3400, 0x9fff), (0xac00, 0xd7af))) + "]")
+_ANY_STOP = re.compile(r"(?<=[.!?" + chr(0x3002) + chr(0xff01) + chr(0xff1f) + r"])\s*")  # with Chinese's three
 
 _CONJUNCTIONS = "because|although|though|while|since|when|if|after|before|once|unless"
 _FRONTED = re.compile(rf"^({_CONJUNCTIONS}) ([^,;:]+), ([^,;:]+)([.!?])$", re.I)
@@ -69,6 +82,16 @@ _MIN_CLAUSE = 3  # words on each side: fewer is usually a phrase ("after dinner"
 def attack_name(pivot: str) -> str:
     """The round trip through `pivot`, as named in `run_attacks` and in a sample's attack label."""
     return f"{ROUND_TRIP}-{pivot.lower()}"
+
+
+def local_attack_name(pivot: str) -> str:
+    """The round trip through `pivot` on this computer."""
+    return f"{LOCAL_TRIP}-{pivot.lower()}"
+
+
+def rewrite_attack_name(pivot: str) -> str:
+    """The rewrite in `pivot`, brought back by a translation model."""
+    return f"{REWRITE_TRIP}-{pivot.lower()}"
 
 
 def attack_label(attacks: Iterable[str]) -> str:
@@ -124,6 +147,73 @@ def round_trip(paragraphs: Sequence[str], ask: Callable[[str], str], pivot: str 
             if returned and returned != paragraphs[number] and _faithful(paragraphs[number], returned):
                 result[number] = returned
                 changed += 1
+    return result, changed
+
+
+def _sound(original: str, returned: str) -> bool:
+    """Whether text back from a translation model can stand in for `original`: its numbers, about its length, most of
+    its names, and none of the other language's letters left in it."""
+    return (_faithful(original, returned) and keeps_facts(original, returned)
+            and not set(_OTHER_SCRIPT.findall(returned)) - set(original))
+
+
+def local_round_trip(paragraphs: Sequence[str], pivot: str = LOCAL_PIVOTS[0],
+                     translate: Callable[[Sequence[str], str, str], list[str]] | None = None,
+                     clean: Callable[[str], str] = str.strip) -> tuple[list[str], int]:
+    """Each sentence into `pivot` and back on this computer, with no request made. Sentence by sentence, because these
+    models are built for that and one bad sentence then costs only itself: one that comes back unsound stays as it
+    was, and the space between sentences stays too. Returns the paragraphs and how many changed."""
+    if translate is None:
+        from eval.local_translate import translate
+    spans = [(number, sentence) for number, text in enumerate(paragraphs) for sentence in split_sentences(text)]
+    english = [paragraphs[number][sentence.start:sentence.end].strip() for number, sentence in spans]
+    result, changed = list(paragraphs), 0
+    if not english:
+        return result, changed
+    back = translate(translate(english, "English", pivot), pivot, "English")
+    swaps: dict[int, list] = {}
+    for (number, sentence), original, returned in zip(spans, english, back, strict=True):
+        if returned != original and _sound(original, returned):
+            swaps.setdefault(number, []).append((sentence, original, returned))
+    for number, found in swaps.items():
+        text, pieces, at = paragraphs[number], [], 0
+        for sentence, original, returned in found:
+            pieces += [text[at:sentence.start], text[sentence.start:sentence.end].replace(original, returned)]
+            at = sentence.end
+        result[number] = clean("".join(pieces) + text[at:])
+        changed += 1
+    return result, changed
+
+
+def rewrite_trip(paragraphs: Sequence[str], ask: Callable[[str], str], pivot: str = LOCAL_PIVOTS[0],
+                 translate: Callable[[Sequence[str], str, str], list[str]] | None = None,
+                 clean: Callable[[str], str] = str.strip, words: int = GROUP_WORDS) -> tuple[list[str], int]:
+    """A model rewrites each paragraph in `pivot`, and a translation model writes the English, so no LLM chooses the
+    English words. One request for about every GROUP_WORDS words. A paragraph a reply leaves out, or one that comes
+    back unsound, stays as it was. Returns the paragraphs and how many changed."""
+    if translate is None:
+        from eval.local_translate import translate
+    there: dict[int, str] = {}
+    for group in _groups(paragraphs, words):
+        worth = [number for number in group if paragraphs[number].strip()]
+        if worth:
+            there |= _untagged(ask(REWRITE_THERE.format(language=pivot, paragraphs=_tagged(
+                (number, paragraphs[number]) for number in worth))))
+    there = {number: text for number, text in there.items() if number < len(paragraphs)}
+    pieces = [(number, piece.strip()) for number, text in sorted(there.items())
+              for piece in _ANY_STOP.split(text) if piece.strip()]
+    result, changed = list(paragraphs), 0
+    if not pieces:
+        return result, changed
+    back: dict[int, list[str]] = {}
+    written = translate([piece for _, piece in pieces], pivot, "English")
+    for (number, _), sentence in zip(pieces, written, strict=True):
+        back.setdefault(number, []).append(sentence)
+    for number, sentences in back.items():
+        returned = clean(" ".join(sentences))
+        if returned and returned != paragraphs[number] and _sound(paragraphs[number], returned):
+            result[number] = returned
+            changed += 1
     return result, changed
 
 
@@ -265,6 +355,12 @@ def run_attacks(texts: Sequence[str], attacks: Iterable[str], ask: Callable[[str
             result, changes[attack] = [text for text, _ in turned], sum(count for _, count in turned)
         elif attack == FREE_TRIP:
             result, changes[attack] = free_round_trip(result, clean=clean)
+        elif attack.startswith(f"{LOCAL_TRIP}-"):
+            result, changes[attack] = local_round_trip(result, attack.split("-", 1)[1].capitalize(), clean=clean)
+        elif attack.startswith(f"{REWRITE_TRIP}-"):
+            if ask is None:
+                raise ValueError(f"{attack} needs a model to ask")
+            result, changes[attack] = rewrite_trip(result, ask, attack.split("-", 1)[1].capitalize(), clean=clean)
         elif attack.startswith(f"{ROUND_TRIP}-"):
             if ask is None:
                 raise ValueError(f"{attack} needs a model to ask")

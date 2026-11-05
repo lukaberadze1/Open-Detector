@@ -30,7 +30,17 @@ from eval.generate_essays import (GEMINI_API_URL, APIError, QuotaExhausted, load
                                   styled_clean)
 from eval.redteam_batch import (GROUP_SCHEMA, REVISE, REVISE_CANDIDATES, REVISE_KEEPING, WIN_BELOW, document_windows,
                                 revise_blocks, style_guard)
-from eval.text_attacks import CLAUSES, FREE_TRIP, PIVOTS, attack_label, attack_name, run_attacks
+from eval.text_attacks import (
+    CLAUSES,
+    FREE_TRIP,
+    LOCAL_PIVOTS,
+    PIVOTS,
+    attack_label,
+    attack_name,
+    local_attack_name,
+    rewrite_attack_name,
+    run_attacks,
+)
 from eval.tune_generation import StyleYardstick, _log_labelled, run_trial, sample_jobs, writer_shapes
 from opendetector.env import load_env
 from opendetector.metrics import wilson_interval
@@ -183,7 +193,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--as-page", action="store_true",
                         help="revise as the page does: keep names and numbers, and stay close to the style profile")
     parser.add_argument("--attack", action="append", default=[],
-                        choices=[CLAUSES, FREE_TRIP, *(attack_name(pivot) for pivot in PIVOTS)],
+                        choices=[CLAUSES, FREE_TRIP, *(attack_name(pivot) for pivot in PIVOTS),
+                                 *(local_attack_name(pivot) for pivot in LOCAL_PIVOTS),
+                                 *(rewrite_attack_name(pivot) for pivot in LOCAL_PIVOTS)],
                         help="run on each rewrite before revising (eval/text_attacks.py); repeat it to stack them")
     parser.add_argument("--top-p", type=float, help="the models' top-p, unset by default")
     parser.add_argument("--top-k", type=int, help="the models' top-k, unset by default")

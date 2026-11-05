@@ -90,7 +90,18 @@ from eval.redteam_batch import (
 )
 from eval.evasion_mode import PROFILE_ID, PROFILE_INSTRUCTIONS, generate_until_target
 from eval.math_attack import CachedScorer, compression_change, guided_attack, math_attack
-from eval.text_attacks import CLAUSES, FREE_TRIP, GROUP_WORDS, PIVOTS, attack_label, attack_name, run_attacks
+from eval.text_attacks import (
+    CLAUSES,
+    FREE_TRIP,
+    GROUP_WORDS,
+    LOCAL_PIVOTS,
+    PIVOTS,
+    attack_label,
+    attack_name,
+    local_attack_name,
+    rewrite_attack_name,
+    run_attacks,
+)
 from opendetector import DetectorConfig
 from opendetector.config import DATA_ROOT
 from opendetector.core.deterministic_engine import DeterministicEngine
@@ -1053,6 +1064,19 @@ def _attacks(plan: Plan) -> None:
                              help="Translates the finished text there and back before revising, two requests for "
                                   "about every 400 words. A paragraph that loses a number or changes length stays "
                                   "as it was. This pulls the text away from the style profile.")
+        local, rewrite = "Off", False
+        if not public() and not packaged():  # neither serves its models to people this project doesn't know
+            local = st.selectbox("Round trip on this computer", ("Off", *LOCAL_PIVOTS),
+                                 key=keep("keep:redteam:local_pivot", "Off"),
+                                 help="Translates the finished text there and back with small translation models, so "
+                                      "the English doesn't come from an LLM. No requests and no quota, and the text "
+                                      "stays here; about 1.1 GB to download per language the first time. A sentence "
+                                      "that loses a number or a name stays as it was, but meaning can still drift: "
+                                      "read what it changes. This pulls the text away from the style profile.")
+            rewrite = local != "Off" and st.toggle(
+                "Have the model rewrite it in that language first", key=keep("keep:redteam:local_rewrite", False),
+                help="The model rewrites the text in the other language, about one request for every 400 words, and "
+                     "the translation model writes the English.")
         clauses = st.toggle("Move clauses around", key=keep("keep:redteam:clauses", False),
                             help="Turns about half the sentences that can safely be turned around ('Because A, B.' "
                                  "and 'B because A.'). No words change, and it takes no requests.")
@@ -1066,7 +1090,8 @@ def _attacks(plan: Plan) -> None:
                              help="Sends the finished text through Google Translate's public web address, into "
                                   "German, French and back, with no model and no quota. It's unofficial and its bot "
                                   "check often refuses, and then the text stays as it was. Your text goes to Google.")
-        plan.attacks = (((attack_name(pivot),) if pivot != "Off" else ()) + ((FREE_TRIP,) if free else ())
+        trip = () if local == "Off" else ((rewrite_attack_name if rewrite else local_attack_name)(local),)
+        plan.attacks = (((attack_name(pivot),) if pivot != "Off" else ()) + ((FREE_TRIP,) if free else ()) + trip
                         + ((CLAUSES,) if clauses else ()))
         if plan.attacks or plan.rules or plan.math:
             plan.score = True

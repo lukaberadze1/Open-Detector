@@ -6,7 +6,11 @@ from eval.text_attacks import (
     CLAUSES,
     attack_label,
     attack_name,
+    local_attack_name,
+    local_round_trip,
     reorder_clauses,
+    rewrite_attack_name,
+    rewrite_trip,
     round_trip,
     run_attacks,
     turned_around,
@@ -114,5 +118,107 @@ def test_attacks_run_in_turn_and_count_what_each_changed():
 def test_an_attack_that_needs_a_model_says_so_and_an_unknown_one_is_refused():
     with pytest.raises(ValueError, match="needs a model"):
         run_attacks(["text"], [attack_name("German")])
+    with pytest.raises(ValueError, match="needs a model"):
+        run_attacks(["text"], [rewrite_attack_name("German")])
     with pytest.raises(ValueError, match="unknown attack"):
         run_attacks(["text"], ["shuffle"])
+
+
+def _engine(changed=lambda text: f"{text[:-1]} indeed."):
+    """A stand-in translation model: the trip out returns the text, the trip back goes through `changed`."""
+    calls = []
+
+    def translate(texts, source, target):
+        calls.append((source, target, list(texts)))
+        return [changed(text) if target == "English" else text for text in texts]
+
+    translate.calls = calls
+    return translate
+
+
+def test_the_local_trip_goes_there_and_back_sentence_by_sentence_and_keeps_the_layout():
+    engine = _engine()
+    paragraphs = ["The first one came here.  The second one left.\n\nA third.", "", "Last one here."]
+    result, changed = local_round_trip(paragraphs, "Finnish", engine)
+    assert result == ["The first one came here indeed.  The second one left indeed.\n\nA third indeed.", "",
+                      "Last one here indeed."]
+    assert changed == 2
+    assert [call[:2] for call in engine.calls] == [("English", "Finnish"), ("Finnish", "English")]
+    assert len(engine.calls[0][2]) == 4
+
+
+def test_a_sentence_that_comes_back_unsound_stays_and_its_neighbours_still_change():
+    def spoil(text):
+        if "300" in text:
+            return text.replace("300", "many")
+        if "Xerxes" in text:
+            return text.replace("Xerxes", "the king")
+        if "river" in text:
+            return f"{text[:-1]} 川."
+        if "short" in text:
+            return "Short."
+        return f"{text[:-1]} indeed."
+
+    text = ("Then 300 ships sailed at dawn. In the end Xerxes watched from the shore. The wide river rose all night. "
+            "This sentence is not at all short. The rest of them went home.")
+    result, changed = local_round_trip([text], "German", _engine(spoil))
+    assert result == [text.replace("went home.", "went home indeed.")]
+    assert changed == 1
+
+
+def test_the_local_trip_with_nothing_to_translate_loads_nothing():
+    engine = _engine()
+    assert local_round_trip(["", "  "], "German", engine) == (["", "  "], 0)
+    assert engine.calls == []
+
+
+def test_the_local_trip_needs_no_model_to_ask_and_is_named_in_the_label(monkeypatch):
+    import eval.local_translate
+
+    monkeypatch.setattr(eval.local_translate, "translate", _engine())
+    attack = local_attack_name("German")
+    result, changes = run_attacks(["The farmers left their land."], [attack])
+    assert result == ["The farmers left their land indeed."] and changes == {attack: 1}
+    assert attack_label([attack]) == "+localtrip-german"
+
+
+def test_the_rewrite_trip_writes_there_with_the_model_and_back_with_the_engine():
+    prompts = []
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return "<p0>Erste Sache hier. Zweite Sache dort.</p0><p2>Dritte Sache jetzt.</p2>"
+
+    engine = _engine(lambda text: {"Erste Sache hier.": "The first thing is here.",
+                                   "Zweite Sache dort.": "The second is there.",
+                                   "Dritte Sache jetzt.": "The third is now."}[text])
+    paragraphs = ["The first is here and the second there.", "", "The third thing now."]
+    result, changed = rewrite_trip(paragraphs, ask, "German", engine)
+    assert result == ["The first thing is here. The second is there.", "", "The third is now."]
+    assert changed == 2
+    assert "in German" in prompts[0] and len(prompts) == 1
+    assert [call[:2] for call in engine.calls] == [("German", "English")]
+
+
+def test_a_rewrite_that_loses_a_number_or_is_left_out_stays_as_it_was():
+    fleet = ["Xerxes sent 300 ships past the strait.", "Nothing came of it in the end."]
+    engine = _engine(lambda text: "Xerxes sent many ships past the narrow strait.")
+    assert rewrite_trip(fleet, lambda prompt: "<p0>Xerxes schickte viele Schiffe.</p0>", "German", engine) == (fleet, 0)
+    assert rewrite_trip(fleet, lambda prompt: "Sorry, I can't.", "German", engine) == (fleet, 0)
+
+
+def test_the_local_models_are_named_for_every_pivot_offered():
+    from eval.local_translate import CODES, model_id
+    from eval.text_attacks import LOCAL_PIVOTS
+
+    assert all(pivot in CODES for pivot in LOCAL_PIVOTS)
+    assert model_id("English", "Finnish") == "Helsinki-NLP/opus-mt-en-fi"
+    assert model_id("Chinese", "English") == "Helsinki-NLP/opus-mt-zh-en"
+
+
+def test_importing_the_attacks_doesnt_bring_torch_in():
+    import subprocess
+    import sys
+
+    code = "import sys, eval.text_attacks; sys.exit('torch' in sys.modules)"
+    assert subprocess.run([sys.executable, "-c", code]).returncode == 0
