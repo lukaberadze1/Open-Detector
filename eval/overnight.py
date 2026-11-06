@@ -468,6 +468,24 @@ def deadline(text: str, now: datetime) -> datetime:
     return moment if moment > now else moment + timedelta(days=1)
 
 
+def detach(argv: list[str], paths: Paths) -> int:
+    """Start the run in a session of its own and return. Started with `&` from a shell, it died with that shell's
+    process group on 2026-11-05 at 22:08, 18 minutes in; in its own session nothing the shell does reaches it."""
+    log = paths.out / "night.log"
+    with log.open("a", encoding="utf-8") as sink:
+        child = subprocess.Popen([PYTHON, "-m", "eval.overnight", *argv, "--foreground"], cwd=ROOT,
+                                 stdin=subprocess.DEVNULL, stdout=sink, stderr=subprocess.STDOUT,
+                                 start_new_session=True)
+    time.sleep(5)
+    if child.poll() is not None:
+        print(f"It stopped at once (exit {child.returncode}). The last lines of {log}:")
+        print("\n".join(log.read_text(encoding="utf-8").splitlines()[-10:]))
+        return 1
+    print(f"Running as process {child.pid}, apart from this shell: closing this window won't stop it.\n"
+          f"Progress: {paths.brief}\nCheck with: .venv/bin/python -m eval.overnight --status")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--until", default="07:40", help="stop starting work this long before the closing stages")
@@ -475,6 +493,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--status", action="store_true", help="print the brief's stage table and stop")
     parser.add_argument("--again", action="append", default=[], metavar="STAGE", help="run a finished stage once more")
     parser.add_argument("--models", default=",".join(MODELS), help="Gemini models in the order to use them")
+    parser.add_argument("--foreground", action="store_true",
+                        help="run in this shell; otherwise it starts itself apart from the shell and returns")
     args = parser.parse_args(argv)
     paths = Paths(args.smoke)
     if args.status:
@@ -489,6 +509,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         except (OSError, ValueError):
             pass
+    if not args.foreground:
+        return detach(argv if argv is not None else sys.argv[1:], paths)
     lock.write_text(str(os.getpid()))
     now = datetime.now()
     night = Night(paths, plan(paths, args.smoke), deadline(args.until, now), args.smoke,
@@ -505,7 +527,7 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    signal.signal(signal.SIGHUP, stop)  # a closed terminal would end the run, so start it with nohup or leave it open
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)  # a closed terminal mustn't end the night
     if shutil.which("caffeinate"):
         subprocess.Popen(["caffeinate", "-is", "-w", str(os.getpid())])
     if not args.smoke:  # a DAIGT run paused by hand would write the same cache; its finished essays are kept
