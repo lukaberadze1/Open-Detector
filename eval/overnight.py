@@ -462,7 +462,9 @@ class Night:
         if not stage.closing and self.minutes_left(stage) <= 0:
             self.note(stage, "out of time", "resumes on the next start")
             return
-        if stage.gemini:
+        if stage.gemini and not self.models:  # --no-api: kept for a later start, so not marked done
+            self.note(stage, "held back", "no API this run; a start without --no-api runs it")
+        elif stage.gemini:
             self.run_gemini(stage)
         else:
             self.run_stage(stage)
@@ -591,6 +593,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--status", action="store_true", help="print the brief's stage table and stop")
     parser.add_argument("--again", action="append", default=[], metavar="STAGE", help="run a finished stage once more")
     parser.add_argument("--models", default=",".join(MODELS), help="Gemini models in the order to use them")
+    parser.add_argument("--no-api", action="store_true",
+                        help="hold back every stage that sends requests to a model API, to keep the quota")
     parser.add_argument("--at", metavar="HH:MM", help="wait until then to start, e.g. 22:00")
     parser.add_argument("--foreground", action="store_true",
                         help="run in this shell; otherwise it starts itself apart from the shell and returns")
@@ -617,7 +621,7 @@ def main(argv: list[str] | None = None) -> int:
     now = datetime.now()
     stages = plan(paths, args.smoke)
     night = Night(paths, day_plan(stages) if args.day else stages, deadline(args.until, now), args.smoke,
-                  models=tuple(args.models.split(",")))
+                  models=() if args.no_api else tuple(args.models.split(",")))
     for name in args.again:
         night.state["stages"].pop(name, None)
 

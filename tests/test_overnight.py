@@ -289,3 +289,20 @@ def test_a_refused_model_stays_out_while_a_spent_one_comes_back(tmp_path, monkey
     assert item.spent("x") and item.spent("y")
     clock.time += overnight.RECHECK
     assert item.spent("x") and not item.spent("y")
+
+
+def test_no_api_holds_the_rounds_back_for_a_later_start_and_runs_the_rest(tmp_path, monkeypatch):
+    calls = []
+    stages = [Stage("round", "?", gemini=1), Stage("other", "?", command=["other"])]
+    item = night(tmp_path, stages, lambda command, *a: calls.append(command[0]) or 0, monkeypatch)
+    item.models = ()
+    item.run_all()
+    assert calls == ["other"] and status(item, "round") == "held back" and status(item, "other") == "done"
+    later = night(tmp_path, stages, lambda command, *a: calls.append(command[0]) or 0, monkeypatch)
+    later.run_all()
+    assert status(later, "round") == "done" and "baseline" in calls
+
+
+def test_no_api_is_on_the_command_line():
+    import inspect
+    assert "--no-api" in inspect.getsource(overnight.main)
