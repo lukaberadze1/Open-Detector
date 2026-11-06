@@ -24,3 +24,14 @@ def own_limits(monkeypatch, tmp_path_factory):
 def no_gemini_website(monkeypatch):
     """Page tests load the real .env, so without this a failed model would use the owner's Firefox login."""
     monkeypatch.setattr("eval.generate_essays.web_available", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def no_real_keys(monkeypatch):
+    """A run started from a shell that loaded .env (the overnight runner does) mustn't hand the tests its keys: two
+    Gemini keys doubled the daily limit test_points_pick_the_batch_settings reads."""
+    import os
+
+    for name in list(os.environ):
+        if name.endswith(("_API_KEY", "_API_KEYS")) or name.startswith(("GEMINI_SECURE", "GEMINI_WEB")):
+            monkeypatch.delenv(name)

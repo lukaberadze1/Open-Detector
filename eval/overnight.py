@@ -468,6 +468,16 @@ def deadline(text: str, now: datetime) -> datetime:
     return moment if moment > now else moment + timedelta(days=1)
 
 
+def wait_until(start: datetime, lock: Path) -> None:
+    """Sleep until `start`, looking at the clock at least once a minute: a Mac that sleeps meanwhile stops the clock
+    time.sleep counts, and the run should begin as soon as it wakes past `start`. Holds the lock, so no second run
+    starts meanwhile, and a stop signal ends the wait like a run."""
+    print(f"{datetime.now():%H:%M} waiting to start at {start:%H:%M}", flush=True)
+    while (left := (start - datetime.now()).total_seconds()) > 0:
+        time.sleep(min(60.0, left))
+    print(f"{datetime.now():%H:%M} starting", flush=True)
+
+
 def detach(argv: list[str], paths: Paths) -> int:
     """Start the run in a session of its own and return. Started with `&` from a shell, it died with that shell's
     process group on 2026-11-05 at 22:08, 18 minutes in; in its own session nothing the shell does reaches it."""
@@ -481,7 +491,8 @@ def detach(argv: list[str], paths: Paths) -> int:
         print(f"It stopped at once (exit {child.returncode}). The last lines of {log}:")
         print("\n".join(log.read_text(encoding="utf-8").splitlines()[-10:]))
         return 1
-    print(f"Running as process {child.pid}, apart from this shell: closing this window won't stop it.\n"
+    waits = f", waiting to start at {argv[argv.index('--at') + 1]}" if "--at" in argv else ""
+    print(f"Running as process {child.pid}{waits}, apart from this shell: closing this window won't stop it.\n"
           f"Progress: {paths.brief}\nCheck with: .venv/bin/python -m eval.overnight --status")
     return 0
 
@@ -493,6 +504,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--status", action="store_true", help="print the brief's stage table and stop")
     parser.add_argument("--again", action="append", default=[], metavar="STAGE", help="run a finished stage once more")
     parser.add_argument("--models", default=",".join(MODELS), help="Gemini models in the order to use them")
+    parser.add_argument("--at", metavar="HH:MM", help="wait until then to start, e.g. 22:00")
     parser.add_argument("--foreground", action="store_true",
                         help="run in this shell; otherwise it starts itself apart from the shell and returns")
     args = parser.parse_args(argv)
@@ -528,6 +540,9 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGHUP, signal.SIG_IGN)  # a closed terminal mustn't end the night
+    if args.at:  # after the stop handlers, before keeping the Mac awake: waiting needn't hold it up all day
+        wait_until(deadline(args.at, datetime.now()), lock)
+        night.until = deadline(args.until, datetime.now())
     if shutil.which("caffeinate"):
         subprocess.Popen(["caffeinate", "-is", "-w", str(os.getpid())])
     if not args.smoke:  # a DAIGT run paused by hand would write the same cache; its finished essays are kept
