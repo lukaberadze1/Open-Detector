@@ -89,12 +89,14 @@ INDEPENDENT = "tabularis"
 
 @lru_cache(maxsize=1)
 def _independent(name: str = INDEPENDENT):
-    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreTrainedTokenizerFast
 
     model_id, revision, _ = OUTSIDE[name]
     model = AutoModelForSequenceClassification.from_pretrained(model_id, revision=revision, use_safetensors=True
                                                                if name == "tabularis" else None)
-    return AutoTokenizer.from_pretrained(model_id, revision=revision), model.eval()
+    # Tabularis was saved by transformers 5, whose tokenizer class 4.x doesn't know; its tokenizer.json loads as is.
+    loader = PreTrainedTokenizerFast if name == "tabularis" else AutoTokenizer
+    return loader.from_pretrained(model_id, revision=revision), model.eval()
 
 
 def independent_scores(texts: list[str], words: int = 300, name: str = INDEPENDENT) -> list[float]:
