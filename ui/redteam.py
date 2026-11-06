@@ -81,7 +81,9 @@ from eval.redteam_batch import (
     passage_scores,
     passage_spans,
     WIN_BELOW,
-    revise_blocks,
+    ANCHORED_CANDIDATES,
+    chunk_scorer,
+    revise_anchored,
     revise_flagged,
     style_guard,
     rewrite_measures,
@@ -144,7 +146,9 @@ STYLE_FLOOR = 35  # minimum style-profile percentile used to rank challenge cand
 REVISE_BY_DEFAULT = True  # measured on eval/tune_revise.py: 81% to 7% on an AI-written source
 REVISE_REQUESTS = 6  # requests a sample's revising may spend, however many rounds are left
 FIRST_DRAFT_TRIES = 3  # versions of each passage asked for in the first draft's one request, the lowest-scoring kept
-REVISE_ROUNDS = 10  # "Revise what the detector flags": rounds at most, until under the bar or it stalls
+# "Revise what the detector flags": rounds at most, until under the bar or it stalls; revise_anchored took 1 or 2
+# on a 2,262-word document (2026-11-06)
+REVISE_ROUNDS = 5
 DEFAULT_FALLBACK_MODELS = PROVIDERS["gemini"].fallbacks
 DOCUMENT_TYPES = ("txt", "md", "docx", "pptx")
 GENERATOR_SOURCE_TYPES = (*DOCUMENT_TYPES, "zip", "py", "sh", "bash", "js", "jsx", "ts", "tsx", "java",
@@ -904,10 +908,11 @@ def _scoring(plan: Plan, profile: str) -> None:
         if not plan.evasion:
             plan.revise = REVISE_ROUNDS if st.toggle(
                 "Revise what the detector flags", key=keep("keep:redteam:revise", REVISE_BY_DEFAULT),
-                help=f"After writing, scores the text sentence by sentence and rewrites only its most AI-like "
-                     f"passages, in new sentence shapes from the profile's writer, keeping a revision only when "
-                     f"the whole text then scores lower and stays as close to the style profile: up to "
-                     f"{REVISE_ROUNDS} rounds, until it scores under {WIN_BELOW:.0%}, one request each. "
+                help=f"After writing, scores the text and rewrites only its AI-like passages, keeping a revision "
+                     f"only when it reads as more human where it stands and stays as close to the style profile. "
+                     f"In a document rewrite every flagged passage is tried each round, half the tries starting from "
+                     f"the original's own wording, and the closest to the original wins among those that pass: up "
+                     f"to {REVISE_ROUNDS} rounds, until it scores under {WIN_BELOW:.0%}. "
                      "Every revision is saved as AI-labelled evaluation data.") else 0
             if plan.revise:
                 plan.score = True
@@ -2151,13 +2156,14 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         texts = {key: checkpoint.blocks[key]["text"] for key in checkpoint.generated(keys)}
         detector = models.get_detector(plan.profile)
         rounds = plan.revise - max(len(before) - 1, 0)
-        changed, history = revise_blocks(texts, detector.analyze, ask, clean,
-                                         plan.shapes or [], rounds, prompt=REVISE_KEEPING, facts=True,
-                                         candidates=REVISE_CANDIDATES,
-                                         fits=_style_fits(plan, "\n\n".join(texts.values())),
-                                         progress=lambda now: status.update(revising=now), mask=plan.mask_facts,
-                                         score_many=CachedScorer(detector).many, saved=saved,
-                                         ) if rounds > 0 else ({}, before[-1:])
+        originals = {key: by_key[key]["previous"] for key in texts if key in by_key}
+        changed, history = revise_anchored(texts, originals, chunk_scorer(detector), CachedScorer(detector),
+                                           ask, clean, plan.shapes or [], rounds, prompt=REVISE_KEEPING,
+                                           facts=True, candidates=ANCHORED_CANDIDATES,
+                                           fits=_style_fits(plan, "\n\n".join(texts.values())),
+                                           progress=lambda now: status.update(revising=now), mask=plan.mask_facts,
+                                           saved=saved, parallel=workers,
+                                           ) if rounds > 0 else ({}, before[-1:])
         status.pop("revising", None)
         for key in moved | changed.keys():
             text = changed.get(key, checkpoint.blocks[key]["text"])

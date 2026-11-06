@@ -908,3 +908,94 @@ def test_the_request_limit_ends_revising():
 
     revise_flagged(text, analyze, ask, str.strip, [], rounds=9, max_requests=2)
     assert len(calls) <= 3, "checked before a round, and a round can ask once more"
+
+
+def test_revise_anchored_takes_every_flagged_passage_and_prefers_the_closest_human_try():
+    from collections import Counter
+
+    from eval.redteam_batch import revise_anchored
+
+    original = ("I got my first board in August and fell off it all week, mostly on the same ollie at the park "
+                "near our flat, with my brother laughing at me from the bench.")
+    near = (original.replace("all week", "for days").replace("laughing", "grinning").replace("mostly", "nearly always")
+            .replace("near our flat", "by the flat"))
+    far = ("A first skateboard arrived in August, and the following week brought repeated falls while practising "
+           "ollies at the local park, observed by an amused sibling.")
+    tidy = ("The acquisition of a first skateboard in August marked the beginning of a learning journey that "
+            "involved numerous falls and a growing appreciation for persistence in the face of challenges.")
+    texts = {"a": tidy, "b": tidy.replace("August", "September"), "c": "Done."}
+    originals = {"a": original, "b": original.replace("August", "September"), "c": "Done."}
+    asked = []
+
+    def ask(prompt, pending):
+        asked.append(prompt)
+        replies = [near.replace("August", "September") if "September" in job["previous"] else near
+                   if job.get("anchor") else far for job in pending]
+        return json.dumps({"blocks": [{"id": f"B{n}", "text": text} for n, text in enumerate(replies, 1)]})
+
+    def human(text):  # each tidy passage left adds to the reading
+        return 0.02 + 0.44 * text.count("acquisition")
+
+    stats = Counter()
+    changed, history = revise_anchored(texts, originals, lambda chunks: [human(c) for c in chunks], human, ask,
+                                       str.strip, rounds=3, candidates=2, facts=False, stats=stats)
+    assert set(changed) == {"a", "b"}, "both flagged passages in one round, none left for later"
+    assert changed["a"] == near, "both tries read as human, so the one keeping the original's words wins"
+    assert history == pytest.approx([0.9, 0.02])
+    assert any("The writer's original of this part:" in prompt for prompt in asked)
+
+    # A try that hands back the original is no rewrite, so it is never kept.
+    def copying(prompt, pending):
+        return json.dumps({"blocks": [{"id": f"B{n}", "text": originals["a"] if job.get("anchor") else far}
+                                      for n, job in enumerate(pending, 1)]})
+
+    changed, _ = revise_anchored({"a": tidy}, {"a": original}, lambda chunks: [human(c) for c in chunks], human,
+                                 copying, str.strip, rounds=1, candidates=2, facts=False, stats=stats)
+    assert changed == {"a": far} and stats["copied"] == 1
+
+
+def test_revise_anchored_undoes_a_round_the_whole_document_reads_as_worse():
+    from eval.redteam_batch import revise_anchored
+
+    tidy = ("The acquisition of a first skateboard in August marked the beginning of a learning journey that "
+            "involved numerous falls.")
+    plain = "I got my board in August and fell off it most days that first week, which hurt more than I'd say."
+
+    def ask(prompt, pending):
+        return json.dumps({"blocks": [{"id": f"B{n}", "text": plain} for n in range(1, len(pending) + 1)]})
+
+    changed, history = revise_anchored({"a": tidy}, {}, lambda chunks: [0.01 if "fell" in c else 0.9 for c in chunks],
+                                       lambda text: 0.95 if "fell" in text else 0.9, ask, str.strip, rounds=1,
+                                       candidates=1, facts=False)
+    assert changed == {} and history == [0.9, 0.9]
+
+
+def test_revise_anchored_goes_on_when_one_request_fails():
+    from collections import Counter
+
+    from eval.redteam_batch import revise_anchored
+
+    tidy = ("The acquisition of a first skateboard in August marked the beginning of a learning journey that "
+            "involved numerous falls.")
+    plain = "I got my board in August and fell off it most days that first week, which hurt more than I'd say."
+
+    def ask(prompt, pending):
+        if any(job.get("anchor") for job in pending):
+            raise RuntimeError("HTTP 503: high demand")
+        return json.dumps({"blocks": [{"id": f"B{n}", "text": plain} for n in range(1, len(pending) + 1)]})
+
+    def score(text):
+        return 0.01 if "fell" in text else 0.9
+
+    stats = Counter()
+    changed, _ = revise_anchored({"a": tidy}, {"a": tidy.replace("numerous", "many")},
+                                       lambda chunks: [score(c) for c in chunks], score, ask, str.strip, rounds=1,
+                                       candidates=2, facts=False, stats=stats)
+    assert changed == {"a": plain} and stats["requests_failed"] == 1
+
+    def down(prompt, pending):
+        raise RuntimeError("HTTP 503: high demand")
+
+    with pytest.raises(RuntimeError):
+        revise_anchored({"a": tidy}, {}, lambda chunks: [score(c) for c in chunks], score, down, str.strip,
+                        rounds=1, candidates=2, facts=False)

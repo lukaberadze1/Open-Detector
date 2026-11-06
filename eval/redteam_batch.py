@@ -449,7 +449,8 @@ def rewrite_group(plan, group: list[dict], ask: Callable[[str, list[dict]], str]
     mask = None
     if getattr(plan, "mask_facts", False):
         mask = FactMask(plan.context_text, *(job["previous"] for job in group))
-        pending = [{**job, "previous": mask.hide(job["previous"])} for job in group]
+        pending = [{**job, "previous": mask.hide(job["previous"]),
+                    **({"anchor": mask.hide(job["anchor"])} if job.get("anchor") else {})} for job in group]
     for attempt in range(2):
         prompt = group_prompt(plan, pending) + notes
         if mask:
@@ -692,6 +693,11 @@ def meaning_problem(passage: str, revised: str, context: str = "") -> str | None
     return "person" if (set(after) - set(before)) & _PERSONAL else None
 
 
+def _persons(text: str) -> set[str]:
+    """The 'I', 'we' and 'you' words a text uses."""
+    return set(_WORD.findall(text.lower().replace("\u2019", "'"))) & _PERSONAL
+
+
 def meaning_kept(passage: str, revised: str, context: str = "") -> bool:
     return meaning_problem(passage, revised, context) is None
 
@@ -845,6 +851,20 @@ def window_heat(spans: dict[str, tuple[int, int]], windows: list[tuple[int, int,
     return heat
 
 
+def _passages(texts: dict[str, str]) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """A document's blocks cut into passages, by "block#number" in document order: each passage's text (normalized,
+    as the detector reads it), what follows it, and the block it belongs to."""
+    shown, gaps, blocks = {}, {}, {}
+    for key, text in texts.items():
+        plain = normalize(text)[0]
+        spans = passage_spans(plain) or [(0, len(plain))]
+        for number, (start, end) in enumerate(spans):
+            name = f"{key}#{number}"
+            shown[name], blocks[name] = plain[start:end], key
+            gaps[name] = plain[end:spans[number + 1][0]] if number + 1 < len(spans) else "\n\n"
+    return shown, gaps, blocks
+
+
 def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Callable[[str, list[dict]], str],
                   clean: Callable[[str], str], shapes: list, rounds: int = 2, target: float = WIN_BELOW,
                   windows: Callable[[str], list[tuple[int, int, float]]] | None = None,
@@ -880,14 +900,7 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
     Gives the changed blocks' texts by key, and the AI likelihood after each round, the first before any."""
     tell = progress or (lambda _: None)
     stats = Counter() if stats is None else stats
-    shown, gaps, blocks = {}, {}, {}  # each passage's text and what follows it, by "block#number"
-    for key, text in texts.items():
-        plain = normalize(text)[0]
-        spans = passage_spans(plain) or [(0, len(plain))]
-        for number, (start, end) in enumerate(spans):
-            name = f"{key}#{number}"
-            shown[name], blocks[name] = plain[start:end], key
-            gaps[name] = plain[end:spans[number + 1][0]] if number + 1 < len(spans) else "\n\n"
+    shown, gaps, blocks = _passages(texts)
 
     def whole(parts: dict[str, str]) -> str:
         return "".join(parts[name] + gaps[name] for name in parts).removesuffix("\n\n")
@@ -995,6 +1008,201 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
     return changed_blocks(), history
 
 
+CONTEXT_WORDS = 350  # a passage is scored inside about this many words around it: a document window's size
+# Told to one half of a passage's tries: the writer's original reads as theirs, and the draft drifted from it.
+ANCHORED = ("Start from the writer's original of this part, given with it: keep its sentences, their order and most "
+            "of its words, fit it to what this passage covers, and reword about one phrase in four, so it isn't "
+            "copied word for word.")
+REVISE_GROUP = 6  # passages in one revise request, each with all its tries
+ANCHORED_CANDIDATES = 4  # tries a passage gets a round in revise_anchored, half of them from the original
+
+
+def chunk_scorer(detector) -> Callable[[list[str]], list[float | None]]:
+    """The AI likelihood of each chunk of text read as one document window, as the sentence highlights read
+    theirs, remembered by text so the model runs once per chunk. A build with Binoculars scores each through
+    `detector.score`, which reads the chunk's own windows."""
+    import numpy as np
+
+    seen: dict[str, float | None] = {}
+
+    def score(chunks: list[str]) -> list[float | None]:
+        missing = list(dict.fromkeys(chunk for chunk in chunks if chunk not in seen))
+        if missing and getattr(detector, "binoculars", None) is None:
+            logits = {engine.name: np.asarray(engine.window_logits(missing)) for engine in detector.classifiers}
+            rows = [detector._window_features(logits, number) for number in range(len(missing))]
+            seen.update(zip(missing, (float(p) for p in detector._probabilities(rows)), strict=True))
+        elif missing:
+            seen.update((chunk, detector.score(chunk)) for chunk in missing)
+        return [seen[chunk] for chunk in chunks]
+    return score
+
+
+def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chunks: Callable[[list[str]], list],
+                    score: Callable[[str], float | None], ask: Callable[[str, list[dict]], str],
+                    clean: Callable[[str], str], shapes: list | None = None, rounds: int = 3,
+                    target: float = WIN_BELOW, fits: Callable[[str], bool] | None = None,
+                    prompt: str = REVISE_KEEPING, facts: bool = True, candidates: int = ANCHORED_CANDIDATES,
+                    progress: Callable[[dict], None] | None = None, stats: Counter | None = None,
+                    mask: bool = False, saved: Callable[[dict[str, str], list[float | None]], None] | None = None,
+                    parallel: int = 1) -> tuple[dict[str, str], list[float | None]]:
+    """A document's rewritten blocks revised back toward the writer's originals where the detector reads them as AI.
+
+    revise_blocks capped a round at a few passages, chosen by sentence scores, and wrote every try in a borrowed
+    sentence plan, so a long document took many rounds and drifted from its original. Here each round takes every
+    passage that reads as AI (at `target` / 2 or more) inside the `CONTEXT_WORDS` around it, as the document's
+    windows read it, since the score is their mean and maximum. Each such passage gets `candidates` tries: half start
+    from the writer's original of its block (`originals`, by key; ANCHORED), the rest rewrite it as revise_blocks
+    does, in the writer's sentence plans when `shapes` are given. A try is scored on its own surroundings
+    (`score_chunks`, chunk_scorer), and the lowest is kept if it beats the passage there; among tries that already
+    read as human (under `target` / 2) the one keeping most of the original's words wins. A try that leaves its block
+    a copy of the original (COPIED) is dropped, as are those failing `facts` (meaning_problem) or `fits` (style_guard).
+    The whole document is scored with `score` after each round, and a round that raised it is undone. Requests go
+    `REVISE_GROUP` passages at a time, `parallel` at once. `progress`, `stats` and `saved` are as in revise_blocks,
+    `stats` adding `copied`. Gives the changed blocks' texts by key, and the AI likelihood after each round, the first
+    before any."""
+    tell = progress or (lambda _: None)
+    stats = Counter() if stats is None else stats
+    shown, gaps, blocks = _passages(texts)
+    names, touched = list(shown), set()
+    good_enough = target / 2
+
+    def whole(parts: dict[str, str]) -> str:
+        return "".join(parts[name] + gaps[name] for name in names).removesuffix("\n\n")
+
+    def block_text(parts: dict[str, str], key: str) -> str:
+        return "".join(parts[name] + gaps[name] for name in names if blocks[name] == key).removesuffix("\n\n")
+
+    def changed_blocks() -> dict[str, str]:
+        return {key: block_text(shown, key) for key in texts if key in touched}
+
+    def around(parts: dict[str, str], name: str) -> tuple[int, int]:
+        """The passages read with `name`: its neighbours on both sides until about CONTEXT_WORDS."""
+        low = high = names.index(name)
+        words = count_words(parts[name])
+        while words < CONTEXT_WORDS and (low > 0 or high < len(names) - 1):
+            if high < len(names) - 1:
+                high += 1
+                words += count_words(parts[names[high]])
+            if words < CONTEXT_WORDS and low > 0:
+                low -= 1
+                words += count_words(parts[names[low]])
+        return low, high
+
+    def chunk(parts: dict[str, str], span: tuple[int, int]) -> str:
+        return "".join(parts[name] + gaps[name] for name in names[span[0]:span[1] + 1]).strip()
+
+    def closeness(parts: dict[str, str], key: str) -> float:
+        original = originals.get(key, "")
+        return rewrite_measures(original, block_text(parts, key)).get("words_kept", 0.0) if original.strip() else 0.0
+
+    best = score(whole(shown))
+    if best is None:
+        return {}, [None]
+    history = [best]
+    anchored_tries = (candidates + 1) // 2
+    for round_ in range(1, rounds + 1):
+        if best < target:
+            break
+        long_enough = [name for name in names if count_words(shown[name]) >= MIN_REVISED_WORDS]
+        spans = {name: around(shown, name) for name in long_enough}
+        local = dict(zip(long_enough, score_chunks([chunk(shown, spans[name]) for name in long_enough]),
+                         strict=True))
+        ranked = sorted((name for name in long_enough if local[name] is not None), key=lambda name: -local[name])
+        hot = [name for name in ranked if local[name] >= good_enough] or ranked[:max(1, len(ranked) // 4)]
+        if not hot:
+            break
+        tell({"round": round_, "rounds": rounds, "tested": 0, "passages": len(hot), "likelihood": best})
+        context = whole(shown)
+        failures: list[Exception] = []
+
+        def request(group: list[str], anchored: bool, round_=round_, context=context,
+                    parts=shown, failures=failures) -> dict[str, list[str]]:
+            def jobs(attempt: int) -> list[dict]:
+                number = attempt if anchored else anchored_tries + attempt
+                return [{"kind": "text_block", "label": f"Passage {index}", "question": "", "previous": parts[name],
+                         "key": f"{name} revise {round_} try {number}",
+                         **({"anchor": originals[blocks[name]], "note": ANCHORED}
+                            if anchored and originals.get(blocks[name], "").strip() else {})}
+                        for index, name in enumerate(group, 1)]
+            writer = bool(shapes) and not anchored
+            plan = SimpleNamespace(prompt=prompt, context_text=context, blocks=[], answer_slots=[],
+                                   match_existing_lengths=True, answer_words=100,
+                                   structure="writer" if writer else "free", shapes=shapes or [], mask_facts=mask)
+            tries = anchored_tries if anchored else candidates - anchored_tries
+            try:
+                return _written_tries(plan, jobs, ask, clean, tries) if tries else {}
+            except StopRequested:
+                raise
+            except Exception as exc:  # an overloaded model: the round goes on with the other requests' tries
+                failures.append(exc)
+                return {}
+
+        groups = [hot[at:at + REVISE_GROUP] for at in range(0, len(hot), REVISE_GROUP)]
+        written: dict[str, list[str]] = {}
+        sides = [(group, side) for group in groups for side in (True, False)]
+        with ThreadPoolExecutor(max(1, parallel)) as pool:
+            for found in pool.map(lambda job: request(*job), sides):
+                for key, versions in found.items():
+                    written.setdefault(key, []).extend(versions)
+        stats["requests_failed"] += len(failures)
+        if failures and len(failures) == len(sides):
+            raise failures[-1]  # nothing came back: no round to score
+        before = dict(shown)
+        for tested, name in enumerate(hot, 1):
+            span = around(shown, name)
+            current = score_chunks([chunk(shown, span)])[0]
+            key, passing = blocks[name], []
+            for text in written.get(f"{name} revise {round_}", []):
+                new = normalize(text)[0]
+                if not new or new == shown[name]:
+                    stats["unchanged"] += 1
+                    continue
+                original = originals.get(key, "")
+                problem = meaning_problem(shown[name], new, whole(shown) + "\n\n" + original) if facts else None
+                if problem == "person" and _persons(new) <= _persons(shown[name] + " " + original):
+                    problem = None  # the writer's original says it so: the draft had dropped it
+                if problem:
+                    stats["facts"] += 1
+                    stats[f"facts:{problem}"] += 1
+                    continue
+                trial = {**shown, name: new}
+                if originals.get(key, "").strip() and copied(originals[key], block_text(trial, key)):
+                    stats["copied"] += 1
+                    continue
+                if fits and not fits(whole(trial)):
+                    stats["style"] += 1
+                    continue
+                passing.append(trial)
+            stats["scored"] += len(passing)
+            found = score_chunks([chunk(trial, span) for trial in passing]) if passing else []
+            kept = None
+            for trial, reading in zip(passing, found, strict=True):
+                if reading is None:
+                    continue
+                rank = (round(max(reading, good_enough), 2), -closeness(trial, key), stock_phrases(trial[name]))
+                if kept is None or rank < kept[0]:
+                    kept = (rank, reading, trial[name])
+            if kept and current is not None and kept[1] < current:
+                shown[name] = kept[2]
+                stats["kept"] += 1
+            elif kept:
+                stats["not_lower"] += 1
+            tell({"round": round_, "rounds": rounds, "tested": tested, "passages": len(hot), "likelihood": best})
+        now = score(whole(shown))
+        if now is None or now >= best:  # the document's own windows read the round as no better: undo it
+            shown = before
+            stats["rounds_undone"] += 1
+        else:
+            best = now
+            touched.update(blocks[name] for name in names if shown[name] != before[name])
+        history.append(best)
+        if saved:
+            saved(changed_blocks(), list(history))
+        if _stalled(history):
+            break
+    return changed_blocks(), history
+
+
 # How a standard sample is asked for. "challenge" names it an adversarial challenge sample, as the page
 # first did; "task" asks for the piece itself, as a writer would be asked. Both are saved as AI text.
 FRAMINGS = ("task", "challenge")
@@ -1060,7 +1268,9 @@ def group_prompt(plan, jobs: list[dict]) -> str:
             kind = "Markdown text" if job["kind"] == "markdown_block" else "text"
             items.append(f"[B{number}] A rewrite of the existing {kind} block labelled {job['label']}. {aim}\n"
                          + (f"It answers this question:\n{job['question']}\n" if job["question"] else "")
-                         + f"Existing text to regenerate:\n{original_text(plan, job)}")
+                         + f"Existing text to regenerate:\n{original_text(plan, job)}"
+                         + (f"\nThe writer's original of this part:\n{job['anchor']}" if job.get("anchor") else "")
+                         + (f"\n{job['note']}" if job.get("note") else ""))
     follow = FOLLOW.get(structure(plan)) if any(follows(plan, job) for job in jobs) else None
     return (
         f"Full document context:\n{plan.context_text}\n\n---\n\n"
