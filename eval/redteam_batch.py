@@ -464,7 +464,8 @@ def rewrite_group(plan, group: list[dict], ask: Callable[[str, list[dict]], str]
             if mask and mask.lost(job["previous"], text):
                 lost.append(job)
                 continue
-            if attempt and off_plan(plan, job, text) and count_words(text) < count_words(texts[job["key"]]):
+            if (attempt and job["key"] in texts and off_plan(plan, job, text)  # a lost block has no first text
+                    and count_words(text) < count_words(texts[job["key"]])):
                 continue  # asked again and came back shorter: the first was nearer the plan
             texts[job["key"]] = text
             if copied(job["previous"], text):

@@ -126,6 +126,21 @@ def test_rewrite_group_keeps_a_first_reply_when_only_the_second_loses_a_placehol
     assert alone == [] and tokens and written["a"] == PASSAGE, "a copy is asked again; its text stands if that fails"
 
 
+def test_a_block_whose_placeholders_were_lost_can_come_back_short_of_its_plan(monkeypatch):
+    """It crashed every masked overnight run: the second try's plan check read a first text a lost block never had."""
+    import re
+
+    import eval.redteam_batch as batch
+
+    monkeypatch.setattr(batch, "off_plan", lambda plan, job, text: True)
+    hidden = FactMask(PASSAGE).hide(PASSAGE)
+    assert re.search(r"\[F\d+\]", hidden)
+    replies = iter([_block_reply("Every fact it was given to keep has gone from this one, sadly enough."),
+                    _block_reply(hidden)])
+    written, alone = rewrite_group(_plan(mask_facts=True), [_job()], lambda prompt, jobs: next(replies), str)
+    assert written == {"a": PASSAGE} and alone == []
+
+
 def test_without_masking_nothing_changes():
     seen = []
 
