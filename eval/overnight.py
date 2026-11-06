@@ -474,6 +474,36 @@ def deadline(text: str, now: datetime) -> datetime:
     return moment if moment > now else moment + timedelta(days=1)
 
 
+# Short, telling and mostly free of quota, most useful first: `--day` runs these, and the night skips what they did.
+DAY = ("tests", "reference_before", "humanizer_rules", "anatomy", "gemini_round_1", "scoreboard_1", "humanize_demo",
+       "local_hop", "humanizer_bart", "humanizer_report", "borderline_math")
+
+
+def day_plan(stages: list[Stage]) -> list[Stage]:
+    by_name = {stage.name: stage for stage in stages}
+    return [by_name[name] for name in DAY]
+
+
+def live_lock(lock: Path) -> int | None:
+    """The process holding the lock, if it is still running."""
+    try:
+        pid = int(lock.read_text())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def wait_for_lock(lock: Path, sleep: Callable[[float], None] = time.sleep) -> None:
+    """Wait while another run, a day run say, still holds the lock."""
+    told = False
+    while (pid := live_lock(lock)) is not None:
+        if not told:
+            print(f"{datetime.now():%H:%M} waiting for run {pid} to finish", flush=True)
+            told = True
+        sleep(30)
+
+
 def wait_until(start: datetime, lock: Path) -> None:
     """Sleep until `start`, looking at the clock at least once a minute: a Mac that sleeps meanwhile stops the clock
     time.sleep counts, and the run should begin as soon as it wakes past `start`. Holds the lock, so no second run
@@ -505,7 +535,9 @@ def detach(argv: list[str], paths: Paths) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--until", default="07:40", help="stop starting work this long before the closing stages")
+    parser.add_argument("--until", help="stop starting work by then (default 07:40, or 21:30 with --day)")
+    parser.add_argument("--day", action="store_true",
+                        help=f"only the short stages, most useful first: {', '.join(DAY)}")
     parser.add_argument("--smoke", action="store_true", help="every stage, tiny, in its own folder")
     parser.add_argument("--status", action="store_true", help="print the brief's stage table and stop")
     parser.add_argument("--again", action="append", default=[], metavar="STAGE", help="run a finished stage once more")
@@ -520,18 +552,22 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     paths.out.mkdir(parents=True, exist_ok=True)
     lock = paths.out / "running.pid"
-    if lock.exists():
-        try:
-            os.kill(int(lock.read_text()), 0)
-            print(f"Already running as process {lock.read_text()}.")
-            return 1
-        except (OSError, ValueError):
-            pass
+    args.until = args.until or ("21:30" if args.day else "07:40")
+    if (pid := live_lock(lock)) and not args.at:
+        print(f"Already running as process {pid}.")
+        return 1
     if not args.foreground:
         return detach(argv if argv is not None else sys.argv[1:], paths)
+    if args.at:  # holds nothing while it waits, so a day run can go meanwhile; then waits for that to finish
+        wait_until(deadline(args.at, datetime.now()), lock)
+        wait_for_lock(lock)
+    elif live_lock(lock):
+        print("Already running.")
+        return 1
     lock.write_text(str(os.getpid()))
     now = datetime.now()
-    night = Night(paths, plan(paths, args.smoke), deadline(args.until, now), args.smoke,
+    stages = plan(paths, args.smoke)
+    night = Night(paths, day_plan(stages) if args.day else stages, deadline(args.until, now), args.smoke,
                   models=tuple(args.models.split(",")))
     for name in args.again:
         night.state["stages"].pop(name, None)
@@ -540,15 +576,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Stopped by signal {signum}; what's saved is kept and the next start resumes.", flush=True)
         night.stop_child()
         night.save()
-        lock.unlink(missing_ok=True)
+        if live_lock(lock) == os.getpid():
+            lock.unlink(missing_ok=True)
         os._exit(1)
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGHUP, signal.SIG_IGN)  # a closed terminal mustn't end the night
-    if args.at:  # after the stop handlers, before keeping the Mac awake: waiting needn't hold it up all day
-        wait_until(deadline(args.at, datetime.now()), lock)
-        night.until = deadline(args.until, datetime.now())
     if shutil.which("caffeinate"):
         subprocess.Popen(["caffeinate", "-is", "-w", str(os.getpid())])
     if not args.smoke:  # a DAIGT run paused by hand would write the same cache; its finished essays are kept

@@ -206,3 +206,35 @@ def test_state_survives_as_json(tmp_path, monkeypatch):
     item = night(tmp_path, [Stage("s", "?", command=["s"])], lambda *a: 0, monkeypatch)
     item.run_all()
     assert json.loads(item.paths.state.read_text())["stages"]["s"]["status"] == "done"
+
+
+def test_the_day_run_takes_short_stages_most_useful_first_and_the_night_skips_them(tmp_path, monkeypatch):
+    stages = overnight.plan(Paths(True), True)
+    day = overnight.day_plan(stages)
+    assert [stage.name for stage in day] == list(overnight.DAY)
+    assert "daigt_scoring" not in overnight.DAY and "reference_full" not in overnight.DAY
+    calls = []
+    small = [Stage("short", "?", command=["short"]), Stage("long", "?", command=["long"])]
+    run = lambda c, _l, _m: calls.append(c[0]) or 0  # noqa: E731
+    night(tmp_path, small[:1], run, monkeypatch).run_all()
+    night(tmp_path, small, run, monkeypatch).run_all()
+    assert calls == ["short", "long"], "the night doesn't redo what the day finished"
+
+
+def test_a_waiting_run_waits_for_a_live_lock_and_ignores_a_dead_one(tmp_path):
+    import os
+
+    lock = tmp_path / "running.pid"
+    lock.write_text("999999999")
+    assert overnight.live_lock(lock) is None
+    overnight.wait_for_lock(lock, sleep=lambda _: None)
+    lock.write_text(str(os.getpid()))
+    assert overnight.live_lock(lock) == os.getpid()
+    naps = []
+
+    def nap(_):
+        naps.append(1)
+        lock.write_text("999999999")  # the day run ends
+
+    overnight.wait_for_lock(lock, sleep=nap)
+    assert naps == [1]
