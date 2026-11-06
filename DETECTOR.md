@@ -220,7 +220,10 @@ Keys from other Google accounts can be added under Model & connection (kept in `
 comma-separated). The page then uses each model on every key, taking turns, and moves to the next
 model only once every key is out of quota on it; while the keys are only at their per-minute
 limits, a batch waits for them rather than moving down. Keys made in the same Cloud project share
-one allowance, so each needs its own project. Public mode keeps to the visitor's one key.
+one allowance, so each needs its own project. Public mode keeps to the visitor's one key. Each key shows
+the requests it has left today on each model, as bars. Gemini's API doesn't report this, so the
+app counts the requests it makes itself, resetting at midnight Pacific time; requests made with
+the key elsewhere aren't seen, and a quota error sets the key to none left on that model.
 
 On a local run, **Provider** under Model & connection switches to Groq or OpenRouter (keys in `GROQ_API_KEY` and
 `OPENROUTER_API_KEY`, or paste them there). Try a provider's models first with

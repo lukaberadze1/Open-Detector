@@ -21,6 +21,14 @@ def own_limits(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def own_key_usage(monkeypatch, tmp_path_factory):
+    """Every test counts Gemini requests in a file of its own, never this computer's data/key_usage.json."""
+    from eval import key_usage
+
+    monkeypatch.setattr(key_usage, "PATH", tmp_path_factory.mktemp("usage") / "key_usage.json")
+
+
+@pytest.fixture(autouse=True)
 def no_gemini_website(monkeypatch):
     """Page tests load the real .env, so without this a failed model would use the owner's Firefox login."""
     monkeypatch.setattr("eval.generate_essays.web_available", lambda: False)

@@ -55,7 +55,7 @@ from eval.generate_essays import (
     styled_clean,
     unload_local_model,
 )
-from eval import generation_settings
+from eval import generation_settings, key_usage
 from eval.generation_settings import MAX_POINTS, MEASURES
 from eval.redteam_batch import (
     again_note,
@@ -573,7 +573,7 @@ def _connection() -> Connection:
             else:
                 st.page_link(nav.guide_page(), label="Add your Gemini API key", icon=":material/key:")
         if api_key and name == "gemini":
-            _gemini_keys(api_key_env, keys)
+            _gemini_keys(api_key_env, keys, [model, *fallback_models])
         if api_key and name in ("groq", "openrouter") and (names := _models_on_offer(name, api_key)):
             with st.popover(f"{len(names)} models on offer", icon=":material/list:"):
                 st.caption("Copy a name into Model or the fallbacks." + (
@@ -592,12 +592,34 @@ def _remove_key(name: str, key: str) -> None:
     save_extra_keys(name, [other for other in env_keys(name)[1:] if other != key])
 
 
-def _gemini_keys(name: str, keys: list[str]) -> None:
+def _key_allowance(rows: list[dict]) -> None:
+    """One key's requests left today on each model it has used or has a known limit for, as bars."""
+    shown = [row for row in rows if row["limit"] or row["used"] or row["spent"]]
+    if not shown:
+        st.caption("No requests counted today, and no daily limits known yet for these models.")
+    for row in shown:
+        if row["spent"]:
+            st.progress(0.0, text=f"{row['model']} · out of quota until the reset")
+        elif row["limit"]:
+            st.progress(row["left"] / row["limit"], text=f"{row['model']} · {row['left']} of {row['limit']} left")
+        else:
+            st.caption(f"{row['model']} · {row['used']} used today · daily limit not known yet")
+
+
+def _gemini_keys(name: str, keys: list[str], models: list[str]) -> None:
     """More Gemini keys, from other Google accounts: listed by their last four characters, added after Google
-    accepts them, and kept in .env beside the first, which the Guide page sets."""
+    accepts them, and kept in .env beside the first, which the Guide page sets. Each shows the requests it has
+    left today on the models under Model & connection, as this computer has counted them (eval/key_usage.py)."""
     from .guide import check_key
 
-    with st.popover(f"{len(keys)} Gemini key{'s' * (len(keys) != 1)}", icon=":material/key:"):
+    table = generation_settings.load_table()
+    limits = (table or {}).get("daily_requests") or generation_settings.learned_limits()
+    allowances = {key: key_usage.left(key, models, limits) for key in keys}
+    main = [rows[0] for rows in allowances.values() if rows and rows[0]["left"] is not None]
+    label = f"{len(keys)} Gemini key{'s' * (len(keys) != 1)}"
+    if main and len(main) == len(keys):
+        label += f" · {sum(row['left'] for row in main)} left on {models[0]}"
+    with st.popover(label, icon=":material/key:"):
         st.caption("Keys from other Google accounts add their free allowances together. A batch uses each model on "
                    "every key, taking turns, and moves to the next model only when all of them are out of quota. "
                    "Keys made in the same Cloud project share one allowance, so make each in its own project.")
@@ -608,6 +630,11 @@ def _gemini_keys(name: str, keys: list[str]) -> None:
                 if place > 1:
                     st.button("Remove", key=f"redteam:remove_key:{place}", type="tertiary",
                               icon=":material/delete:", on_click=_remove_key, args=(name, key))
+            _key_allowance(allowances[key])
+        st.caption(f"Requests left today, counted on this computer. Limits reset at midnight Pacific time, "
+                   f"{key_usage.next_reset():%H:%M} here. Requests made with a key elsewhere (AI Studio, another app) "
+                   "aren't counted, so a key can run out sooner; a quota error sets it to none left. A limit "
+                   "shows once a measurement or a quota error has stated it.")
         with st.form("redteam:add_key", clear_on_submit=True, border=False):
             new = st.text_input("Add a key from another account", type="password", placeholder="Paste a key here",
                                 help="Get one at aistudio.google.com/apikey, signed in with the other account. "

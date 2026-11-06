@@ -58,6 +58,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from eval import key_usage
 from eval.gemini_fallback import WEB_MODEL, GeminiWebError, chat_web, web_available
 from eval.human_swaps import human_swaps
 from opendetector.env import load_env
@@ -703,7 +704,28 @@ OBSERVER: Callable[..., None] | None = None  # told of every request, for eval.t
 def chat(base_url: str, api_key: str, model: str, prompt: str, temperature: float, retries: int = 5,
          system: str | None = None, timeout: int = REMOTE_TIMEOUT, thinking: str | None = None,
          json_schema: dict | None = None, usage: dict | None = None, sampling: dict | None = None) -> str:
-    """`_chat`, with what became of the request told to OBSERVER if one is set."""
+    """`_chat`, with what became of the request told to OBSERVER if one is set, and a Gemini key's request counted
+    toward today's use of it (eval/key_usage.py)."""
+    if urllib.parse.urlparse(base_url).hostname != "generativelanguage.googleapis.com" or not api_key:
+        return _observed(base_url, api_key, model, prompt, temperature, retries, system, timeout, thinking,
+                         json_schema, usage, sampling)
+    try:
+        reply = _observed(base_url, api_key, model, prompt, temperature, retries, system, timeout, thinking,
+                          json_schema, usage, sampling)
+    except QuotaExhausted as exc:
+        key_usage.record(api_key, model, spent=True)
+        if key_usage.enabled():  # a limit belongs to the key's project, and a public visitor brings their own
+            from eval import generation_settings
+
+            generation_settings.record_limits(generation_settings.limits_in(f"{model}: {exc}"))
+        raise
+    key_usage.record(api_key, model)
+    return reply
+
+
+def _observed(base_url: str, api_key: str, model: str, prompt: str, temperature: float, retries: int,
+              system: str | None, timeout: int, thinking: str | None, json_schema: dict | None,
+              usage: dict | None, sampling: dict | None) -> str:
     if OBSERVER is None:
         return _chat(base_url, api_key, model, prompt, temperature, retries, system, timeout, thinking, json_schema,
                      usage, sampling)

@@ -1169,3 +1169,21 @@ def test_several_gemini_keys_reach_the_models_as_one_pool(stub_model, monkeypatc
     assert not at.exception, at.exception
     pool = stub_model.keys[-1]
     assert isinstance(pool, KeyPool) and pool.keys == ["test-key", "second-key", "third"]
+
+
+def test_each_gemini_key_shows_the_requests_it_has_left_today(stub_model, monkeypatch):
+    from eval import generation_settings, key_usage
+
+    monkeypatch.setenv("GEMINI_API_KEYS", "second-key")
+    generation_settings.record_limits({"gemini-3.8-flash": 20})
+    for _ in range(5):
+        key_usage.record("test-key", "gemini-3.8-flash")
+    key_usage.record("second-key", "gemini-3.5-flash-lite", spent=True)
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.run()
+    assert not at.exception, at.exception
+    assert [p.proto.popover.label for p in at.get("popover")] == ["2 Gemini keys · 35 left on gemini-3.8-flash"]
+    bars = [(bar.proto.text, bar.proto.value) for bar in at.get("progress")]
+    assert bars == [("gemini-3.8-flash · 15 of 20 left", 75), ("gemini-3.8-flash · 20 of 20 left", 100),
+                    ("gemini-3.5-flash-lite · out of quota until the reset", 0)]
