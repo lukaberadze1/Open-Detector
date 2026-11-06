@@ -138,11 +138,11 @@ def plan(paths: Paths, smoke: bool) -> list[Stage]:
         Stage("tests", "Is the code sound before trusting anything below?", 10,
               py("pytest", "-q", "--no-header", "-p", "no:cacheprovider")),
         Stage("reference_before", "Where do we stand, before tonight's samples? Do guided samples fool only Desklib "
-              "(the transfer gap against RoBERTa)?", 30,
+              "(the transfer gap against RoBERTa)?", 50,
               py("eval.reference_benchmark", "--detectors", "slim,roberta", "--report", paths.reference_before,
                  *reference_small)),
         Stage("humanize_demo", "What does a trained humanizer's output do to the detector, and does it flag the human "
-              "rewrites?", 20,
+              "rewrites?", 40,
               py("eval.score_demo", "--report", paths.humanize_demo, *(["--limit", 2] if small else [])),
               needs=[DEMOS / "kto_seed_demo.jsonl"]),
         Stage("local_hop", "Does the local translation hop move AI text, and does it bring text into the math script's "
@@ -165,7 +165,7 @@ def plan(paths: Paths, smoke: bool) -> list[Stage]:
               py("eval.fit_combiner", "eval/cache/raid.jsonl", "eval/cache/mage.jsonl", paths.daigt, "--features",
                  "desklib_mean,desklib_max", "--out", paths.trial, "--report", paths.trial_fit), needs=[paths.daigt]),
         Stage("borderline_math", "With the ranking fixed, how far does math alone move borderline text, and does the "
-              "move survive a detector it never saw?", 35,
+              "move survive a detector it never saw?", 50,
               py("eval.bench_math", "--band", 0.6, 0.95, "--texts", 1 if small else 8, "--independent",
                  "--out", paths.out / "borderline.jsonl", *(["--budget", 10] if small else []))),
         Stage("humanizer_bart", "Do the public BART humanizers beat the detector without using its scores?", 45,
@@ -245,6 +245,12 @@ def checks() -> list[str]:
     apps = subprocess.run(["pgrep", "-f", "streamlit run"], capture_output=True, text=True).stdout.split()
     if apps:
         notes.append("The Streamlit app is running: quit it, since it takes memory the tests need on 8 GB.")
+    commit = subprocess.run(["git", "log", "-1", "--format=%h %s"], cwd=ROOT, capture_output=True, text=True).stdout
+    changed = subprocess.run(["git", "status", "--short", "--untracked-files=no"], cwd=ROOT, capture_output=True,
+                             text=True).stdout.split("\n")
+    changed = [line[3:] for line in changed if line.strip()]
+    notes.append(f"Code: commit {commit.strip()}" + (f", with uncommitted changes in {', '.join(changed)}: "
+                                                      "they weren't part of what was tested" if changed else ""))
     if not sorted(DOCUMENTS.glob("*.md")):
         notes.append(f"No documents in {DOCUMENTS}: the Gemini rounds will have nothing to do.")
     return notes
