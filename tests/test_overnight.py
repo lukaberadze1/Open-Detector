@@ -117,7 +117,9 @@ def test_an_overloaded_model_hands_on_for_this_round_and_is_tried_first_again(tm
     item = night(tmp_path, stages, run, monkeypatch)
     item.run_all()
     setups = [name for name, _ in overnight.gemini_setups(item.paths, True)]
-    assert calls == [("baseline", first), *[(name, second) for name in setups]]
+    first_pass = [("baseline", first), *[(name, second) for name in setups]]
+    assert calls[:len(first_pass)] == first_pass
+    assert calls[len(first_pass)] == ("baseline", first), "the night comes back to the round, first model first"
     assert status(item, "round") == "partly done" and not item.spent(first)
     calls.clear()
     item.state["stages"].pop("round")
@@ -238,3 +240,52 @@ def test_a_waiting_run_waits_for_a_live_lock_and_ignores_a_dead_one(tmp_path):
 
     overnight.wait_for_lock(lock, sleep=nap)
     assert naps == [1]
+
+
+def test_a_spent_model_is_tried_again_an_hour_later_and_the_night_comes_back_to_the_round(tmp_path, monkeypatch):
+    clock = Clock()
+    calls = []
+    quota_left = {"value": False}
+
+    def run(command, log, minutes):
+        calls.append(command[0])
+        if command[0] in ("other", "close"):
+            return 0
+        if not quota_left["value"]:
+            return QUOTA_EXIT
+        item.paths.revise.open("a").write("{}\n")
+        return 0
+
+    def sleep(seconds):
+        clock.time += timedelta(seconds=seconds)
+        quota_left["value"] = True  # an hour on, the quota is back
+
+    stages = [Stage("round", "?", gemini=1), Stage("other", "?", command=["other"]),
+              Stage("close", "?", command=["close"], closing=True)]
+    item = night(tmp_path, stages, run, monkeypatch, clock=clock)
+    item.sleep = sleep
+    item.models = overnight.MODELS[:1]
+    item.run_all()
+    assert calls[0] == "baseline" and calls[1] == "other", "a spent quota moves the night on to other work"
+    assert calls[-1] == "close" and calls.count("baseline") >= 2, "then it comes back to the round before closing"
+    assert status(item, "round") == "done"
+
+
+def test_the_night_doesnt_wait_for_quota_that_would_come_back_too_late(tmp_path, monkeypatch):
+    clock = Clock()
+    naps = []
+    stages = [Stage("round", "?", gemini=1)]
+    item = night(tmp_path, stages, lambda c, _l, _m: QUOTA_EXIT, monkeypatch, until_hours=1, clock=clock)
+    item.sleep = naps.append
+    item.run_all()
+    assert not [nap for nap in naps if nap > overnight.QUOTA_WAIT], "an hour's wait wouldn't leave time to use it"
+
+
+def test_a_refused_model_stays_out_while_a_spent_one_comes_back(tmp_path, monkeypatch):
+    clock = Clock()
+    item = night(tmp_path, [], lambda *a: 0, monkeypatch, clock=clock)
+    item.state["refused"] = {"x": clock().isoformat()}
+    item.state["spent"]["y"] = clock().isoformat()
+    assert item.spent("x") and item.spent("y")
+    clock.time += overnight.RECHECK
+    assert item.spent("x") and not item.spent("y")

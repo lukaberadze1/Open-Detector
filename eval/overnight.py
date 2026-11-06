@@ -42,6 +42,8 @@ UNUSABLE_EXIT = 5  # and on one that refuses the request itself, which no wait f
 MODELS = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "openrouter:cohere/north-mini-code:free")
 QUOTA_RESET = (9, 5)  # local hour and minute: Gemini's daily quota resets at midnight Pacific, 09:00 CET
 QUOTA_WAIT = 600  # seconds before believing a spent quota, since a per-minute limit can read the same
+CATCH_UP_PASSES = 12  # at most, so no clock or state can keep the night going round forever
+RECHECK = timedelta(minutes=60)  # a spent model is tried again after this: one request finds out whether it is back
 CRASH_WAIT = 120
 ATTEMPTS = 2
 RESERVE = 20  # minutes kept back at the end for the closing stages
@@ -364,13 +366,22 @@ class Night:
         self.note(stage, "failed", f"exit {code}, see logs/{stage.name}.log", spent)
 
     def spent(self, model: str) -> bool:
-        """Spent today, as far as we know: a model that ran out before this morning's reset is back."""
+        """Out, as far as we know: refused for the night, or out of quota less than RECHECK ago and not since reset.
+        Quota can come back before the daily reset (a per-minute limit read as daily, another key, a quota raised),
+        and one request finds out."""
+        if model in self.state.setdefault("refused", {}):
+            return True
         when = self.state["spent"].get(model)
         if not when:
             return False
-        ran_out, now = datetime.fromisoformat(when), self.now()
-        reset = now.replace(hour=QUOTA_RESET[0], minute=QUOTA_RESET[1], second=0, microsecond=0)
-        return not (ran_out < reset <= now)
+        return self.now() < self.back_at(model)
+
+    def back_at(self, model: str) -> datetime:
+        """When a spent model is worth trying again: RECHECK after it ran out, or the daily reset if that is sooner."""
+        ran_out = datetime.fromisoformat(self.state["spent"][model])
+        reset = ran_out.replace(hour=QUOTA_RESET[0], minute=QUOTA_RESET[1], second=0, microsecond=0)
+        reset += timedelta(days=1) if reset <= ran_out else timedelta()
+        return min(ran_out + RECHECK, reset)
 
     def finished_runs(self) -> int:
         revise = self.paths.revise
@@ -405,9 +416,9 @@ class Night:
                 model = next((m for m in self.models[self.models.index(model) + 1:] if not self.spent(m)), None)
                 index = 0  # a new model's comparison needs all its setups
                 continue
-            if code == UNUSABLE_EXIT:  # out for the night, like a spent quota
+            if code == UNUSABLE_EXIT:  # out for the night: no wait fixes it
                 failures.append(f"{model} refused the request")
-                self.state["spent"][model] = self.now().isoformat()
+                self.state.setdefault("refused", {})[model] = self.now().isoformat()
                 model = next((m for m in self.models[self.models.index(model) + 1:] if not self.spent(m)), None)
                 index = 0
                 continue
@@ -430,25 +441,58 @@ class Night:
         if model is None and down:
             self.note(stage, "model down", f"{new}; {'; '.join(failures)}", spent)
         elif model is None:
-            self.note(stage, "quota spent", f"{new}; every model is out until the reset", spent)
+            self.note(stage, "quota spent", f"{new}; every model is out for now; the night comes back to it", spent)
         else:
             self.note(stage, "done" if not failures else "partly done", "; ".join([model, new, *failures]), spent)
 
     def run_all(self) -> None:
         self.warnings = checks() if not self.smoke else []
         self.save()
-        for stage in self.stages:
-            status = self.state["stages"].get(stage.name, {}).get("status")
-            if status == "done" and not stage.again:
-                continue
-            if not stage.closing and self.minutes_left(stage) <= 0:
-                self.note(stage, "out of time", "resumes on the next start")
-                continue
-            if stage.gemini:
-                self.run_gemini(stage)
-            else:
-                self.run_stage(stage)
+        for stage in [stage for stage in self.stages if not stage.closing]:
+            self.run_one(stage)
+        self.catch_up()
+        for stage in [stage for stage in self.stages if stage.closing]:
+            self.run_one(stage)
         print(f"Finished. Read {self.paths.brief}", flush=True)
+
+    def run_one(self, stage: Stage) -> None:
+        status = self.state["stages"].get(stage.name, {}).get("status")
+        if status == "done" and not stage.again:
+            return
+        if not stage.closing and self.minutes_left(stage) <= 0:
+            self.note(stage, "out of time", "resumes on the next start")
+            return
+        if stage.gemini:
+            self.run_gemini(stage)
+        else:
+            self.run_stage(stage)
+
+    def unfinished_rounds(self) -> list[Stage]:
+        return [stage for stage in self.stages if stage.gemini
+                and self.state["stages"].get(stage.name, {}).get("status") != "done"]
+
+    def catch_up(self) -> None:
+        """Back to the Gemini rounds that quota, overload or time cut short, once everything else is done: waiting for
+        a spent model to be worth trying again while there is time, and going round while a pass still adds runs."""
+        for _ in range(CATCH_UP_PASSES):
+            if not (rounds := self.unfinished_rounds()):
+                return
+            usable = [model for model in self.models if model not in self.state.get("refused", {})]
+            if not usable:
+                return
+            if all(self.spent(model) for model in usable):
+                back = min(self.back_at(model) for model in usable if self.state["spent"].get(model))
+                if back >= self.until - timedelta(minutes=RESERVE + 30):
+                    return  # it wouldn't be back in time to do anything
+                print(f"{self.now():%H:%M} every model is out; trying again at {back:%H:%M}", flush=True)
+                self.sleep(max(0.0, (back - self.now()).total_seconds()))
+            before = self.finished_runs()
+            for stage in rounds:
+                if self.minutes_left(stage) <= 0:
+                    return
+                self.run_gemini(stage)
+            if self.finished_runs() == before and not all(self.spent(model) for model in usable):
+                return  # a pass that added nothing with a model available: going round again wouldn't either
 
     def write_brief(self) -> None:
         paths = self.paths
