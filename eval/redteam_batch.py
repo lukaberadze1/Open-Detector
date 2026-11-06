@@ -850,6 +850,8 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
                   fits: Callable[[str], bool] | None = None, prompt: str = REVISE, facts: bool = False,
                   candidates: int = 1, progress: Callable[[dict], None] | None = None,
                   stats: Counter | None = None, mask: bool = False, trace=None,
+                  score_many: Callable[[list[str]], list[float | None]] | None = None,
+                  saved: Callable[[dict[str, str], list[float | None]], None] | None = None,
                   ) -> tuple[dict[str, str], list[float | None]]:
     """A document's rewritten blocks revised where the detector reads the whole as AI, as revise_flagged does
     a sample, keeping each block in its place in the document. `texts` holds each block's text by key, in
@@ -867,6 +869,13 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
     `stats`, if given, counts what became of each rewrite: `unchanged`, `facts` and `style` (dropped by those checks),
     `scored` (scored against the whole), then per passage `kept` or `not_lower`.
     With `mask`, names and numbers go out as placeholders (FactMask).
+    With `score_many` (CachedScorer.many), a passage's rewrites are scored against the whole in one batch, the model
+    run only on document windows it hasn't seen: one passage changes two or three of a long document's windows, and
+    scoring every window of every try made a round of a 2,400-word document take several minutes on a CPU. The
+    starting figure comes from it too, so before and after are measured alike. Left out with `trace`, which records
+    each try's windows.
+    `saved`, if given, is told the changed blocks and the history after every round, so a quit or a crash keeps the
+    rounds done.
     Gives the changed blocks' texts by key, and the AI likelihood after each round, the first before any."""
     tell = progress or (lambda _: None)
     stats = Counter() if stats is None else stats
@@ -882,10 +891,16 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
     def whole(parts: dict[str, str]) -> str:
         return "".join(parts[name] + gaps[name] for name in parts).removesuffix("\n\n")
 
+    def changed_blocks() -> dict[str, str]:
+        return {key: "".join(shown[name] + gaps[name] for name in shown if blocks[name] == key).removesuffix("\n\n")
+                for key in texts if key in touched}
+
+    cached = score_many if trace is None else None
     report = analyze(whole(shown))
     if report.ai_probability is None:
         return {}, [None]
-    best, history, touched = report.ai_probability, [report.ai_probability], set()
+    best = report.ai_probability if cached is None else cached([whole(shown)])[0]
+    history, touched = [best], set()
     if trace:
         trace.version("revise_start", whole(shown), report)
     for round_ in range(1, rounds + 1):
@@ -916,7 +931,7 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
                                shapes=shapes, mask_facts=mask)
         written = _written_tries(plan, jobs, ask, clean, candidates)
         for tested, name in enumerate(chosen, 1):
-            kept = None
+            kept, passing = None, []
             for text in written.get(f"{name} revise {round_}", []):
                 new = normalize(text)[0]
                 if not new or new == shown[name]:
@@ -937,14 +952,20 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
                         trace.event("candidate", round=round_, passage=name, before=shown[name], text=new,
                                     status="dropped", reason="style")
                     continue
-                stats["scored"] += 1
-                scored = analyze(whole(trial), sentences=False)
-                candidate = scored.ai_probability
-                if trace:
-                    trace.event("candidate", round=round_, passage=name, before=shown[name], text=new,
-                                status="scored",
-                                score=candidate, passage_score=scores[name], best_before=best,
-                                windows=scored.windows)
+                passing.append(new)
+            stats["scored"] += len(passing)
+            if cached is not None:
+                found = cached([whole({**shown, name: new}) for new in passing]) if passing else []
+            else:
+                found = []
+                for new in passing:
+                    scored = analyze(whole({**shown, name: new}), sentences=False)
+                    found.append(scored.ai_probability)
+                    if trace:
+                        trace.event("candidate", round=round_, passage=name, before=shown[name], text=new,
+                                    status="scored", score=scored.ai_probability, passage_score=scores[name],
+                                    best_before=best, windows=scored.windows)
+            for new, candidate in zip(passing, found, strict=True):
                 if candidate is None:
                     continue
                 rank = (round(candidate, 2), stock_phrases(new))
@@ -961,6 +982,8 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
                 stats["not_lower"] += 1
             tell({"round": round_, "rounds": rounds, "tested": tested, "passages": len(chosen), "likelihood": best})
         history.append(best)
+        if saved:
+            saved(changed_blocks(), list(history))
         if trace:
             trace.version("revise_round", whole(shown), round=round_, score=best,
                           chosen=[[name, round(scores[name], 4)] for name in chosen])
@@ -968,9 +991,7 @@ def revise_blocks(texts: dict[str, str], analyze: Callable[..., object], ask: Ca
             break
         if best >= target and round_ < rounds:
             report = analyze(whole(shown))  # sentence scores for the next round's choice
-    changed = {key: "".join(shown[name] + gaps[name] for name in shown if blocks[name] == key).removesuffix("\n\n")
-               for key in texts if key in touched}
-    return changed, history
+    return changed_blocks(), history
 
 
 # How a standard sample is asked for. "challenge" names it an adversarial challenge sample, as the page

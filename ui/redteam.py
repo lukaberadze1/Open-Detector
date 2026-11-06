@@ -2135,23 +2135,43 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
             return reply
 
         status["note"] = "Revising the blocks the detector flags…"
+        # Rounds a quit or a crash cut short: their text is already in the blocks, so a resume goes on from there.
+        done = checkpoint.meta.get("revise_partial", {})
+        before, moved = done.get("history", []), set(done.get("keys", []))
+
+        def joined(history: list) -> list:
+            return before + history[1:] if before else history
+
+        def saved(changed: dict[str, str], history: list) -> None:
+            for key, text in changed.items():
+                checkpoint.update(key, text=text)
+            checkpoint.meta["revise_partial"] = {"history": joined(history), "keys": sorted(moved | changed.keys())}
+            checkpoint.save()
+
         texts = {key: checkpoint.blocks[key]["text"] for key in checkpoint.generated(keys)}
-        changed, history = revise_blocks(texts, models.get_detector(plan.profile).analyze, ask, clean,
-                                         plan.shapes or [], plan.revise, prompt=REVISE_KEEPING, facts=True,
+        detector = models.get_detector(plan.profile)
+        rounds = plan.revise - max(len(before) - 1, 0)
+        changed, history = revise_blocks(texts, detector.analyze, ask, clean,
+                                         plan.shapes or [], rounds, prompt=REVISE_KEEPING, facts=True,
                                          candidates=REVISE_CANDIDATES,
                                          fits=_style_fits(plan, "\n\n".join(texts.values())),
-                                         progress=lambda now: status.update(revising=now), mask=plan.mask_facts)
+                                         progress=lambda now: status.update(revising=now), mask=plan.mask_facts,
+                                         score_many=CachedScorer(detector).many, saved=saved,
+                                         ) if rounds > 0 else ({}, before[-1:])
         status.pop("revising", None)
-        for key, text in changed.items():
+        for key in moved | changed.keys():
+            text = changed.get(key, checkpoint.blocks[key]["text"])
             checkpoint.update(key, text=text, score=candidate_metrics(text, plan.profile, plan.style_path,
                                                                       register=plan.register))
-        checkpoint.meta["revise_rounds"] = history
+        checkpoint.meta["revise_rounds"] = joined(history)
+        checkpoint.meta.pop("revise_partial", None)
         checkpoint.save()
         record_stage("revise", "\n\n".join(checkpoint.blocks[key]["text"] for key in checkpoint.generated(keys)))
 
     def score_document() -> None:
         written = "\n\n".join(checkpoint.blocks[key]["text"] for key in checkpoint.generated(keys))
-        if not {"attack_changes", "revise_rounds"} & checkpoint.meta.keys():  # on a resume the text may be further on
+        # On a resume the text may be further on than written.
+        if not {"attack_changes", "revise_rounds", "revise_partial"} & checkpoint.meta.keys():
             record_stage("written", written)
         record_stage("source", "\n\n".join(job["previous"] for job in jobs if job["previous"].strip()))
         if (plan.attacks or plan.rules or plan.math) and "attack_changes" not in checkpoint.meta:

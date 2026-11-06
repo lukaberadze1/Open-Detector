@@ -488,6 +488,50 @@ def test_a_document_is_revised_block_by_block_and_each_stays_in_its_place():
     assert changed == {"b": "A plain passage about the bus I missed."}, "the flagged block that helped, nothing else"
     assert history == pytest.approx([0.5, 0.2])
 
+    # With score_many, the tries are scored through it in one batch per passage, and the whole document is
+    # analyzed only for its sentence scores: the result is the same.
+    batches, analyzed = [], []
+    analyze = _document_detector(score)
+
+    def counting(current, sentences=True):
+        analyzed.append(sentences)
+        return analyze(current, sentences)
+
+    def score_many(versions):
+        batches.append(len(versions))
+        return [score(version) for version in versions]
+
+    assert revise_blocks(texts, counting, ask, str.strip, [], rounds=1, score_many=score_many) == (changed, history)
+    assert False not in analyzed, "no try scored through analyze"
+    assert batches[0] == 1 and all(size >= 1 for size in batches[1:]), "the start, then each passage's tries together"
+
+
+def test_revise_blocks_hands_over_each_round_as_it_ends():
+    from eval.redteam_batch import revise_blocks
+
+    tidy = " ".join(f"Tidy sentence {n} offers a balanced overview of the topic." for n in range(3))
+    texts = {"a": tidy, "b": "Done."}
+    missed = "A passage about the bus I missed on a cold grey morning before school, with my bag still open"
+    later = "Twice now I ran for the bus in the rain and watched it pull away from the stop without me."
+    asked = []
+
+    def rewrites():  # long enough to be revised again, and different enough not to count as a copy
+        asked.append(1)
+        return f"{missed}." if len(asked) == 1 else later
+
+    def score(current):
+        return 0.5 - 0.2 * ("bus" in current) - 0.1 * ("Twice" in current)
+
+    def ask(prompt, pending):
+        return json.dumps({"blocks": [{"id": "B1", "text": rewrites()}]})
+
+    rounds = []
+    changed, history = revise_blocks(texts, _document_detector(score), ask, str.strip, [], rounds=2,
+                                     saved=lambda now, so_far: rounds.append((now, so_far)))
+    assert [so_far for _, so_far in rounds] == [pytest.approx([0.5, 0.3]), pytest.approx([0.5, 0.3, 0.2])]
+    assert rounds[0][0] == {"a": f"{missed}."}, "a quit after round 1 keeps round 1"
+    assert rounds[-1] == (changed, history)
+
 
 def test_a_document_under_the_bar_is_left_alone_and_a_short_text_is_not_revised():
     from eval.redteam_batch import WIN_BELOW, revise_blocks
