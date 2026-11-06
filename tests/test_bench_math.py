@@ -47,3 +47,34 @@ def test_many_runs_each_new_window_once_in_one_batch():
     assert scorer.many(["One whole sentence here.", "Another whole sentence here.", "One whole sentence here."]) \
         == [0.5, 0.5, 0.5]
     assert len(engine.calls) == 1 and len(engine.calls[0]) == 2
+
+
+def test_the_outside_detector_is_tabularis_pinned_and_roberta_still_reachable():
+    from eval import bench_math
+
+    assert bench_math.INDEPENDENT == "tabularis"
+    model_id, revision, label = bench_math.OUTSIDE["tabularis"]
+    assert model_id == "tabularisai/ai-text-detection" and len(revision) == 40 and label == 1
+    assert "roberta" in bench_math.OUTSIDE
+
+
+def test_outside_scores_average_chunks_and_read_the_ai_label(monkeypatch):
+    import torch
+
+    from eval import bench_math
+
+    class Tokenizer:
+        def __call__(self, chunks, **_):
+            self.chunks = chunks
+            return {"input_ids": torch.zeros((len(chunks), 3), dtype=torch.long)}
+
+    class Model:
+        def __call__(self, input_ids):
+            rows = input_ids.shape[0]
+            return type("Out", (), {"logits": torch.tensor([[0.0, 0.0]] * (rows - 1) + [[0.0, 10.0]])})()
+
+    tokenizer = Tokenizer()
+    monkeypatch.setattr(bench_math, "_independent", lambda name="tabularis": (tokenizer, Model()))
+    [score] = bench_math.independent_scores(["word " * 450], words=300)
+    assert len(tokenizer.chunks) == 2
+    assert abs(score - (0.5 + 1.0) / 2) < 0.01

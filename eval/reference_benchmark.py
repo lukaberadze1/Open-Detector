@@ -48,7 +48,8 @@ REPORT = ROOT / "eval/reports/reference.md"
 FOLDER = DATA_ROOT / "data/reference"
 PAIRS = DATA_ROOT / "data/pairs"
 EXTRA_SAMPLES = (DATA_ROOT / "data/essays/contextual_redteam.jsonl",)
-DETECTORS = ("slim", "full", "roberta")
+DETECTORS = ("slim", "full", "tabularis", "roberta")
+OUTSIDE_DETECTORS = ("tabularis", "roberta")  # not ours: no calibrated cut-off, so 0.5
 SPLIT_SEED = 0
 FEW = 30  # rows: a group smaller than this is marked, since its rate says little
 _GUIDED = ("revise", "math", "contextual", "challenge", "gradient")
@@ -162,14 +163,14 @@ def build_scorer(name: str) -> tuple[Callable[[str], tuple[float, str]], Callabl
     """A detector as text to (AI chance, verdict), and how to free it: the 8 GB Mac holds one at a time."""
     from opendetector.engines import free_memory
 
-    if name == "roberta":
+    if name in OUTSIDE_DETECTORS:
         from eval.bench_math import _independent, independent_scores
 
-        def score_roberta(text: str) -> tuple[float, str]:
-            value = independent_scores([text])[0]
+        def score_outside(text: str) -> tuple[float, str]:
+            value = independent_scores([text], name=name)[0]
             return value, "likely_ai" if value >= 0.5 else "likely_human"
 
-        return score_roberta, lambda: (_independent.cache_clear(), free_memory())
+        return score_outside, lambda: (_independent.cache_clear(), free_memory())
     from opendetector import Detector
 
     detector = Detector.from_config(DetectorConfig.for_profile(name))
@@ -328,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
     if unknown := set(names) - set(DETECTORS):
         parser.error(f"unknown detectors: {sorted(unknown)}")
     print(f"{len(rows)} texts: {sum(r['label'] == 1 for r in rows)} AI, {sum(r['label'] == 0 for r in rows)} human")
-    results = {name: score_rows(rows, name, combiner_version(name) if name != "roberta" else "",
+    results = {name: score_rows(rows, name, combiner_version(name) if name not in OUTSIDE_DETECTORS else "",
                                 cached_only=args.cached_only) for name in names}
     for item in args.external:
         name, _, path = item.partition("=")

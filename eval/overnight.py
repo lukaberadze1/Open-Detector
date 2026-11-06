@@ -141,6 +141,10 @@ def plan(paths: Paths, smoke: bool) -> list[Stage]:
               "(the transfer gap against RoBERTa)?", 50,
               py("eval.reference_benchmark", "--detectors", "slim,roberta", "--report", paths.reference_before,
                  *reference_small)),
+        Stage("reference_outside", "Does an outside detector (Tabularis) catch what slim misses? The transfer gap on "
+              "guided samples, with a detector strong enough to mean something.", 40,
+              py("eval.reference_benchmark", "--detectors", "slim,tabularis", "--report", paths.out /
+                 "reference_outside.md", *reference_small)),
         Stage("humanize_demo", "What does a trained humanizer's output do to the detector, and does it flag the human "
               "rewrites?", 40,
               py("eval.score_demo", "--report", paths.humanize_demo, *(["--limit", 2] if small else [])),
@@ -460,7 +464,8 @@ class Night:
         for title, path in (("Generator", paths.summary), ("A trained humanizer's output", paths.humanize_demo),
                             ("Local translation hop", paths.local_hop), ("What the detector reads", paths.anatomy),
                             ("Public humanizers", paths.humanizer_report), ("Combiner trial", paths.trial_report),
-                            ("Reference, before tonight", paths.reference_before)):
+                            ("Reference, before tonight", paths.reference_before),
+                            ("Reference with an outside detector", paths.out / "reference_outside.md")):
             if path.exists():
                 text = path.read_text(encoding="utf-8")
                 cut = text.find("\n## slim")  # the per-genre tables are long; the file has them

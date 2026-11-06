@@ -78,26 +78,38 @@ class ProgressBar:
               end="", file=sys.stderr, flush=True)
 
 
-INDEPENDENT = "Hello-SimpleAI/chatgpt-detector-roberta"
+# Detectors this project never tuned against, as (model id, revision, index of the AI label). `tabularis`, a
+# ModernBERT trained on RAID's train side and six other sets (MIT, safetensors), is the default: on RAID it scored
+# 0.99 at a 5% false-positive rate where `roberta` scored 0.27 (leaderboard, read 2026-11-06), and on our reference
+# set roberta missed 65% of AI text. Pinned to the revision that was checked.
+OUTSIDE = {"tabularis": ("tabularisai/ai-text-detection", "4bf4a146a66df346e5b54e4b5ebda3fee1a19a86", 1),
+           "roberta": ("Hello-SimpleAI/chatgpt-detector-roberta", None, "chatgpt")}
+INDEPENDENT = "tabularis"
 
 
 @lru_cache(maxsize=1)
-def _independent():
+def _independent(name: str = INDEPENDENT):
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-    model = AutoModelForSequenceClassification.from_pretrained(INDEPENDENT)
-    return AutoTokenizer.from_pretrained(INDEPENDENT), model.eval()
+    model_id, revision, _ = OUTSIDE[name]
+    model = AutoModelForSequenceClassification.from_pretrained(model_id, revision=revision, use_safetensors=True
+                                                               if name == "tabularis" else None)
+    return AutoTokenizer.from_pretrained(model_id, revision=revision), model.eval()
 
 
-def independent_scores(texts: list[str], words: int = 300) -> list[float]:
-    """A second detector's AI chance for each text, averaged over chunks, since it reads about 512 tokens."""
+def independent_scores(texts: list[str], words: int = 300, name: str = INDEPENDENT) -> list[float]:
+    """An outside detector's AI chance for each text, averaged over chunks, since it reads about 512 tokens. Text is
+    normalized first, as Tabularis's card advises for adversarial input."""
     import torch
 
-    tokenizer, model = _independent()
-    at = {name.lower(): i for i, name in model.config.id2label.items()}["chatgpt"]
+    from opendetector.normalize import normalize
+
+    tokenizer, model = _independent(name)
+    label = OUTSIDE[name][2]
+    at = label if isinstance(label, int) else {n.lower(): i for i, n in model.config.id2label.items()}[label]
     scores = []
     for text in texts:
-        split = text.split()
+        split = normalize(text)[0].split()
         chunks = [" ".join(split[i:i + words]) for i in range(0, len(split), words)]
         encoded = tokenizer(chunks, padding=True, truncation=True, max_length=512, return_tensors="pt")
         with torch.no_grad():
