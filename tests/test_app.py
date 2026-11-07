@@ -1187,3 +1187,50 @@ def test_each_gemini_key_shows_the_requests_it_has_left_today(stub_model, monkey
     bars = [(bar.proto.text, bar.proto.value) for bar in at.get("progress")]
     assert bars == [("gemini-3.8-flash · 15 of 20 left", 75), ("gemini-3.8-flash · 20 of 20 left", 100),
                     ("gemini-3.5-flash-lite · out of quota until the reset", 0)]
+
+
+PLAIN = "The bees behind the shed stung somebody every summer, and everyone laughed about it later. "
+
+
+class SharedClassifier(KeywordClassifier):
+    """As AI-like as the share of its sentences that say "delve", so one passage revised moves its window."""
+
+    def window_logits(self, texts):
+        return np.array([16.0 * t.count("delve") / max(1, t.count(". ") + t.endswith(".")) - 8.0 for t in texts])
+
+
+def test_detect_revises_every_likely_ai_sentence_in_place_and_can_undo(stub_model, tmp_path, monkeypatch):
+    import opendetector.engines as engines
+
+    monkeypatch.setattr(engines, "build_engine", lambda name, config: SharedClassifier(name))
+    stub_model.echo = {f"B{n}": PLAIN * 6 for n in range(1, 40)}
+    at, result = analyze(AI * 30, profile="slim")
+    assert result["report"].verdict == "likely_ai"
+    assert not any(b.label.startswith("Revise flagged passages in the Lab") for b in at.button)
+    revise = next(b for b in at.button if b.label.startswith("Revise all Likely AI"))
+    assert next(b for b in at.button if b.label.startswith("Revise selected")).disabled  # nothing picked yet
+    at.session_state["keep:redteam:panel_is_ai"] = True
+    revise.click()
+    at.run()
+    assert not at.exception, at.exception
+    revised = at.session_state["keep:detect:text"]
+    assert revised.count("delve") < 10 and "bees behind the shed" in revised
+    assert at.session_state["keep:detect:source"] == "Paste text"
+    assert at.session_state["detect:result"]["report"].verdict == "likely_human", "analyzed again in place"
+    done = at.session_state["detect:revised"]
+    assert done["before"] > 0.9 > 0.1 > done["after"] and done["requests"] >= 1
+    assert any("Revised" in success.value for success in at.success)
+    row = json.loads((tmp_path / "local_redteam.jsonl").read_text().splitlines()[-1])
+    assert row["label"] == 1 and row["attack"] == "detect_revise_likely_ai" and row["text"] == revised
+
+    button(at, "Undo").click()
+    at.run()
+    assert not at.exception, at.exception
+    assert "delve" in at.session_state["keep:detect:text"]
+    assert at.session_state["detect:result"]["report"].verdict == "likely_ai"
+
+
+def test_detect_offers_no_revising_on_a_public_deploy(monkeypatch):
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
+    at, _ = analyze(AI * 30, profile="slim")
+    assert not any(b.label.startswith("Revise") for b in at.button)

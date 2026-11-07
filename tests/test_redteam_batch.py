@@ -999,3 +999,63 @@ def test_revise_anchored_goes_on_when_one_request_fails():
     with pytest.raises(RuntimeError):
         revise_anchored({"a": tidy}, {}, lambda chunks: [score(c) for c in chunks], score, down, str.strip,
                         rounds=1, candidates=2, facts=False)
+
+
+def _scored_sentences(text, scores):
+    from opendetector.detector import SentenceScore
+    from opendetector.segment import split_sentences
+
+    return [SentenceScore(s.start, s.end, text[s.start:s.end], p)
+            for s, p in zip(split_sentences(text), scores, strict=True)]
+
+
+def test_picked_sentences_become_passages_that_stay_inside_their_paragraphs():
+    from eval.redteam_batch import selected_spans
+
+    text = "One is here. Two is here. Three is here.\n\nFour is here. Five is here."
+    sentences = _scored_sentences(text, [0.1, 0.9, 0.9, 0.9, 0.1])
+    spans = selected_spans(text, sentences, [1, 2, 3])
+    assert [text[a:b] for a, b in spans] == ["Two is here. Three is here.", "Four is here."]
+    assert selected_spans(text, sentences, [0, 2]) == [(0, 12), (26, 40)], "a gap between picks splits them"
+    assert selected_spans(text, sentences, [9, -1]) == []
+    # A long run is cut at a sentence end, so each passage fits one borrowed sentence plan.
+    assert len(selected_spans(text, sentences, [0, 1, 2], words=6)) == 2
+
+
+def test_revise_selected_rewrites_only_the_picked_passages():
+    from collections import Counter
+
+    from eval.redteam_batch import revise_selected
+
+    keep = "My brother laughed at me from the bench all afternoon, and I deserved most of it."
+    tidy = ("The acquisition of a first skateboard in August marked the beginning of a learning journey that "
+            "involved numerous falls.")
+    plain = "The board came in August, and the falls came most days that first week, which hurt more than it looks."
+    text = f"{keep} {tidy}\n\n{tidy.replace('August', 'May')}"
+    second = text.rindex("The acquisition")
+    asked = []
+
+    def ask(prompt, pending):
+        asked.extend(job["previous"] for job in pending)
+        return json.dumps({"blocks": [{"id": f"B{n}", "text": plain.replace("August", "May")
+                                       if "May" in job["previous"] else plain} for n, job in enumerate(pending, 1)]})
+
+    def score(chunk):
+        return min(0.95, 0.02 + 0.45 * chunk.count("acquisition"))
+
+    stats = Counter()
+    new, history, local = revise_selected(text, [(len(keep) + 1, len(keep) + 1 + len(tidy))],
+                                          lambda chunks: [score(c) for c in chunks], score, ask, str.strip,
+                                          rounds=3, candidates=2, facts=True, stats=stats)
+    assert new == f"{keep} {plain}\n\n{tidy.replace('August', 'May')}", "the unpicked passage stays word for word"
+    assert asked[0] == tidy and not any("May" in previous for previous in asked), "only the picked passage is asked"
+    assert history[0] == pytest.approx(0.92) and history[-1] == pytest.approx(0.47)
+    assert local == pytest.approx([0.47]), "its neighbour still reads as AI around it"
+    assert stats["kept"] == 1
+
+    # A round the whole text reads as worse is undone.
+    new, history, _ = revise_selected(text, [(second, len(text))], lambda chunks: [0.01 if "falls came" in c else 0.9
+                                                                                  for c in chunks],
+                                      lambda whole: 0.95 if "falls came" in whole else 0.9, ask, str.strip, rounds=2,
+                                      candidates=1, facts=False)
+    assert new == text and history == [0.9, 0.9]

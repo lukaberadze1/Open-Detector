@@ -99,6 +99,9 @@ CSS = """
   text-decoration-line: underline; text-decoration-style: solid; text-decoration-color: var(--od-ai); }
 .od-hl:hover { box-shadow: 0 0 0 1.5px color-mix(in srgb, currentColor 45%, transparent); }
 .od-hl.od-flash { animation: od-flash 1.6s ease-out; }
+.od-pickable .od-hl { cursor: pointer; }
+.od-hl.od-picked { box-shadow: 0 0 0 2px var(--od-accent); background-color: color-mix(in srgb, var(--od-accent) 16%,
+  transparent); }
 @keyframes od-flash { 0%, 35% { box-shadow: 0 0 0 3px var(--od-accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
 
 .od-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 1.2rem; font-size: 0.86rem;
@@ -395,10 +398,11 @@ def _runs(sentences: list, bands: list[str]) -> list[tuple[int, int, str]]:
 
 
 def highlighted_text(text: str, sentences: list, bands: list[str], thresholds: dict[str, float],
-                     flagged_only: bool = False) -> str:
+                     flagged_only: bool = False, pickable: bool = False) -> str:
     """The text as HTML, every sentence tinted by its band and shaded by how deep into it its score
     sits, under a legend and a map of the whole text. Hovering shows a sentence's score; clicking the
-    map jumps to that stretch. Likely human sentences stay plain when `flagged_only` is set."""
+    map jumps to that stretch. Likely human sentences stay plain when `flagged_only` is set. `pickable`
+    leaves out the script, for pickable_highlights, whose own script also lets the reader pick sentences."""
     root = "od-" + hashlib.sha1(f"{text}{bands}{flagged_only}".encode()).hexdigest()[:10]
     words = [max(count_words(sentence.text), 1) for sentence in sentences]
     total = sum(words)
@@ -412,10 +416,10 @@ def highlighted_text(text: str, sentences: list, bands: list[str], thresholds: d
         if band in BANDS and not (flagged_only and band == "likely_human"):
             low, high = SHADES[band]
             alpha = low + (high - low) * _depth(sentence.ai_probability, band, thresholds)
-            parts.append(f'<span class="od-hl {BANDS[band]}" id="{root}-s{number}" style="--a:{alpha:.0f}%" '
-                         f'data-tip="{tip}">{body}</span>')
+            parts.append(f'<span class="od-hl {BANDS[band]}" id="{root}-s{number}" data-n="{number}" '
+                         f'style="--a:{alpha:.0f}%" data-tip="{tip}">{body}</span>')
         else:
-            parts.append(f'<span class="od-hl" id="{root}-s{number}" data-tip="{tip}">{body}</span>')
+            parts.append(f'<span class="od-hl" id="{root}-s{number}" data-n="{number}" data-tip="{tip}">{body}</span>')
         cursor = sentence.end
     parts.append(html.escape(text[cursor:]).replace("\n", "<br>"))
 
@@ -423,8 +427,9 @@ def highlighted_text(text: str, sentences: list, bands: list[str], thresholds: d
     for band in reversed(BANDS):
         share = sum(w for w, b in zip(words, bands, strict=True) if b == band) / total
         keys.append(f'<span class="od-key"><i class="{BANDS[band]}"></i>{VERDICTS[band][0]} <b>{share:.0%}</b></span>')
-    legend = (f'<div class="od-legend">{"".join(keys)}<span class="od-hint">share of the words · hover a sentence '
-              "for its score, click the map to jump</span></div>")
+    hint = ("click sentences to pick them for revising, shift-click for a run" if pickable
+            else "hover a sentence for its score, click the map to jump")
+    legend = f'<div class="od-legend">{"".join(keys)}<span class="od-hint">share of the words · {hint}</span></div>'
 
     runs = []
     for first, last, band in _runs(sentences, bands):
@@ -438,8 +443,109 @@ def highlighted_text(text: str, sentences: list, bands: list[str], thresholds: d
     page_map = (f'<div class="od-map" role="img" aria-label="Map of the text by sentence band">{"".join(runs)}</div>'
                 '<div class="od-ends"><span>Start</span><span>End</span></div>')
 
-    return (f'<div id="{root}">{legend}{page_map}<div class="od-text">{"".join(parts)}</div>'
-            f'<div class="od-tip" hidden></div></div><script>{HIGHLIGHT_JS.replace("ROOT", root)}</script>')
+    kind = ' class="od-pickable"' if pickable else ""
+    body = (f'<div id="{root}"{kind}>{legend}{page_map}<div class="od-text">{"".join(parts)}</div>'
+            '<div class="od-tip" hidden></div></div>')
+    return body if pickable else body + f'<script>{HIGHLIGHT_JS.replace("ROOT", root)}</script>'
+
+
+# The highlights as a Streamlit component (st.components.v2, in the page itself, so the app's styles apply): the
+# tooltip and map of HIGHLIGHT_JS, and a click on a sentence picks it or lets it go, shift-click a run from the last
+# one clicked. The picked sentence numbers go back to Python as the "selected" state, and stay picked across reruns
+# by the component's key. A click that ends a drag to select words for copying picks nothing.
+PICK_JS = """
+const picked = new Map();
+
+export default function (component) {
+  const { data, key, parentElement, setStateValue } = component;
+  let host = parentElement.querySelector(":scope > .od-pick-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.className = "od-pick-host";
+    parentElement.appendChild(host);
+  }
+  if (host.dataset.digest !== data.digest) {
+    host.innerHTML = data.html;
+    host.dataset.digest = data.digest;
+  }
+  if (!picked.has(key)) picked.set(key, { chosen: new Set(data.selected || []), last: null });
+  const memory = picked.get(key);
+  const paint = () => host.querySelectorAll("[data-n]").forEach((el) => {
+    el.classList.toggle("od-picked", memory.chosen.has(Number(el.dataset.n)));
+    el.setAttribute("aria-pressed", memory.chosen.has(Number(el.dataset.n)) ? "true" : "false");
+  });
+  paint();
+  const tip = host.querySelector(".od-tip");
+  const move = (event) => {
+    const target = event.target.closest("[data-tip]");
+    if (!target) { tip.hidden = true; return; }
+    if (tip.textContent !== target.dataset.tip) tip.textContent = target.dataset.tip;
+    tip.hidden = false;
+    const below = event.clientY + 18 + tip.offsetHeight < window.innerHeight;
+    tip.style.left = Math.max(8, Math.min(event.clientX + 12, window.innerWidth - tip.offsetWidth - 8)) + "px";
+    tip.style.top = (below ? event.clientY + 18 : event.clientY - tip.offsetHeight - 12) + "px";
+  };
+  const leave = () => { tip.hidden = true; };
+  // Shift-click would extend the browser's text selection; here it picks a run of sentences instead.
+  const down = (event) => { if (event.shiftKey && event.target.closest("[data-n]")) event.preventDefault(); };
+  const click = (event) => {
+    const run = event.target.closest("[data-jump]");
+    if (run) {
+      const sentence = document.getElementById(run.dataset.jump);
+      if (!sentence) return;
+      sentence.scrollIntoView({ block: "center", behavior: "smooth" });
+      sentence.classList.remove("od-flash");
+      void sentence.offsetWidth;
+      sentence.classList.add("od-flash");
+      return;
+    }
+    const sentence = event.target.closest("[data-n]");
+    if (!sentence) return;
+    if (event.shiftKey) window.getSelection().removeAllRanges();
+    else if (String(window.getSelection()).trim()) return;  // the end of a drag to copy words
+    const number = Number(sentence.dataset.n);
+    if (event.shiftKey && memory.last !== null) {
+      const on = !memory.chosen.has(number);
+      const [low, high] = [Math.min(memory.last, number), Math.max(memory.last, number)];
+      for (let n = low; n <= high; n++) on ? memory.chosen.add(n) : memory.chosen.delete(n);
+    } else if (memory.chosen.has(number)) {
+      memory.chosen.delete(number);
+    } else {
+      memory.chosen.add(number);
+    }
+    memory.last = number;
+    paint();
+    setStateValue("selected", [...memory.chosen].sort((a, b) => a - b));
+  };
+  host.addEventListener("mousemove", move);
+  host.addEventListener("mouseleave", leave);
+  host.addEventListener("click", click);
+  host.addEventListener("mousedown", down);
+  window.addEventListener("scroll", leave, { capture: true, passive: true });
+  return () => {
+    host.removeEventListener("mousemove", move);
+    host.removeEventListener("mouseleave", leave);
+    host.removeEventListener("click", click);
+    host.removeEventListener("mousedown", down);
+    window.removeEventListener("scroll", leave, { capture: true });
+  };
+}
+"""
+_picker = None
+
+
+def pickable_highlights(page: str, key: str) -> list[int]:
+    """`page` (highlighted_text with `pickable`) drawn so the reader can pick sentences by clicking them. Gives the
+    picked sentences' indexes, from 0, in order. A new `key` starts with none picked."""
+    global _picker
+    if _picker is None:
+        from streamlit.components.v2 import component
+
+        _picker = component("od_pickable_highlights", js=PICK_JS, isolate_styles=False)
+    digest = hashlib.sha1(page.encode()).hexdigest()
+    result = _picker(data={"html": page, "digest": digest}, key=key, default={"selected": []},
+                     on_selected_change=lambda: None)
+    return [number - 1 for number in (result.get("selected") or []) if isinstance(number, int) and number > 0]
 
 
 def _clip(text: str, limit: int = 160) -> str:

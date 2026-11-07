@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import html
 import os
+import time
 
 import streamlit as st
 
@@ -22,6 +23,7 @@ from .components import (
     highlighted_text,
     keep,
     persistent_upload,
+    pickable_highlights,
     score_bars,
     sentence_chart,
     verdict_badge,
@@ -35,6 +37,9 @@ MIN_WORDS = 150  # DetectorConfig.min_words, for the hint under the input
 RESULT = "detect:result"
 # Set by the Adversarial Lab to send a labelled challenge sample here for detector analysis.
 AUTORUN = "detect:autorun"
+PENDING = "detect:pending_text"  # text to put in Source and analyze at the top of the next run (a revise, an undo)
+REVISED = "detect:revised"  # what the last revise did, with the text before it for Undo
+PICK_ROUND = "detect:pick_round"  # bumped to start the picked sentences afresh
 
 
 def _digest(text: str) -> str:
@@ -296,11 +301,111 @@ def _details(result: dict) -> None:
                f"letters, and folded {norm.compatibility_chars} compatibility characters.")
 
 
-def show_result(result: dict, digest: str | None = None) -> None:
-    """The verdict, the engines' readings and the tabs. With `digest`, says when the input has moved on."""
+def _revising_offered() -> bool:
+    """Revising is a drafting aid: never on a public deploy, nor where the Lab is switched off."""
+    return not style.public() and os.environ.get("OPENDETECTOR_REDTEAM", "").lower() != "off"
+
+
+def _undo(text: str) -> None:
+    st.session_state[PENDING] = text
+    st.session_state.pop(REVISED, None)
+
+
+def _clear_picks() -> None:
+    st.session_state[PICK_ROUND] = st.session_state.get(PICK_ROUND, 0) + 1
+
+
+def _revised_note(result: dict) -> None:
+    """What the last revise did, over the result of the text it made, with Undo."""
+    done = st.session_state.get(REVISED)
+    if not done or done["digest"] != result["digest"]:
+        return
+    if not done["changed"]:
+        st.info(f"No rewrite of the {done['passages']} passage{'s' * (done['passages'] != 1)} read as more human "
+                f"where it stands, so the text is as it was ({done['requests']} requests).", icon=":material/info:")
+        return
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.success(f"Revised {done['passages']} passage{'s' * (done['passages'] != 1)}: the whole text went from "
+                   f"{done['before']:.0%} to {done['after']:.0%} AI likelihood in {done['requests']} requests"
+                   + (f"; {done['still_ai']} still flagged where they stand" if done["still_ai"] else "")
+                   + ". The revised text is in Source." + (" Saved as AI-labelled evaluation data."
+                                                           if done["saved"] else ""),
+                   icon=":material/auto_fix_high:", width="stretch")
+        st.button("Undo", icon=":material/undo:", on_click=_undo, args=(done["undo"],), key="detect:undo")
+
+
+def _revise_bar(result: dict, picked: list[int]) -> None:
+    """Revise the picked sentences, or every Likely AI or flagged one, in place: the result is analyzed again here,
+    so there's no going back and forth with the Lab. Writes with the Lab's style profile and models."""
+    from . import redteam
+
+    report, bands = result["report"], result["bands"]
+    likely_ai = [i for i, band in enumerate(bands) if band == "likely_ai"]
+    flagged = [i for i, band in enumerate(bands) if band in ("likely_ai", "needs_review")]
+    choices = {"picked": picked, "likely_ai": likely_ai, "flagged": flagged}
+    clicked = None
+    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+        if st.button(f"Revise selected ({len(picked)})", type="primary", icon=":material/auto_fix_high:",
+                     disabled=not picked, key="detect:revise:picked",
+                     help="Click sentences in the text to pick them, shift-click to pick a run."):
+            clicked = "picked"
+        if st.button(f"Revise all Likely AI ({len(likely_ai)})", icon=":material/smart_toy:", disabled=not likely_ai,
+                     key="detect:revise:likely_ai", help="Every sentence highlighted as Likely AI."):
+            clicked = "likely_ai"
+        if len(flagged) > len(likely_ai) and st.button(
+                f"Revise all flagged ({len(flagged)})", icon=":material/flag:", key="detect:revise:flagged",
+                help="Every sentence highlighted as Likely AI or Needs review."):
+            clicked = "flagged"
+        if picked:
+            st.button("Clear selection", type="tertiary", icon=":material/close:", on_click=_clear_picks,
+                      key="detect:revise:clear")
+    with st.expander("Revise settings · style profile and model", icon=":material/tune:"):
+        st.caption("Each picked passage gets several rewrites a round in the style profile's voice, and the one "
+                   "reading most human where it stands is kept if it beats the original and keeps its names and "
+                   f"numbers, for up to {redteam.REVISE_ROUNDS} rounds. These are the Adversarial Lab's settings.")
+        plan, conn = redteam.revise_settings(result["profile"])
+    if clicked is None:
+        return
+    if problem := redteam.key_problem(conn):
+        st.error(problem, icon=":material/key_off:")
+        return
+    status = st.status("Scoring the passages where they stand…", expanded=False)
+    started = time.monotonic()
+
+    def progress(now: dict) -> None:
+        stage = now.get("stage")
+        if stage == "asking":
+            step = (f"waiting for {now['tries']} rewrites of each of {now['passages']} passage"
+                    f"{'s' * (now['passages'] != 1)} from the model")
+        elif stage == "whole":
+            step = "scoring the whole text"
+        else:
+            step = f"the detector has read the rewrites of {now['tested']} of {now['passages']} passages"
+        status.update(label=f"Round {now['round']} of up to {now['rounds']}: {step} · whole text at "
+                            f"{now['likelihood']:.0%} · {redteam.duration(time.monotonic() - started)} so far")
+
+    try:
+        done = redteam.revise_chosen(plan, conn, report.text, report.sentences, choices[clicked], clicked, progress)
+    except (redteam.APIError, OSError, ValueError) as exc:
+        status.update(label="Revising stopped", state="error")
+        st.error(str(exc), icon=":material/error:")
+        return
+    status.update(label="Revised", state="complete")
+    st.session_state[REVISED] = {**done, "undo": report.text, "digest": _digest(done["text"])}
+    st.session_state[PENDING] = done["text"]
+    _clear_picks()
+    st.rerun()
+
+
+def show_result(result: dict, digest: str | None = None, revise: bool = False) -> None:
+    """The verdict, the engines' readings and the tabs. With `digest`, says when the input has moved on. With
+    `revise`, sentences can be picked in the highlights and revised in place (_revise_bar)."""
     report = result["report"]
-    offered = not style.public() and os.environ.get("OPENDETECTOR_REDTEAM", "").lower() != "off"
-    if offered and report.sentences and st.button("Revise flagged passages in the Lab", icon=":material/rule:"):
+    offered = _revising_offered()
+    revise = revise and offered and bool(report.sentences) and report.ai_probability is not None
+    if revise:
+        _revised_note(result)
+    elif offered and report.sentences and st.button("Revise flagged passages in the Lab", icon=":material/rule:"):
         st.session_state["keep:redteam:revise_text"] = report.text
         st.switch_page(nav.redteam_page())
     with st.container(horizontal=True, vertical_alignment="center"):
@@ -343,9 +448,16 @@ def show_result(result: dict, digest: str | None = None) -> None:
                     mode = st.segmented_control("Highlight", HIGHLIGHTS, key=keep("keep:detect:highlight",
                                                                                   HIGHLIGHTS[0]),
                                                 required=True, label_visibility="collapsed")
-                    st.html(highlighted_text(report.text, report.sentences, result["bands"], report.thresholds,
-                                             flagged_only=mode == HIGHLIGHTS[1]),
-                            unsafe_allow_javascript=True)
+                    page = highlighted_text(report.text, report.sentences, result["bands"], report.thresholds,
+                                            flagged_only=mode == HIGHLIGHTS[1], pickable=revise)
+                    if revise:
+                        bar = st.container()
+                        picked = pickable_highlights(
+                            page, f"detect:pick:{result['digest'][:16]}:{st.session_state.get(PICK_ROUND, 0)}")
+                        with bar:
+                            _revise_bar(result, picked)
+                    else:
+                        st.html(page, unsafe_allow_javascript=True)
                     st.caption("Stronger shades sit deeper in their band. Likely AI is underlined, Needs review "
                                "dotted. Each sentence takes the average score of the ~100-word windows around "
                                "it, so sentences next to a strongly AI-like passage get pulled toward it. "
@@ -375,6 +487,10 @@ def show_result(result: dict, digest: str | None = None) -> None:
 
 
 def render() -> None:
+    if (pending := st.session_state.pop(PENDING, None)) is not None:  # before Source draws its text box
+        st.session_state["keep:detect:source"] = SOURCES[0]
+        st.session_state["keep:detect:text"] = pending
+        st.session_state[AUTORUN] = True
     profile = models.active_profile()
     names = [models.ENGINES[name][0] for name in models.engines_of(profile)]
     on = sum(st.session_state.get(f"keep:detect:engine:{name}", True) for name in models.engines_of(profile)) \
@@ -405,7 +521,7 @@ def render() -> None:
                 _analyze(text, source, sections, profile, enabled, sentences)
 
         if result := st.session_state.get(RESULT):
-            show_result(result, _digest(text))
+            show_result(result, _digest(text), revise=True)
         else:
             st.html('<div class="od-empty"><b>No result yet</b>Paste at least 150 words of prose or upload a '
                     "document on the left, then press Analyze. The verdict, each engine's reading and the "

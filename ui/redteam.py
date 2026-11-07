@@ -85,6 +85,8 @@ from eval.redteam_batch import (
     chunk_scorer,
     revise_anchored,
     revise_flagged,
+    revise_selected,
+    selected_spans,
     style_guard,
     rewrite_measures,
     sample_prompt,
@@ -867,9 +869,12 @@ def _scope(plan: Plan) -> None:
     )
 
 
-def _writing(plan: Plan) -> None:
-    """The Writing panel: length and style profile."""
-    if plan.batch:
+def _writing(plan: Plan, brief: bool = False) -> None:
+    """The Writing panel: length and style profile. `brief` leaves out the length and adding a profile, for the
+    Detect page's revise settings, which sit in an expander (Streamlit can't nest another in it)."""
+    if brief:
+        pass
+    elif plan.batch:
         plan.match_existing_lengths = st.toggle("Match the length of the existing text",
                                                 key=keep("keep:redteam:match", True))
         plan.answer_words = st.slider(
@@ -904,6 +909,8 @@ def _writing(plan: Plan) -> None:
         _writer_shapes(plan)
     else:
         st.caption("No style profile yet, so samples use the model's own style. Add one below to write in it.")
+    if brief:
+        return
     with st.expander("Add your own style profile", icon=":material/upload:"):
         st.file_uploader(
             "Style profile (.json)", type="json", key="redteam:style_upload", on_change=_add_style_profile,
@@ -1040,6 +1047,70 @@ def _revise_existing(plan: Plan, conn: Connection, text: str, above: float, loca
                 **_settings(plan)}, ensure_ascii=False) + "\n")
     st.session_state[REVISE_RESULT] = {"text": new, "before": first.ai_probability, "after": after, "saved": saved,
                                        "flagged": flagged, "requests": sent, "changed": new != first.text}
+
+
+def revise_settings(profile: str) -> tuple[Plan, Connection]:
+    """What a revise from the Detect page writes with, drawn into the current container: the style profile and its
+    options, holding names and numbers, and Model & connection. They are the Lab's own "keep:" widgets, so a change
+    on either page holds on both. Never on a public deploy: revising is a drafting aid."""
+    load_env()
+    plan = Plan("", None, [], [], [], "revise", profile)
+    _writing(plan, brief=True)
+    plan.mask_facts = st.toggle(
+        "Hold names and numbers exactly", key=keep("keep:redteam:mask_facts", False),
+        help="Names, numbers, citations and links go to the model as placeholders and come back as they were.")
+    st.toggle("The source is AI text", key=keep("keep:redteam:panel_is_ai", False),
+              help="Turn this on only for text an AI wrote. Then each revision is saved as AI-labelled evaluation "
+                   "data; otherwise nothing is saved.")
+    st.divider()
+    conn = _connection()
+    return plan, conn
+
+
+def revise_chosen(plan: Plan, conn: Connection, text: str, sentences: list, chosen: list[int], how: str,
+                  progress=None) -> dict:
+    """Revise the sentences of `text` a reader picked on the Detect page (`chosen`, indexes into the detector's
+    `sentences` of it) and nothing else, with redteam_batch.revise_selected, and save the result as AI data only if
+    the reader says the source is AI text. `how` names the choice in the saved row's attack. Gives the new text,
+    the whole text's AI likelihood before and after, the passages tried and those still flagged where they stand
+    (Needs review or Likely AI, read with the text around them), and the requests sent."""
+    detector = models.get_detector(plan.profile)
+    spans = selected_spans(text, sentences, chosen)
+    system = (style_instructions(load_style_profile(plan.style_path), plan.register, *writer_samples(plan))
+              if plan.use_profile else None)
+    model, sent = conn.model, 0
+
+    def ask(prompt: str, jobs: list[dict]) -> str:
+        nonlocal model, sent
+        sent += 1
+        reply, model, _ = generate_with_fallback(
+            conn.base_url, conn.credentials, _model_order(plan, conn), prompt, plan.temperature, system,
+            conn.local_url, conn.local_model, answer_token_limit(sum(count_words(job["previous"]) for job in jobs)),
+            thinking=plan.thinking, json_schema=GROUP_SCHEMA, timeout=60 + 15 * len(jobs), sampling=plan.sampling)
+        return reply
+
+    new, history, local = revise_selected(
+        text, spans, chunk_scorer(detector), CachedScorer(detector), ask,
+        styled_clean(plan.style_path, plan.register, swaps=True), plan.shapes or [], REVISE_ROUNDS,
+        prompt=REVISE_KEEPING, facts=True, candidates=REVISE_CANDIDATES, fits=_style_fits(plan, text),
+        mask=plan.mask_facts, progress=progress)
+    before, after = history[0], history[-1]
+    saved = new != text and bool(st.session_state.get("keep:redteam:panel_is_ai"))
+    if saved:
+        key = hashlib.sha256(text.encode()).hexdigest()[:16]
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        store = _store()
+        store.output.parent.mkdir(parents=True, exist_ok=True)
+        with store.output.open("a", encoding="utf-8") as output:
+            output.write(json.dumps({
+                "id": f"local-{stamp}-{key}-{model}", "text": new, "label": 1, "dataset": "local_redteam",
+                "model": model, "attack": f"detect_revise_{how}", "group_key": key, "ai_probability": after,
+                "baseline_ai_probability": before, "detector_profile": plan.profile, "revise_rounds": history,
+                **_settings(plan)}, ensure_ascii=False) + "\n")
+    return {"text": new, "before": before, "after": after, "passages": len(spans),
+            "still_ai": sum(score is not None and detector.verdict(score) != "likely_human" for score in local),
+            "requests": sent,
+            "saved": saved, "changed": new != text}
 
 
 def _revise_panel(plan: Plan, conn: Connection) -> None:
@@ -1522,6 +1593,11 @@ def _problem(plan: Plan, conn: Connection) -> str | None:
         return "Write some instructions, paste some text or upload a document first."
     if plan.task == "section" and plan.target_section is None:
         return "Choose a document section to rewrite."
+    return key_problem(conn)
+
+
+def key_problem(conn: Connection) -> str | None:
+    """Why the connection can't write, if it can't: no key for a hosted model."""
     if not conn.api_key and public():
         return "Paste your Gemini API key under Model & connection first."
     if not conn.api_key and not conn.base_url.strip().startswith(("http://localhost", "http://127.0.0.1")):

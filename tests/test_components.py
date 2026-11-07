@@ -56,3 +56,11 @@ def test_charts_build_and_skip_when_nothing_was_scored():
     spec = score_bars(rows, THRESHOLDS).to_dict()
     assert [row["key"] for row in next(iter(spec["datasets"].values()))] == ["Slide 1", "Slide 1 (2)"]
     assert score_bars([{"label": "Slide 1", "probability": None, "verdict": None}], THRESHOLDS) is None
+
+
+def test_pickable_highlights_number_every_sentence_and_carry_no_script_of_their_own():
+    page = highlighted_text(TEXT, sentences(), BANDS, THRESHOLDS, pickable=True)
+    assert re.findall(r'data-n="(\d+)"', page) == ["1", "2", "3", "4"]
+    assert "<script>" not in page and 'class="od-pickable"' in page
+    assert "click sentences to pick them" in page
+    assert "<script>" in highlighted_text(TEXT, sentences(), BANDS, THRESHOLDS)
