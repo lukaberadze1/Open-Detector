@@ -488,6 +488,7 @@ def run_trial(trial: dict, jobs: list[dict], plan, system: str | None, api_key: 
                 texts[job["key"]] = follow_original(plan, job, clean(ask(f"{prompt}\n\n{note}", timeout=60)))
     measured = [rewrite_measures(job["previous"], texts[job["key"]]) for job in jobs]
     return {**trial, "blocks": len(jobs), "text": "\n\n".join(texts[job["key"]] for job in jobs),
+            "texts": {job["key"]: texts[job["key"]] for job in jobs},
             "seconds": round(seconds, 2), "requests": requests, "retried": retried, "left_out": left_out,
             "tokens": dict(tokens), "copied": sum(copied(job["previous"], texts[job["key"]]) for job in jobs),
             **{name: _mean([block[name] for block in measured if name in block])

@@ -21,21 +21,33 @@ import pandas as pd
 from opendetector.combiner import HUMAN_CUTOFF
 from opendetector.metrics import wilson_interval
 
-METHOD = "sentences"
+METHODS = ("anchored", "sentences")  # revise_anchored, the page's loop since 6 Nov, or revise_blocks before it
 FACTS_KEPT = 70  # percent of names and numbers; a hand-set line, so a pass can't be bought by losing them
-VARIANTS = ("+drafts", "+roundtrip", "+clauses", "+freetrip", "+masked")
+VARIANTS = ("+drafts", "+roundtrip", "+clauses", "+freetrip", "+masked", "+anchored")
 
 
 def is_baseline(style: str) -> bool:
     return not any(variant in style for variant in VARIANTS)
 
 
+def revised(row: dict) -> dict | None:
+    """The revision a run made, whichever loop made it."""
+    return next((row[method] for method in METHODS if method in row), None)
+
+
 def final(row: dict) -> float:
-    return row[METHOD]["history"][-1]
+    return revised(row)["history"][-1]
+
+
+def rounds_to_line(row: dict) -> int | None:
+    """The revision rounds a run took to reach HUMAN_CUTOFF, 0 for a first draft already there; None if it never did.
+    Every round can wear the meaning down, so fewer is better as well as cheaper."""
+    return next((number for number, value in enumerate(revised(row)["history"])
+                 if value is not None and value <= HUMAN_CUTOFF), None)
 
 
 def passed(row: dict) -> bool:
-    facts = row[METHOD].get("facts")
+    facts = revised(row).get("facts")
     return final(row) <= HUMAN_CUTOFF and (facts is None or facts >= FACTS_KEPT)
 
 
@@ -73,16 +85,18 @@ def paired(base: list[dict], other: list[dict]) -> str:
 def setup_line(model: str, name: str, rows: list[dict], outside: dict[str, float]) -> str:
     ends = [final(row) for row in rows]
     means = doc_means(rows)
-    facts = [row[METHOD]["facts"] for row in rows if row[METHOD].get("facts") is not None]
+    facts = [revised(row)["facts"] for row in rows if revised(row).get("facts") is not None]
     passes = sum(map(passed, rows))
     low, high = wilson_interval(passes, len(rows))
+    reached = [number for row in rows if (number := rounds_to_line(row)) is not None]
     before = [outside[row["draft"]] for row in rows if row.get("draft") in outside]
-    after = [outside[row[METHOD]["text"]] for row in rows if row[METHOD]["text"] in outside]
+    after = [outside[revised(row)["text"]] for row in rows if revised(row)["text"] in outside]
     requests = [row.get("requests", 0) + row.get("revise_requests", 0) + row.get("attack_requests", 0) for row in rows]
     return (f"| {model} | {name} | {len(rows)} | {len(means)} | {100 * mean(row['start'] for row in rows):.0f} | "
             f"{100 * median(ends):.0f} | {sum(end <= HUMAN_CUTOFF for end in ends)} | "
             f"{passes} ({low:.0%} to {high:.0%}) | {sum(value <= HUMAN_CUTOFF for value in means.values())} | "
             f"{mean(facts) if facts else 0:.0f} | "
+            f"{median(reached) if reached else '-'} | "
             f"{f'{100 * mean(before):.0f} > {100 * mean(after):.0f}' if before and after else '-'} | "
             f"{mean(requests):.0f} | {mean(row.get('seconds', 0) for row in rows) / 60:.1f} |")
 
@@ -113,7 +127,7 @@ def rejections(rows: list[dict]) -> list[str]:
     for document, group in sorted(groups.items(), key=lambda item: -mean(final(row) for row in item[1])):
         counts = Counter()
         for row in group:
-            counts.update(row[METHOD].get("outcomes", {}))
+            counts.update(revised(row).get("outcomes", {}))
         kinds = ", ".join(f"{key.split(':')[1]} {value}" for key, value in counts.most_common() if ":" in key)
         total = counts["unchanged"] + counts["facts"] + counts["style"] + counts["scored"] or 1
         lines.append(f"| {document} | {len(group)} | {100 * mean(row['start'] for row in group):.0f} | "
@@ -146,8 +160,9 @@ def scoreboard(rows: list[dict], outside: dict[str, float], math: Path | None = 
              "numbers kept. Independent is a second detector the runs never saw, first draft > final. Compare setups "
              "only within a model.", "",
              "| Model | Setup | Runs | Docs | Draft % | Median end % | At or under the line | Pass "
-             "| Docs under on average | Facts % | Independent % | Requests a run | Minutes a run |",
-             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+             "| Docs under on average | Facts % | Rounds to the line | Independent % | Requests a run "
+             "| Minutes a run |",
+             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     lines += [setup_line(model, style, group, outside)
               for (model, style), group in sorted(setups.items(), key=lambda item: (item[0][0], len(item[0][1])))]
     for model in sorted({model for model, _ in setups}):
@@ -174,21 +189,21 @@ def main() -> None:
     parser.add_argument("--no-independent", action="store_true")
     args = parser.parse_args()
     rows = [json.loads(line) for line in args.results.open(encoding="utf-8")]
-    rows = [row for row in rows if METHOD in row]
+    rows = [row for row in rows if revised(row)]
     if not rows:
         raise SystemExit("no finished runs")
     if args.export:
         with args.export.open("w", encoding="utf-8") as sink:
             for row in rows:
                 if is_baseline(row["style"]):
-                    sink.write(json.dumps({"text": row[METHOD]["text"], "label": 1, "group_key": row["source"],
+                    sink.write(json.dumps({"text": revised(row)["text"], "label": 1, "group_key": row["source"],
                                            "model": row["model"], "attack": row["style"]}) + "\n")
         return
     outside = {}
     if not args.no_independent:
         from eval.bench_math import independent_scores
 
-        texts = sorted({row[METHOD]["text"] for row in rows} | {row["draft"] for row in rows if row.get("draft")})
+        texts = sorted({revised(row)["text"] for row in rows} | {row["draft"] for row in rows if row.get("draft")})
         outside = dict(zip(texts, independent_scores(texts), strict=True))
     args.report.write_text(scoreboard(rows, outside, args.math), encoding="utf-8")
     print(args.report)

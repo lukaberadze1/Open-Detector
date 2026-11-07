@@ -29,6 +29,15 @@ def own_key_usage(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def no_recipe(monkeypatch, tmp_path_factory):
+    """Every test starts with no measured recipe, so the shipped models/recipe.json can't change what a page test
+    sends; a test that wants one writes it to recipe.TABLE."""
+    from eval import recipe
+
+    monkeypatch.setattr(recipe, "TABLE", tmp_path_factory.mktemp("recipe") / "recipe.json")
+
+
+@pytest.fixture(autouse=True)
 def no_gemini_website(monkeypatch):
     """Page tests load the real .env, so without this a failed model would use the owner's Firefox login."""
     monkeypatch.setattr("eval.generate_essays.web_available", lambda: False)

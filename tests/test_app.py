@@ -198,12 +198,12 @@ def test_red_team_sample_is_recorded_as_ai_with_its_score(stub_model, tmp_path):
     assert len(rows) == 1
     assert rows[0] | {"text": None, "id": None, "prompt": None, "group_key": None, "ai_probability": None} == {
         "id": None, "text": None, "label": 1, "dataset": "local_redteam", "domain": "custom_prompt",
-        "model": "stub-model", "attack": "prompt+plain", "group": "ai", "group_key": None, "prompt": None,
+        "model": "stub-model", "attack": "prompt+plain+masked", "group": "ai", "group_key": None, "prompt": None,
         "source_file": None, "target_section": None, "ai_probability": None, "verdict": "likely_ai",
         "calibrated": True, "detector_profile": "slim", "style_match": None, "references": [],
         "thinking": "low", "temperature": 0.8, "style_profile": "plain", "register": None, "examples": 0,
         "structure": None, "restyle": False, "blocks_per_request": None,
-        "attacks": [], "top_p": None, "top_k": None,
+        "attacks": [], "top_p": None, "top_k": None, "masked": True,
     }
     assert rows[0]["ai_probability"] > 0.9
     assert len(list((tmp_path / "exports").glob("AI_REDTEAM_prompt_*.txt"))) == 1
@@ -406,7 +406,7 @@ def test_red_team_writes_in_the_style_profile_picked(stub_model, tmp_path):
 
     assert "tone: breezy" in stub_model.systems[-1]
     row = json.loads((tmp_path / "local_redteam.jsonl").read_text())
-    assert row["attack"] == "prompt+friend"
+    assert row["attack"] == "prompt+friend+masked", "holding names and numbers is on by default"
 
 
 def essay_docx():
@@ -479,9 +479,9 @@ def test_red_team_rewrites_every_block_of_a_word_document(stub_model, tmp_path):
     ]
     rows = [json.loads(line) for line in (tmp_path / "local_redteam.jsonl").read_text().splitlines()]
     assert [(row["domain"], row["attack"], row["label"]) for row in rows] == [
-        ("document_text_block", "full_document+plain", 1),
-        ("document_text_block", "full_document+plain", 1),
-        ("document_combined", "full_document+plain", 1),
+        ("document_text_block", "full_document+plain+masked", 1),
+        ("document_text_block", "full_document+plain+masked", 1),
+        ("document_combined", "full_document+plain+masked", 1),
     ]
     assert all(row["verdict"] == "likely_ai" for row in rows)
     assert all(row["structure"] == "same" and 0 <= row["structure_match"] <= 100 and "words_kept" in row
@@ -859,7 +859,7 @@ def test_points_pick_the_batch_settings(stub_model, monkeypatch):
 def test_settings_can_still_be_set_by_hand(stub_model, monkeypatch):
     measured_table(monkeypatch)
     at = word_document_page()
-    at.toggle(key="keep:redteam:by_hand").set_value(True).run()
+    at.toggle(key="keep:redteam:own_settings").set_value(True).run()
     assert at.slider(key="keep:redteam:group_size").value == 6
     at.select_slider(key="keep:redteam:thinking").set_value("high").run()
     button(at, "Regenerate 2 blocks").click()
@@ -1027,7 +1027,7 @@ def test_the_built_in_human_profile_is_there_first_and_on_a_public_deploy_too(st
     assert not at.exception, at.exception
     assert "how people write" in stub_model.systems[-1] and "Write like a competent person" in stub_model.systems[-1]
     row = json.loads((tmp_path / "local_redteam.jsonl").read_text())
-    assert row["attack"] == "prompt+human_default_profile" and row["style_match"] is not None, (
+    assert row["attack"] == "prompt+human_default_profile+masked" and row["style_match"] is not None, (
         "measured against the built-in yardstick, with no one's writing shipped")
     draft, rewrite, *_ = stub_model.prompts  # the stand-in hands back its draft, so the copy is asked for again
     assert "Write the piece" in draft and "In each rewrite, write it in the sentence plan" in rewrite, (
@@ -1234,3 +1234,47 @@ def test_detect_offers_no_revising_on_a_public_deploy(monkeypatch):
     monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
     at, _ = analyze(AI * 30, profile="slim")
     assert not any(b.label.startswith("Revise") for b in at.button)
+
+
+def measured_recipe(features):
+    """A recipe table where `features` won the runs and kept the meaning, and a plainer setup lost it."""
+    from eval import recipe
+
+    setups = [{"features": [], "runs": 8, "models": ["m"], "loop": "anchored", "under": 0.9, "end": 0.05,
+               "facts": 40, "distance": 1.0, "minutes": 3, "requests": 10, "rounds": 3},
+              {"features": features, "runs": 8, "models": ["m"], "loop": "anchored", "under": 0.8, "end": 0.06,
+               "facts": 80, "distance": 1.0, "minutes": 4, "requests": 12, "rounds": 1.5}]
+    recipe.TABLE.write_text(json.dumps({"setups": setups, "meaning_floor": 70, "min_runs": 4, "runs": 16}))
+
+
+def test_the_priorities_pick_the_measured_features_and_hide_the_hand_settings(stub_model, tmp_path):
+    measured_recipe(["masked", "roundtrip-german"])
+    at = word_document_page()
+    assert not any(t.key == "keep:redteam:mask_facts" for t in at.toggle), "the recipe holds it, not a switch"
+    assert not any(s.key == "keep:redteam:pivot" for s in at.selectbox), "More attacks is under own settings"
+    assert any("Hold names and numbers exactly, Round trip through German" in m.value for m in at.markdown)
+    assert any("keeping 80% of names and numbers" in c.value and "1.5 revision rounds" in c.value
+               for c in at.caption), "the plainer setup got lower, but it lost the meaning"
+    button(at, "Regenerate 2 blocks").click()
+    at.run()
+    assert run_until_batch_ends(at)[0] == "success"
+    rows = [json.loads(line) for line in (tmp_path / "local_redteam.jsonl").read_text().splitlines()]
+    assert rows and all("+masked" in row["attack"] and "roundtrip-german" in row["attack"] for row in rows)
+
+
+def test_writing_my_own_settings_brings_the_switches_back(stub_model):
+    measured_recipe(["masked", "roundtrip-german"])
+    at = word_document_page()
+    at.toggle(key="keep:redteam:own_settings").set_value(True).run()
+    assert at.toggle(key="keep:redteam:mask_facts").value, "holding names and numbers is on by default"
+    assert at.selectbox(key="keep:redteam:pivot").value == "Off"
+    assert not any("Round trip through German" in m.value for m in at.markdown)
+
+
+def test_a_public_deploy_never_takes_the_recipe(stub_model, monkeypatch):
+    monkeypatch.setenv("OPENDETECTOR_PUBLIC", "on")
+    measured_recipe(["masked", "roundtrip-german"])
+    at = word_document_page()
+    assert not at.exception, at.exception
+    assert not any("Round trip through German" in m.value for m in at.markdown)
+    assert not any(t.key == "keep:redteam:mask_facts" for t in at.toggle)

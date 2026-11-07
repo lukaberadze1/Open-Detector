@@ -1059,3 +1059,40 @@ def test_revise_selected_rewrites_only_the_picked_passages():
                                       lambda whole: 0.95 if "falls came" in whole else 0.9, ask, str.strip, rounds=2,
                                       candidates=1, facts=False)
     assert new == text and history == [0.9, 0.9]
+
+
+def test_a_revision_may_not_drop_a_name_the_original_and_the_passage_share():
+    from eval.redteam_batch import drifted
+
+    original = "We drove to Lisbon in 2019 with Marta, and stayed with Tomas."
+    passage = "We drove to Lisbon in 2019 with Marta, a long trip."
+    assert drifted(passage, "We drove to Lisbon in 2019, a long trip.", original), "Marta is the original's"
+    assert not drifted(passage, "In 2019 we drove to Lisbon with Marta.", original)
+    assert not drifted("We stayed in Porto for a week.", "We stayed a week.", original), \
+        "Porto isn't the original's: the draft brought it, so the check lets it go"
+
+
+def test_revise_anchored_keeps_the_originals_names_however_many_rounds():
+    from collections import Counter
+
+    from eval.redteam_batch import revise_anchored
+
+    original = ("My cousin Marta and I drove from Porto to Lisbon in August 2019, and the car broke down twice on "
+                "the way, so we spent a night in Coimbra waiting for a mechanic.")
+    tidy = ("Marta and I undertook a memorable road trip from Porto to Lisbon in August 2019, a journey that "
+            "featured two breakdowns and an unplanned overnight stay in Coimbra.")
+    # Five of the passage's six names and numbers: keeps_facts lets that through, round after round.
+    lossy = ("My cousin Marta and I drove from Porto to Lisbon in August 2019, the car broke down twice, and we "
+             "spent a night waiting for a mechanic in some town.")
+
+    def ask(prompt, pending):
+        return json.dumps({"blocks": [{"id": f"B{n}", "text": lossy} for n, _ in enumerate(pending, 1)]})
+
+    def human(text):
+        return 0.02 if "some town" in text else 0.9
+
+    stats = Counter()
+    changed, history = revise_anchored({"a": tidy}, {"a": original}, lambda chunks: [human(c) for c in chunks],
+                                       human, ask, str.strip, rounds=3, candidates=2, stats=stats)
+    assert changed == {} and history[-1] == 0.9, "a lower score bought by losing Coimbra isn't kept"
+    assert stats["facts:drift"] >= 1, (stats, "keeps_facts alone passes it; the original still says Coimbra")

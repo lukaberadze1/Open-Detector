@@ -98,11 +98,19 @@ class Paths:
         self.trial_report = self.out / "trial_compare.md" if smoke else ROOT / "eval/reports/trial_slim.md"
         self.redteam = self.out / "redteam.md" if smoke else ROOT / "eval/reports/redteam.md"
         self.reference = self.out / "reference.md" if smoke else ROOT / "eval/reports/reference.md"
+        self.recipe = self.out / "recipe.json" if smoke else ROOT / "models/recipe.json"  # what the page picks from
+        self.recipe_report = self.out / "recipe.md" if smoke else ROOT / "eval/reports/recipe.md"
+
+
+ANCHORED = ["--methods", "anchored", "--rounds", 5]  # the page's revision loop since 6 Nov, at its REVISE_ROUNDS
 
 
 def gemini_setups(paths: Paths, smoke: bool) -> list[tuple[str, list[str]]]:
-    return [("baseline", []), ("multistart", ["--drafts", 2 if smoke else 3]),
-            ("roundtrip", ["--attack", "roundtrip-german"]), ("masked", ["--mask-facts"])]
+    """Newest question first, so a spent quota leaves the old ones short. On 6-7 Nov multi-start and the German
+    round trip did no better than the baseline and are left out; holding names and numbers kept twice the meaning.
+    Now: does the page's anchored loop, masked or not, reach the line in fewer rounds and keep more?"""
+    return [("anchored", ANCHORED), ("anchored_masked", [*ANCHORED, "--mask-facts"]), ("masked", ["--mask-facts"]),
+            ("baseline", [])]
 
 
 def gemini_command(paths: Paths, smoke: bool, setup: str, extra: list, repeats: int, model: str) -> list[str]:
@@ -209,6 +217,11 @@ def plan(paths: Paths, smoke: bool) -> list[Stage]:
               closing=True, again=True),
         Stage("scoreboard_final", "The final table.", 20,
               py("eval.overnight_summary", paths.revise, "--report", paths.summary, "--math", paths.revised_math),
+              needs_rows=True, closing=True, again=True),
+        Stage("recipe", "Which features the page's priorities pick from now: each setup's measures, every night's "
+              "runs together.", 5,
+              py("eval.recipe", paths.revise, *([] if small else [ROOT / "eval/cache/tune_revise.jsonl"]),
+                 "--out", paths.recipe, "--report", paths.recipe_report),
               needs_rows=True, closing=True, again=True),
     ]
 
@@ -507,7 +520,8 @@ class Night:
             entry = self.state["stages"].get(stage.name, {})
             lines.append(f"| {stage.name} | {entry.get('status', 'waiting')} | {entry.get('minutes', '')} | "
                          f"{entry.get('at', '')} | {stage.question} | {entry.get('note', '')} |")
-        for title, path in (("Generator", paths.summary), ("A trained humanizer's output", paths.humanize_demo),
+        for title, path in (("Generator", paths.summary), ("The page's recipe", paths.recipe_report),
+                            ("A trained humanizer's output", paths.humanize_demo),
                             ("Local translation hop", paths.local_hop), ("What the detector reads", paths.anatomy),
                             ("Public humanizers", paths.humanizer_report), ("Combiner trial", paths.trial_report),
                             ("Reference, before tonight", paths.reference_before),

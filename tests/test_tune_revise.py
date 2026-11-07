@@ -118,3 +118,56 @@ def test_only_the_built_in_profile_is_offered_the_free_round_trip():
 
     source = inspect.getsource(redteam._attacks)
     assert "BUILTIN_STYLE_DIR" in source and "FREE_TRIP" in source
+
+
+def test_the_anchored_method_revises_each_written_block_against_its_original(tmp_path, monkeypatch):
+    """tune_revise --methods anchored end to end, with stand-ins for the detector, the writer and the loop."""
+    import json
+    from types import SimpleNamespace
+
+    import opendetector
+    from eval import tune_revise
+
+    paragraphs = [f"Paragraph {n} talks about the garden in plain words, how the beans grew tall along the fence and "
+                  f"how the rain came late that summer, so we watered them by hand each evening." for n in range(1, 9)]
+    document = tmp_path / "garden.md"
+    document.write_text("\n\n".join(paragraphs), encoding="utf-8")
+
+    def score(text):
+        return 0.9 if "Rewritten" in text else 0.05
+
+    class Detector:
+        def analyze(self, text, sentences=False):
+            return SimpleNamespace(ai_probability=score(text))
+
+    monkeypatch.setattr(opendetector.Detector, "from_config", staticmethod(lambda config: Detector()))
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
+    monkeypatch.setattr(tune_revise, "load_env", lambda: None)
+    monkeypatch.setattr(tune_revise, "writer_shapes", lambda *a: [])
+
+    def run_trial(trial, jobs, plan, *args):
+        texts = {job["key"]: "Rewritten: " + job["previous"] for job in jobs}
+        return {**trial, "text": "\n\n".join(texts.values()), "texts": texts, "requests": 1, "copied": 0,
+                "words_kept": 50.0}
+
+    monkeypatch.setattr(tune_revise, "run_trial", run_trial)
+    seen = {}
+
+    def revise_anchored(texts, originals, score_chunks, whole, ask, clean, shapes, rounds, **options):
+        seen.update(texts=texts, originals=originals, rounds=rounds, options=options)
+        return {key: originals[key] + " Changed." for key in texts}, [0.9, 0.05]
+
+    monkeypatch.setattr(tune_revise, "revise_anchored", revise_anchored)
+    monkeypatch.setattr(tune_revise, "chunk_scorer", lambda detector: lambda chunks: [score(c) for c in chunks])
+    out = tmp_path / "runs.jsonl"
+    code = tune_revise.main([str(document), "--methods", "anchored", "--rounds", "5", "--mask-facts", "--no-log",
+                             "--style", "styles/human_default_profile.json", "--out", str(out),
+                             "--report", str(tmp_path / "report.md")])
+    assert code == 0
+    assert set(seen["texts"]) == set(seen["originals"]) and seen["rounds"] == 5
+    assert all(seen["texts"][key] == "Rewritten: " + seen["originals"][key] for key in seen["texts"]), \
+        "each block is matched to its own original, not to a paragraph that happens to sit there"
+    assert seen["options"]["mask"] and seen["options"]["facts"]
+    row = json.loads(out.read_text().splitlines()[-1])
+    assert row["style"].endswith("+anchored") and "+masked" in row["style"]
+    assert row["anchored"]["history"] == [0.9, 0.05] and "Changed." in row["anchored"]["text"]

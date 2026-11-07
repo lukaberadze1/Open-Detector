@@ -29,8 +29,8 @@ from pathlib import Path
 from eval import generate_essays
 from eval.generate_essays import (PROVIDERS, APIError, QuotaExhausted, load_style_profile, style_instructions,
                                   styled_clean)
-from eval.redteam_batch import (GROUP_SCHEMA, REVISE, REVISE_CANDIDATES, REVISE_KEEPING, WIN_BELOW, document_windows,
-                                revise_blocks, style_guard)
+from eval.redteam_batch import (ANCHORED_CANDIDATES, GROUP_SCHEMA, REVISE, REVISE_CANDIDATES, REVISE_KEEPING,
+                                WIN_BELOW, chunk_scorer, document_windows, revise_anchored, revise_blocks, style_guard)
 from eval.trace import Trace, text_id
 from eval.text_attacks import (
     CLAUSES,
@@ -191,7 +191,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--words", type=int, default=250)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--rounds", type=int, default=10, help="at most: revising stops when it stalls")
-    parser.add_argument("--methods", default="sentences", help="how to choose blocks to revise")
+    parser.add_argument("--methods", default="sentences",
+                        help="how to revise: sentences or windows (revise_blocks), or anchored (revise_anchored, as "
+                             "the page does now: every flagged passage a round, half the tries from the original)")
     parser.add_argument("--candidates", type=int, default=REVISE_CANDIDATES,
                         help="rewrites a passage gets each round, the best kept: the page's three use three times "
                              "the requests")
@@ -238,6 +240,9 @@ def main(argv: list[str] | None = None) -> int:
     style += f"+drafts{args.drafts}" if args.drafts > 1 else ""
     style += attack_label(args.attack) + "".join(f"+{option}{value:g}" for option, value in sampling.items())
     methods = [method.strip() for method in args.methods.split(",") if method.strip()]
+    if unknown := set(methods) - {"sentences", "windows", "anchored"}:
+        parser.error(f"unknown --methods: {', '.join(sorted(unknown))}")
+    style += "+anchored" if methods == ["anchored"] else ""  # a different loop: its runs are cached apart
     saved = [json.loads(line) for line in args.out.open(encoding="utf-8")] if args.out.exists() else []
     rows = [row for row in saved if row["style"] == style and row["model"] == args.model and "document" in row]
 
@@ -318,6 +323,26 @@ def main(argv: list[str] | None = None) -> int:
                     guarded = args.as_page and yardstick and not args.no_guard
                     fits = style_guard(yardstick.text_distance, result["text"]) if guarded else None
                     outcomes = Counter()
+                    if method == "anchored":  # the blocks as written, each against the writer's original of it
+                        blocks = result.get("texts") or {}
+                        if args.attack or not blocks:  # attacks rework the paragraphs: no block to match it to
+                            blocks, originals = parts, {}
+                        else:
+                            originals = {job["key"]: job["previous"] for job in jobs}
+                        from eval.math_attack import CachedScorer
+
+                        changed, history = revise_anchored(
+                            blocks, originals, chunk_scorer(detector), CachedScorer(detector), ask, clean, shapes,
+                            args.rounds, prompt=REVISE_KEEPING, facts=True, candidates=ANCHORED_CANDIDATES,
+                            fits=fits, stats=outcomes, mask=args.mask_facts)
+                        text = "\n\n".join(changed.get(key, part) for key, part in blocks.items())
+                        row[method] = {"history": history, "changed": len(changed), "words": count_words(text),
+                                       "outcomes": dict(outcomes), "text": text,
+                                       "distance": yardstick.text_distance(text) if yardstick else None,
+                                       "facts": facts_kept(original, text)}
+                        logs.append(({**result, "key": f"{trial['key']}-{method}", "text": text},
+                                     f"{style}+revise{args.rounds}-{method}"))
+                        continue
                     changed, history = revise_blocks(
                         parts, detector.analyze, ask, clean, shapes, args.rounds, fits=fits,
                         windows=document_windows(detector) if method == "windows" else None,

@@ -1,0 +1,76 @@
+{
+ "setups": [
+  {
+   "features": [],
+   "runs": 36,
+   "models": [
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash-lite"
+   ],
+   "loop": "sentences",
+   "under": 0.6339285714285714,
+   "end": 0.2353646589174983,
+   "facts": 43.631249999999994,
+   "distance": 1.7599602109511903,
+   "minutes": 2.6870535714285713,
+   "requests": 11.651785714285715,
+   "rounds": 4.361111111111111
+  },
+  {
+   "features": [
+    "drafts3"
+   ],
+   "runs": 13,
+   "models": [
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash-lite"
+   ],
+   "loop": "sentences",
+   "under": 0.8482142857142857,
+   "end": 0.13271748187707305,
+   "facts": 49.7753434065934,
+   "distance": 1.6773419067413449,
+   "minutes": 3.7789033882783887,
+   "requests": 18.390796703296704,
+   "rounds": 3.006410256410256
+  },
+  {
+   "features": [
+    "masked"
+   ],
+   "runs": 5,
+   "models": [
+    "gemini-3.1-flash-lite"
+   ],
+   "loop": "sentences",
+   "under": 0.9910714285714285,
+   "end": 0.0443226370334448,
+   "facts": 71.19375,
+   "distance": 1.660280709303139,
+   "minutes": 6.785863095238096,
+   "requests": 15.173214285714286,
+   "rounds": 3.8388888888888886
+  },
+  {
+   "features": [
+    "roundtrip-german"
+   ],
+   "runs": 9,
+   "models": [
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash-lite"
+   ],
+   "loop": "sentences",
+   "under": 0.8878968253968254,
+   "end": 0.1698276049351395,
+   "facts": 55.16041666666666,
+   "distance": 1.5450521606651135,
+   "minutes": 3.7187996031746033,
+   "requests": 14.99702380952381,
+   "rounds": 4.15432098765432
+  }
+ ],
+ "meaning_floor": 70,
+ "min_runs": 4,
+ "runs": 63
+}

@@ -95,13 +95,13 @@ def test_a_spent_model_hands_on_and_the_next_measures_every_setup(tmp_path, monk
 
     def run(command, log, minutes):
         calls.append(tuple(command))
-        return QUOTA_EXIT if command == ["multistart", overnight.MODELS[0]] else 0
+        return QUOTA_EXIT if command == ["anchored_masked", overnight.MODELS[0]] else 0
 
     item = night(tmp_path, [Stage("round", "?", gemini=1)], run, monkeypatch)
     item.run_all()
     first, second = overnight.MODELS[:2]
-    assert calls == [("baseline", first), ("multistart", first), ("baseline", second), ("multistart", second),
-                     ("roundtrip", second), ("masked", second)]
+    assert calls == [("anchored", first), ("anchored_masked", first), ("anchored", second),
+                     ("anchored_masked", second), ("masked", second), ("baseline", second)]
     assert status(item, "round") == "done" and item.spent(first) and not item.spent(second)
 
 
@@ -117,14 +117,14 @@ def test_an_overloaded_model_hands_on_for_this_round_and_is_tried_first_again(tm
     item = night(tmp_path, stages, run, monkeypatch)
     item.run_all()
     setups = [name for name, _ in overnight.gemini_setups(item.paths, True)]
-    first_pass = [("baseline", first), *[(name, second) for name in setups]]
+    first_pass = [(setups[0], first), *[(name, second) for name in setups]]
     assert calls[:len(first_pass)] == first_pass
-    assert calls[len(first_pass)] == ("baseline", first), "the night comes back to the round, first model first"
+    assert calls[len(first_pass)] == (setups[0], first), "the night comes back to the round, first model first"
     assert status(item, "round") == "partly done" and not item.spent(first)
     calls.clear()
     item.state["stages"].pop("round")
     item.run_all()
-    assert calls[0] == ("baseline", first), "next round, the first model gets another chance"
+    assert calls[0] == (setups[0], first), "next round, the first model gets another chance"
 
 
 def test_a_model_that_refuses_the_request_is_out_for_the_night(tmp_path, monkeypatch):
@@ -176,7 +176,7 @@ def test_the_plan_has_a_question_for_each_stage_and_keeps_gemini_rounds_in_order
     names = [stage.name for stage in stages]
     assert len(names) == len(set(names))
     assert names.index("gemini_round_1") < names.index("gemini_round_2") < names.index("gemini_round_3")
-    assert names.index("trial_fit") < names.index("trial_compare") and names[-1] == "scoreboard_final"
+    assert names.index("trial_fit") < names.index("trial_compare") and names[-2:] == ["scoreboard_final", "recipe"]
     assert all(stage.command or stage.call or stage.gemini for stage in stages)
 
 
@@ -266,8 +266,8 @@ def test_a_spent_model_is_tried_again_an_hour_later_and_the_night_comes_back_to_
     item.sleep = sleep
     item.models = overnight.MODELS[:1]
     item.run_all()
-    assert calls[0] == "baseline" and calls[1] == "other", "a spent quota moves the night on to other work"
-    assert calls[-1] == "close" and calls.count("baseline") >= 2, "then it comes back to the round before closing"
+    assert calls[0] == "anchored" and calls[1] == "other", "a spent quota moves the night on to other work"
+    assert calls[-1] == "close" and calls.count("anchored") >= 2, "then it comes back to the round before closing"
     assert status(item, "round") == "done"
 
 
@@ -306,3 +306,13 @@ def test_no_api_holds_the_rounds_back_for_a_later_start_and_runs_the_rest(tmp_pa
 def test_no_api_is_on_the_command_line():
     import inspect
     assert "--no-api" in inspect.getsource(overnight.main)
+
+
+def test_tonight_measures_the_pages_loop_first_and_the_recipe_is_rebuilt_last(tmp_path):
+    paths = Paths(True)
+    setups = overnight.gemini_setups(paths, True)
+    assert [name for name, _ in setups][:2] == ["anchored", "anchored_masked"]
+    assert all("anchored" in extra for name, extra in setups if name.startswith("anchored"))
+    stages = overnight.plan(paths, True)
+    assert stages[-1].name == "recipe" and stages[-1].closing
+    assert str(paths.recipe).startswith(str(paths.out)), "a smoke run never writes the page's models/recipe.json"

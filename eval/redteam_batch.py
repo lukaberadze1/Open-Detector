@@ -665,6 +665,16 @@ def keeps_facts(passage: str, revised: str, share: float = FACTS_KEPT) -> bool:
     return not terms or sum(term in revised for term in terms) >= share * len(terms)
 
 
+def drifted(passage: str, revised: str, original: str) -> bool:
+    """Whether a revision drops a name or number the writer's original has and the passage still says. keeps_facts
+    lets each revision lose a fifth of a passage's facts, and round after round that compounded: revisions that took
+    8 or 9 rounds kept 12-19% of the original's names and numbers (the 6-7 Nov overnight run). Holding what the
+    original and the passage share keeps any number of rounds from wearing it away."""
+    held = {term.rstrip(".,") for term in _FACT.findall(passage.strip())} & {
+        term.rstrip(".,") for term in _FACT.findall(original.strip())}
+    return any(term not in revised for term in held)
+
+
 def stock_phrases(text: str) -> int:
     low = text.lower()
     return sum(phrase in low for phrase in _STOCK)
@@ -1055,7 +1065,8 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
     does, in the writer's sentence plans when `shapes` are given. A try is scored on its own surroundings
     (`score_chunks`, chunk_scorer), and the lowest is kept if it beats the passage there; among tries that already
     read as human (under `target` / 2) the one keeping most of the original's words wins. A try that leaves its block
-    a copy of the original (COPIED) is dropped, as are those failing `facts` (meaning_problem) or `fits` (style_guard).
+    a copy of the original (COPIED) is dropped, as are those failing `facts` (meaning_problem, and `drifted` against the
+    original) or `fits` (style_guard).
     The whole document is scored with `score` after each round, and a round that raised it is undone. Requests go
     `REVISE_GROUP` passages at a time, `parallel` at once. `progress`, `stats` and `saved` are as in revise_blocks,
     `stats` adding `copied`. Gives the changed blocks' texts by key, and the AI likelihood after each round, the first
@@ -1161,6 +1172,8 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
                 problem = meaning_problem(shown[name], new, whole(shown) + "\n\n" + original) if facts else None
                 if problem == "person" and _persons(new) <= _persons(shown[name] + " " + original):
                     problem = None  # the writer's original says it so: the draft had dropped it
+                if not problem and facts and original.strip() and drifted(shown[name], new, original):
+                    problem = "drift"
                 if problem:
                     stats["facts"] += 1
                     stats[f"facts:{problem}"] += 1

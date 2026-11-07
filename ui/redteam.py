@@ -55,7 +55,7 @@ from eval.generate_essays import (
     styled_clean,
     unload_local_model,
 )
-from eval import generation_settings, key_usage
+from eval import generation_settings, key_usage, recipe
 from eval.generation_settings import MAX_POINTS, MEASURES
 from eval.redteam_batch import (
     again_note,
@@ -151,6 +151,9 @@ FIRST_DRAFT_TRIES = 3  # versions of each passage asked for in the first draft's
 # "Revise what the detector flags": rounds at most, until under the bar or it stalls; revise_anchored took 1 or 2
 # on a 2,262-word document (2026-11-06)
 REVISE_ROUNDS = 5
+# On by default from the 6-7 Nov overnight run (gemini-3.1-flash-lite, 5 documents): masked rewrites kept 78% of the
+# original's names and numbers against 38%, ended as low (median 5% against 6%), and took 2 rounds against 3.
+MASK_BY_DEFAULT = True
 DEFAULT_FALLBACK_MODELS = PROVIDERS["gemini"].fallbacks
 DOCUMENT_TYPES = ("txt", "md", "docx", "pptx")
 GENERATOR_SOURCE_TYPES = (*DOCUMENT_TYPES, "zip", "py", "sh", "bash", "js", "jsx", "ts", "tsx", "java",
@@ -183,6 +186,7 @@ RESULT = "last_generated_result"
 IMPROVE_TEXT = "redteam:improve_text"
 IMPROVE_BATCH = "redteam:improve_batch"
 POINTS = "redteam:points"  # the priorities' points, kept for the browser session
+OWN_SETTINGS = "keep:redteam:own_settings"  # on: every setting by hand; off: the priorities pick them
 PRIORITIES = {
     "detector": (":material/visibility_off:", "Detector challenge (lower score)"),
     "style": (":material/draw:", "Style-profile match"),
@@ -957,12 +961,16 @@ def _scoring(plan: Plan, profile: str) -> None:
                                            "the whole text is under the bar. Otherwise every passage at this score or "
                                            "more is rewritten, and no others.")
                     plan.revise_above = above / 100 or None
-            plan.mask_facts = st.toggle(
-                "Hold names and numbers exactly", key=keep("keep:redteam:mask_facts", False),
-                help="Rewrites and revisions get placeholders in place of names, numbers, citations and links, and the "
-                     "originals go back afterwards, so none can be dropped or changed. A rewrite that loses a "
-                     "placeholder is asked for again. Off by default until it has been measured.")
-            _attacks(plan)
+            if own_settings():
+                plan.mask_facts = st.toggle(
+                    "Hold names and numbers exactly", key=keep("keep:redteam:mask_facts", MASK_BY_DEFAULT),
+                    help="Rewrites and revisions get placeholders in place of names, numbers, citations and links, "
+                         "and the originals go back afterwards, so none can be dropped or changed. A rewrite that "
+                         "loses a placeholder is asked for again. On by default: it kept twice the names and numbers "
+                         "and needed fewer revision rounds.")
+                _attacks(plan)
+            else:  # the priorities' recipe sets these from what was measured (eval/recipe.py)
+                plan.mask_facts = MASK_BY_DEFAULT
     if plan.evasion:
         st.caption("Every draft is saved as AI-labelled evaluation data; the kept one records the mode and scores. "
                    + (" In a batch, each block is drafted and scored on its own, one at a time." if plan.batch
@@ -1057,7 +1065,7 @@ def revise_settings(profile: str) -> tuple[Plan, Connection]:
     plan = Plan("", None, [], [], [], "revise", profile)
     _writing(plan, brief=True)
     plan.mask_facts = st.toggle(
-        "Hold names and numbers exactly", key=keep("keep:redteam:mask_facts", False),
+        "Hold names and numbers exactly", key=keep("keep:redteam:mask_facts", MASK_BY_DEFAULT),
         help="Names, numbers, citations and links go to the model as placeholders and come back as they were.")
     st.toggle("The source is AI text", key=keep("keep:redteam:panel_is_ai", False),
               help="Turn this on only for text an AI wrote. Then each revision is saved as AI-labelled evaluation "
@@ -1266,10 +1274,16 @@ def _attacks(plan: Plan) -> None:
         plan.top_p, plan.top_k = (top_p if top_p < 1 else None), (top_k or None)
 
 
+def own_settings() -> bool:
+    """Whether the user writes their own settings, or the priorities pick them from what was measured. Read from
+    the session before the Priorities panel draws its switch, since the Detector panel above needs it first."""
+    return bool(st.session_state.get(OWN_SETTINGS, False))
+
+
 def _setup(profile: str) -> tuple[Plan, Connection]:
-    """The settings column, top to bottom: Mode, Input, Rewrite (to regenerate), Writing, Detector, then
-    Advanced (priorities) and Model & connection folded away. The priorities need the connection, so the
-    two folded panels are laid out first and filled in that order."""
+    """The settings column, top to bottom: Mode, Input, Priorities, Rewrite (to regenerate), Writing, Detector,
+    then Model & connection folded away. The priorities need the connection, so their panel is laid out near the
+    top and filled after it."""
     engine = "API"
     with style.group("Mode", "01"):
         regenerate = _mode() == "regenerate"
@@ -1286,7 +1300,9 @@ def _setup(profile: str) -> tuple[Plan, Connection]:
     if not regenerate and st.session_state.get("redteam:references_invalid"):
         plan.blocked = "Fix or clear the reference JSON before generating."
     plan.context_sections = sections
-    steps = iter(("03", "04", "05"))
+    steps = iter(("03", "04", "05", "06"))
+    with style.group("Priorities", next(steps)):
+        priorities_box = st.container()  # filled once Model & connection, at the foot, says which models there are
     if regenerate:
         with style.group("Rewrite", next(steps)):
             _scope(plan)
@@ -1309,12 +1325,11 @@ def _setup(profile: str) -> tuple[Plan, Connection]:
                 "The source is AI text", key=keep("keep:redteam:source_is_ai", False),
                 help="Rule edits leave a text its original author's, so by default they aren't saved as AI data. "
                      "Turn this on only for text an AI wrote.")
-    advanced_box = st.expander("Advanced · priorities and generation settings", icon=":material/tune:")
     key_missing = public() and not st.session_state.get(PUBLIC_KEY, "").strip()
     with st.expander("Model & connection" + (" · add your Gemini key" if key_missing else ""),
                      icon=":material/key:", expanded=key_missing):
         conn = _connection()
-    with advanced_box:
+    with priorities_box:
         _priorities(plan, conn)
     return plan, conn
 
@@ -1421,47 +1436,108 @@ def _spend(measure: str, change: int) -> None:
 
 
 def _priorities(plan: Plan, conn: Connection) -> None:
-    """What the run favours. Points spread over the detector, the style profile, speed and quota pick
-    a setting from the measured table (eval/generation_settings.py); without one, or by choice, the
-    thinking level, blocks per request and requests at once are set by hand."""
+    """What the run favours, and the settings that follow from it. Points spread over the detector, the style
+    profile, speed and quota pick the model settings from the measured table (eval/generation_settings.py) and, for
+    a document rewrite, the measured features from the recipe (eval/recipe.py): holding names and numbers exactly,
+    a round trip through a language. Meaning isn't one of the points: the recipe never picks a setup that keeps
+    under its floor of the original's names and numbers, whatever they say. "Write my own settings" sets all of it
+    by hand, with holding names and numbers and More attacks back under Detector."""
+    own = st.toggle("Write my own settings", key=keep(OWN_SETTINGS, False),
+                    help="Off: the points below pick the model, its settings and the measured features. On: set the "
+                         "creativity, thinking, blocks per request, holding names and numbers and More attacks "
+                         "yourself.")
     table = generation_settings.with_keys(  # the table is Gemini's, so its limits are Gemini keys'
         generation_settings.load_table(),
         len(conn.pool) if conn.pool and provider_for(conn.base_url) == "gemini" else 1)
+    measured = recipe.load() if not public() else None
+    if own or (table is None and measured is None):
+        if not own:
+            st.caption("Set by hand until the settings are measured: run `python -m eval.tune_generation` on a "
+                       "document, and the overnight runs, to let points pick them.")
+        _hand_settings(plan)
+        return
+    points = st.session_state.setdefault(POINTS, dict(generation_settings.EVEN))
+    left = generation_settings.POINTS - sum(points.values())
+    for measure in MEASURES:
+        icon, label = PRIORITIES[measure]
+        with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+            st.markdown(f"{icon} {label}", width="stretch")
+            st.markdown(f":violet[{'●' * points[measure]}]:gray[{'○' * (MAX_POINTS - points[measure])}]",
+                        width="content")
+            st.button("\u2212", key=f"redteam:less:{measure}", type="tertiary",  # a minus sign
+                      on_click=_spend, args=(measure, -1), disabled=points[measure] == 0,
+                      help=f"One point less on {label.lower()}")
+            st.button("+", key=f"redteam:more:{measure}", type="tertiary",
+                      on_click=_spend, args=(measure, 1), disabled=not left or points[measure] == MAX_POINTS,
+                      help=f"One point more on {label.lower()}")
+    st.caption(f"{left} of {generation_settings.POINTS} points left"
+               + (": take one from a priority to give it to another." if not left else ".")
+               + " Even points are the measured balance."
+               + ("" if public() else f" Meaning isn't traded for points: the picked setup keeps "
+                                      f"{recipe.MEANING_FLOOR}% of names and numbers or more."))
+    picked = _apply_recipe(plan, points, measured)
+    blocks = len(_batch_jobs(plan)) if plan.batch else 1
     models_on_offer = [name for name in (conn.model, *conn.fallback_models) if name]
-    if table is None:
-        st.caption("Set by hand until the settings are measured: run `python -m eval.tune_generation` on a document "
-                   "to let points pick them.")
-    elif not st.toggle("Set by hand", key=keep("keep:redteam:by_hand", False),
-                       help="Choose the creativity, thinking level, blocks per request and requests at once yourself."):
-        points = st.session_state.setdefault(POINTS, dict(generation_settings.EVEN))
-        left = generation_settings.POINTS - sum(points.values())
-        for measure in MEASURES:
-            icon, label = PRIORITIES[measure]
-            with st.container(horizontal=True, vertical_alignment="center", gap="small"):
-                st.markdown(f"{icon} {label}", width="stretch")
-                st.markdown(f":violet[{'●' * points[measure]}]:gray[{'○' * (MAX_POINTS - points[measure])}]",
-                            width="content")
-                st.button("\u2212", key=f"redteam:less:{measure}", type="tertiary",  # a minus sign
-                          on_click=_spend, args=(measure, -1), disabled=points[measure] == 0,
-                          help=f"One point less on {label.lower()}")
-                st.button("+", key=f"redteam:more:{measure}", type="tertiary",
-                          on_click=_spend, args=(measure, 1), disabled=not left or points[measure] == MAX_POINTS,
-                          help=f"One point more on {label.lower()}")
-        st.caption(f"{left} of {generation_settings.POINTS} points left"
-                   + (": take one from a priority to give it to another." if not left else ".")
-                   + " Even points are the measured balance.")
-        blocks = len(_batch_jobs(plan)) if plan.batch else 1
-        if setting := generation_settings.choose(table, points, models_on_offer, plan.batch, blocks):
-            plan.model, plan.thinking = setting.model, setting.thinking
-            plan.group_size, plan.parallel = setting.group_size, setting.parallel
-            plan.temperature = (setting.temperature if setting.temperature is not None
-                                else st.session_state.get("keep:redteam:temperature", Plan.temperature))
-            chart, readout = st.columns([1, 1.6], vertical_alignment="center")
-            chart.html(priorities_chart(points, MAX_POINTS))
-            with readout:
-                _readout(plan, table, setting, blocks)
-            return
-        st.caption("None of the measured settings uses the models under Model & connection, so set them by hand.")
+    setting = generation_settings.choose(table, points, models_on_offer, plan.batch, blocks) if table else None
+    if setting:
+        plan.model, plan.thinking = setting.model, setting.thinking
+        plan.group_size, plan.parallel = setting.group_size, setting.parallel
+        plan.temperature = (setting.temperature if setting.temperature is not None
+                            else st.session_state.get("keep:redteam:temperature", Plan.temperature))
+    chart, readout = st.columns([1, 1.6], vertical_alignment="center")
+    chart.html(priorities_chart(points, MAX_POINTS))
+    with readout:
+        if setting:
+            _readout(plan, table, setting, blocks)
+        if picked:
+            _recipe_readout(picked)
+        elif measured and not plan.batch and plan.engine != "Math":
+            st.caption("Holding names and numbers is on. The recipe's other features were measured on document "
+                       "rewrites only, so a sample from a prompt goes without them.")
+    if not setting:
+        st.caption("None of the measured settings uses the models under Model & connection, so the model's own "
+                   "settings are set by hand.")
+        _hand_settings(plan)
+
+
+def _apply_recipe(plan: Plan, points: dict[str, int], measured: dict | None) -> recipe.Recipe | None:
+    """The measured features for these points, put on the plan: only for a document rewrite with the models,
+    since that is what the runs measured, and never on a public deploy, where these are drafting aids."""
+    if measured is None or public() or plan.engine == "Math" or not plan.batch:
+        return None
+    picked = recipe.choose(measured, points)
+    if picked is None:
+        return None
+    plan.mask_facts = bool(picked.has("masked"))
+    trip = picked.has("roundtrip")
+    plan.attacks = (trip,) if trip else ()
+    if plan.attacks:
+        plan.score = True
+    return picked
+
+
+def _recipe_readout(picked: recipe.Recipe) -> None:
+    """The features the points picked and what they did in the runs that measured them."""
+    names = ", ".join(recipe.describe(feature) for feature in picked.features) or "No extra features"
+    st.markdown(f":material/science: **{names}**")
+    m = picked.measures
+    parts = [f"Measured on {m['runs']} document rewrites"]
+    if m.get("under") is not None:
+        parts.append(f"{min(1.0, max(0.0, m['under'])):.0%} got under {recipe.HUMAN_CUTOFF:.0%}")
+    if m.get("facts") is not None:
+        parts.append(f"keeping {min(100.0, m['facts']):.0f}% of names and numbers")
+    if m.get("rounds") is not None:
+        parts.append(f"in {m['rounds']:.1f} revision rounds")
+    note = ", ".join(parts) + "."
+    if m.get("loop") == "sentences":
+        note += " Measured with the earlier revision loop; the overnight runs measure the current one."
+    if picked.below_floor:
+        note += f" Nothing measured kept {recipe.MEANING_FLOOR}% of the meaning, so this is the one keeping the most."
+    st.caption(note)
+
+
+def _hand_settings(plan: Plan) -> None:
+    """The model's own settings, by hand."""
     plan.temperature = st.slider(
         "Creativity", 0.0, 1.5, step=0.1, key=keep("keep:redteam:temperature", Plan.temperature),
         help="The model's temperature: higher writes less predictably. Gemini 3.6, 3.7 and 3.8 Flash use their own.",
