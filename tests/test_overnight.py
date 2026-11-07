@@ -320,7 +320,12 @@ def test_tonight_measures_the_pages_loop_first_and_the_recipe_is_rebuilt_last(tm
     assert str(paths.recipe).startswith(str(paths.out)), "a smoke run never writes the page's models/recipe.json"
 
 
-def test_the_more_setup_rewrites_the_documents_nothing_else_used():
+def test_the_more_setup_rewrites_the_documents_nothing_else_used(monkeypatch, tmp_path):
+    for name in ("DOCUMENTS", "MORE_DOCUMENTS"):  # data/ is gitignored, so the test brings its own documents
+        folder = tmp_path / name.lower()
+        folder.mkdir()
+        (folder / "doc.md").write_text("A document.")
+        monkeypatch.setattr(overnight, name, folder)
     paths = Paths(True)
     more = [str(part) for part in overnight.gemini_command(paths, False, "more_anchored_masked",
                                                            ["--tag", "more-docs"], 1, overnight.MODELS[0])]
