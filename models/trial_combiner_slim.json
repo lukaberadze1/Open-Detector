@@ -1,0 +1,47 @@
+{
+  "features": [
+    "desklib_mean",
+    "desklib_max"
+  ],
+  "medians": [
+    2.00896803582116,
+    2.370519280433655
+  ],
+  "mean": [
+    2.8777922330362107,
+    3.188914935125981
+  ],
+  "scale": [
+    6.724129558859726,
+    6.654957435670219
+  ],
+  "coef": [
+    4.171638097004985,
+    1.1086862226990675
+  ],
+  "intercept": 1.3132378130528757,
+  "thresholds": {
+    "review": 0.15,
+    "ai": 0.7477447093928965
+  },
+  "info": {
+    "n_fit": 3824,
+    "datasets": [
+      "daigt",
+      "mage",
+      "raid"
+    ],
+    "fitted": "2026-11-07",
+    "threshold_method": "5-fold out-of-fold conformal",
+    "alphas": {
+      "ai": 0.01
+    },
+    "n_calibration_human": 1799,
+    "n_test": 976,
+    "test_auroc": 0.9915040159365927,
+    "test_tpr_at_1pct_fpr": 0.9252336448598131,
+    "test_fpr_at_ai_threshold": 0.013605442176870748,
+    "test_source_fpr_at_ai_threshold": 0.0136986301369863,
+    "test_tpr_at_ai_threshold": 0.9252336448598131
+  }
+}

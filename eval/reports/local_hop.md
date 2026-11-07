@@ -1,0 +1,2 @@
+- localtrip-german: 10 texts, mean 0.996 -> 0.896, median 0.982, left Likely AI 1, under 0.5 1, words kept 84%, names and numbers kept 88%; math on 3 in range: mean 0.679 -> 0.518; independent detector 0.889 -> 0.795
+- localtrip-finnish: 10 texts, mean 0.996 -> 0.775, median 0.954, left Likely AI 3, under 0.5 2, words kept 79%, names and numbers kept 87%; math on 4 in range: mean 0.677 -> 0.474; independent detector 0.889 -> 0.684
