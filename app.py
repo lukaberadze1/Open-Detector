@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from ui import nav, prefs, style
+from ui import kitchen, nav, prefs, style
 from ui.components import apply_theme
 
 logo, mark = style.logo_paths()
@@ -34,10 +34,13 @@ pages = [nav.detect_page()]
 if nav.redteam_enabled():
     pages.append(nav.redteam_page())
 pages.append(nav.guide_page())
-page = st.navigation(pages, position="sidebar" if len(pages) > 1 else "hidden")
+pages.append(nav.detect_alias())  # hidden: the old /detect address
+page = st.navigation(pages, position="sidebar" if len(pages) > 2 else "hidden")
 if not style.public() and not prefs.load().get("welcomed"):
     prefs.update(welcomed=True)  # the Guide opens first once per computer, then stays a tab away
     st.switch_page(nav.guide_page())
 page.run()
 with st.sidebar:
     style.look_picker()
+# Cloche, in the corner of every page in Bistro, gets the run's latest cue (ui/kitchen.py).
+kitchen.show("lab" if page.url_path == "red-team" else "detect")

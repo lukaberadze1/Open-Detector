@@ -3,6 +3,7 @@ readings and the sentences that drive the score."""
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import html
 import os
@@ -14,7 +15,7 @@ from opendetector.documents import extract_answer_slots, extract_document
 from opendetector.forensics import inspect_document
 from opendetector.segment import count_words, group_parts, sentence_runs, split_sentences
 
-from . import models, nav, style
+from . import kitchen, models, nav, prefs, style
 from .components import (
     VERDICTS,
     Reading,
@@ -40,6 +41,7 @@ AUTORUN = "detect:autorun"
 PENDING = "detect:pending_text"  # text to put in Source and analyze at the top of the next run (a revise, an undo)
 REVISED = "detect:revised"  # what the last revise did, with the text before it for Undo
 PICK_ROUND = "detect:pick_round"  # bumped to start the picked sentences afresh
+PACE = "detect:pace"  # seconds per word of the last checks, by engines, for the kitchen timer
 
 
 def _digest(text: str) -> str:
@@ -135,10 +137,51 @@ def _load(profile: str, enabled: list[str]):
         return models.get_detector(profile, enabled)
 
 
+def _pace_key(profile: str, enabled: list[str], sentences: bool) -> str:
+    return f"{profile}|{','.join(sorted(enabled))}|{int(sentences)}"
+
+
+def _estimate(profile: str, enabled: list[str], sentences: bool, words: int) -> float | None:
+    """Seconds the detector should take on `words`, from the pace of the last check with the same engines on this
+    computer (prefs) or in this session: None the first time, or while the engines still have to load."""
+    if not models.is_loaded(profile, enabled):
+        return None
+    key = _pace_key(profile, enabled, sentences)
+    pace = st.session_state.get(PACE, {}).get(key)
+    if pace is None and not style.public():
+        pace = (prefs.load().get("paces") or {}).get(key)
+    return max(2.0, pace * words) if pace else None
+
+
+def _record_pace(profile: str, enabled: list[str], sentences: bool, words: int, seconds: float) -> None:
+    if words < MIN_WORDS:
+        return
+    key, pace = _pace_key(profile, enabled, sentences), seconds / words
+    st.session_state.setdefault(PACE, {})[key] = pace
+    if not style.public():
+        prefs.update(paces={**(prefs.load().get("paces") or {}), key: round(pace, 5)})
+
+
 def _analyze(text: str, source: str, sections: list | None, profile: str, enabled: list[str],
-             sentences: bool) -> None:
+             sentences: bool, stage=None) -> None:
+    """Scores the text and keeps the result for show_result. In Bistro, `stage` (an st.empty in the result
+    column) holds the kitchen timer while the critic tastes, and Cloche waits, then reacts to the verdict."""
+    words = count_words(text)
+    tasting = kitchen.enabled() and stage is not None
+    if tasting:
+        left = _estimate(profile, enabled, sentences, words)
+        with stage:
+            kitchen.timer("detect:timer", left, left, size=170, layout="stack", eyebrow="The critic is tasting",
+                          steps=[(0.0, "Washing the text: hidden characters, look-alike letters…"),
+                                 (0.2, "Biting through 350-word mouthfuls…"), (0.85, "Adding up the bill…")],
+                          stamp=f"{time.time():.3f}", waiting="Tasting…", over="Nearly there…")
+        kitchen.cue("tasting", "Tasting… don't rush a critic.", ms=2600)
+        kitchen.show("detect", "analyze")
     detector = _load(profile, enabled)
-    with st.spinner(style.flavour("Scoring the text with every engine…", "Tasting in 350-word bites…")):
+    started = time.monotonic()
+    busy = contextlib.nullcontext() if tasting else st.spinner(
+        style.flavour("Scoring the text with every engine…", "Tasting in 350-word bites…"))
+    with busy:
         report = detector.analyze(text, sentences=sentences)
 
     if sections:
@@ -150,11 +193,17 @@ def _analyze(text: str, source: str, sections: list | None, profile: str, enable
         parts = [(f"Part {n}", clean[found[first].start:found[last].end]) for n, (first, last) in enumerate(runs, 1)]
         parts = parts if len(parts) > 1 else []
     rows = score_parts(detector, parts)
+    _record_pace(profile, enabled, sentences, words, time.monotonic() - started)
 
     result = _result(detector, report, text, source, profile, enabled, rows)
     upload = st.session_state.get("upload:detect:file") if sections else None
     result["forensics"] = inspect_document(upload.name, upload.data) if upload else None
     st.session_state[RESULT] = result
+    if stage is not None:
+        stage.empty()
+    if kitchen.enabled():  # Cloche reacts as the verdict lands, not when the rest of the page is drawn
+        kitchen.verdict_cue(report.verdict, report.ai_probability)
+        kitchen.show("detect", "verdict")
 
 
 def score_parts(detector, parts: list[tuple[str, str]], scored: list[dict] | None = None) -> list[dict]:
@@ -237,16 +286,12 @@ def _engine_readings(report, bands: list[str]) -> None:
     color = VERDICTS[report.verdict][1]
     note = (("Calibrated" if report.calibrated else "Uncalibrated")
             + f" · cut-offs at {report.thresholds['review']:.0%} and {report.thresholds['ai']:.0%}")
-    bill, hygiene = st.columns([1.5, 1], gap="small")
-    with bill:
-        engine_panel(readings, stats, (f"{report.ai_probability:.0%}", color, note))
-    norm = report.normalization
-    with hygiene:  # what the normalizer removed; the warning above says more when it found any
-        found = norm.invisible_chars + norm.homoglyphs
-        st.html('<div class="od-hygiene"><div class="od-eyebrow">Kitchen hygiene</div><div>'
-                + ("No hidden characters or look-alike letters found." if not found else
-                   f"Removed {norm.invisible_chars} hidden character(s) and {norm.homoglyphs} look-alike "
-                   "letter(s) before scoring.") + "</div></div>")
+    norm = report.normalization  # what the normalizer removed; the warning above says more when it found any
+    found = norm.invisible_chars + norm.homoglyphs
+    engine_panel(readings, stats, (f"{report.ai_probability:.0%}", color, note),
+                 hygiene=("No hidden characters or look-alike letters found." if not found else
+                          f"Removed {norm.invisible_chars} hidden character(s) and {norm.homoglyphs} look-alike "
+                          "letter(s) before scoring."))
 
 
 def _sections_table(rows: list[dict], min_words: int, thresholds: dict[str, float]) -> None:
@@ -285,7 +330,7 @@ def _engine_pushes(result: dict) -> None:
         pushes[label] = pushes.get(label, 0.0) + value
     if len(pushes) < 2:
         return
-    st.markdown("**What moved the score**")
+    style.heading("What moved the score")
     st.altair_chart(contribution_chart(pushes), width="stretch")
     total = intercept + sum(pushes.values())
     off = " An engine that is off counts at a typical value." if any("(off)" in label for label in pushes) else ""
@@ -411,6 +456,9 @@ def _revise_bar(result: dict, picked: list[int]) -> None:
     if problem := redteam.key_problem(conn):
         st.error(problem, icon=":material/key_off:")
         return
+    if kitchen.enabled():
+        kitchen.cue("tasting", "Back to the kitchen with those passages.", ms=2600)
+        kitchen.show("detect", "revise")
     status = st.status("Scoring the passages where they stand…", expanded=False)
     started = time.monotonic()
 
@@ -431,6 +479,8 @@ def _revise_bar(result: dict, picked: list[int]) -> None:
     except (redteam.APIError, OSError, ValueError) as exc:
         status.update(label="Revising stopped", state="error")
         st.error(str(exc), icon=":material/error:")
+        if kitchen.enabled():
+            kitchen.cue("skeptical")  # back from waiting, with nothing to say over the error
         return
     status.update(label="Revised", state="complete")
     st.session_state[REVISED] = {**done, "undo": report.text, "digest": _digest(done["text"])}
@@ -542,7 +592,7 @@ def render() -> None:
                       page="detect")
 
     setup, output = st.columns([1, 1.45], gap="large")
-    with setup:
+    with setup, st.container(key="od-setup"):
         with style.group("Source", "01"):
             text, source, sections = _input()
             words = count_words(text) if text.strip() else 0
@@ -550,22 +600,32 @@ def render() -> None:
                 st.caption(f"{words:,} words" + ("" if words >= MIN_WORDS else
                                                  f" · a verdict needs at least {MIN_WORDS}"))
         enabled, sentences = _engines(profile)
-        clicked = st.button("Analyze", type="primary", icon=":material/search:", width="stretch")
+        run = st.button("Analyze", type="primary", icon=":material/search:", width="stretch") \
+            or st.session_state.pop(AUTORUN, False)
+        problem = None
+        if run and not text.strip():
+            problem = "Paste some text or upload a file first."
+        elif run and not enabled:
+            problem = "Switch on at least one engine under Engines."
+        if problem:  # under the button, where the eye is
+            st.warning(problem, icon=":material/info:")
         st.caption(":material/balance: A detector score is statistical evidence, not proof of authorship. Don't "
                    "use it as the only basis for an academic integrity decision.")
 
     with output:
-        if clicked or st.session_state.pop(AUTORUN, False):
-            if not text.strip():
-                st.warning("Paste some text or upload a file first.")
-            elif not enabled:
-                st.warning("Switch on at least one engine under Engines.")
-            else:
-                _analyze(text, source, sections, profile, enabled, sentences)
+        stage = st.empty()  # the kitchen timer while the critic tastes
+        if run and not problem:
+            _analyze(text, source, sections, profile, enabled, sentences, stage)
 
         if result := st.session_state.get(RESULT):
             show_result(result, _digest(text), revise=True)
         else:
-            st.html(f'<div class="od-empty"><b>{style.flavour("No result yet", "Nothing on the plate yet")}</b>'
-                    "Paste at least 150 words of prose or upload a document on the left, then press Analyze. The "
+            # In Bistro the page is one centred column until there is something to show (ui/style.py). The empty
+            # plate goes in the timer's place, so the timer replaces it the moment Analyze is pressed; drawn after
+            # it, the plate would stay on the page until the run ends and keep the result column shut.
+            empty = style.flavour("No result yet", "Nothing on the plate yet")
+            stage.html(f'<div class="od-empty od-stage-empty"><b>{empty}'
+                    "</b>Paste at least 150 words of prose or upload a document on the left, then press Analyze. The "
                     "verdict, each engine's reading and the sentences that drive the score appear here.</div>")
+            if kitchen.enabled():
+                kitchen.greet("detect", "Paste me something. I am starving.")

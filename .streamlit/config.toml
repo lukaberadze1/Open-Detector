@@ -1,35 +1,37 @@
-# The app's base theme: Geist, round corners and a violet accent, with a light and a dark palette.
-# Viewers switch light/dark in the app's settings menu (the default follows their system). On top of
-# this, ui/style.py layers one of two looks: Glass by default, or Instrument from Settings in the sidebar.
+# The app's base theme, which every one of Streamlit's own widgets takes its colours from: sliders, links,
+# spinners, progress bars, tables, pop-overs. It is Bistro's (cream paper, espresso ink, paprika), the default
+# look, with a light and a dark palette; viewers switch light/dark in the app's settings menu (the default
+# follows their system). ui/style.py layers the active look on top: Bistro's details, or Glass, which repaints
+# the widgets it can in its own violet (tables keep these colours in both looks).
 
 [theme]
 font = "Geist:https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap"
-headingFont = "Geist:https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap"
+headingFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700;800&display=swap"
 codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
-headingFontWeights = [700, 650, 600, 600, 600, 600]
+headingFontWeights = [800, 700, 700, 700, 700, 700]
 baseRadius = "0.85rem"
-buttonRadius = "full"
+buttonRadius = "0.7rem"
 showWidgetBorder = true
 showSidebarBorder = false
 
 [theme.light]
-primaryColor = "#5B57F5"
-backgroundColor = "#EEF0F8"
-secondaryBackgroundColor = "#F7F8FC"
-textColor = "#0E1222"
-borderColor = "#DADDEA"
-linkColor = "#5B57F5"
+primaryColor = "#C2410C"
+backgroundColor = "#F8F1E4"
+secondaryBackgroundColor = "#F2E8D6"
+textColor = "#2A1F17"
+borderColor = "#E7DAC4"
+linkColor = "#C2410C"
 
 [theme.light.sidebar]
-backgroundColor = "#F3F4FA"
+backgroundColor = "#F2E8D6"
 
 [theme.dark]
-primaryColor = "#8F8CFF"
-backgroundColor = "#06070D"
-secondaryBackgroundColor = "#141724"
-textColor = "#ECEEF7"
-borderColor = "#262A3B"
-linkColor = "#A9A6FF"
+primaryColor = "#EA6A2E"
+backgroundColor = "#18120E"
+secondaryBackgroundColor = "#2A2019"
+textColor = "#F3E7D3"
+borderColor = "#3B2E24"
+linkColor = "#F08A55"
 
 [theme.dark.sidebar]
-backgroundColor = "#0B0D16"
+backgroundColor = "#1F1712"

@@ -140,6 +140,9 @@ CSS = """
 .od-hygiene { height: 100%; box-sizing: border-box; padding: 1.25rem; border-radius: 20px; background: var(--od-panel);
   border: 1.5px solid var(--od-edge); display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.82rem;
   line-height: 1.5; }
+.od-billrow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0.9rem; }
+.od-billrow > .od-bill { flex: 1.6 1 17rem; min-width: 0; height: auto; }
+.od-billrow > .od-hygiene { flex: 1 1 12rem; min-width: 0; height: auto; }
 .od-ticket { padding: 1.4rem 1.5rem; border-radius: 6px 6px 22px 22px; border: 1.5px solid var(--od-edge);
   box-shadow: 0 3px 0 var(--od-edge);
   background: var(--od-panel) radial-gradient(circle at 8px -2px, var(--od-bg) 6px, transparent 6.5px) 0 0 / 16px 12px
@@ -253,12 +256,12 @@ def look_tones() -> dict[str, str]:
 def apply_theme() -> None:
     """Styles for the whole app: the active look (ui/style.py), then the app's own HTML (verdict card,
     highlights) in the verdict tones."""
-    from . import style
+    from . import kitchen, style
 
     variables = "".join(f"--od-{name}: {value};" for name, value in tones().items()
                         if name not in ("ink", "muted", "track", "accent", "surface"))
     st.html(f"<style>{style.css()}:root {{{variables}--od-surface: var(--od-panel-solid); --od-mono: {style.MONO};}}"
-            f"{CSS}</style>")
+            f"{CSS}{kitchen.CSS}</style>")
 
 
 # Cloche, the critic: a serving dome with a moustache and a monocle, from the Bistro identity. His face is the
@@ -420,14 +423,15 @@ def priorities_chart(points: dict[str, int], most: int) -> str:
 
 
 def order_ticket(title: str, timing: str, stations: list[tuple[str, str, str]], done: float, foot: str) -> None:
-    """A running batch as an order ticket: Cloche tasting, the order, one line per station of the pipeline
-    (state "done", "now" or "todo", title, note), how far it has got, and a line at the foot."""
+    """A running batch as an order ticket: the order, one line per station of the pipeline (state "done", "now"
+    or "todo", title, note), how far it has got, and a line at the foot. Cloche watches from his corner and the
+    kitchen timer runs under the ticket (ui/redteam.py `_ticket`)."""
     marks = {"done": "\u2713", "now": "\u25cf", "todo": "\u25cb"}
     rows = "".join(f'<li class="{state}"><i aria-hidden="true">{marks[state]}</i><div><b>{html.escape(name)}</b>'
                    f'<span>{html.escape(note)}</span></div></li>' for state, name, note in stations)
     st.html(f"""
 <div class="od-ticket" role="status">
-  <div class="od-ticket-head">{cloche("tasting", 92)}<div><div class="od-eyebrow">Order ticket</div>
+  <div class="od-ticket-head"><div><div class="od-eyebrow">Order ticket</div>
     <b>{html.escape(title)}</b><span>{html.escape(timing)}</span></div></div>
   <div class="od-rule"></div>
   <ol>{rows}</ol>
@@ -457,12 +461,11 @@ def verdict_card(verdict: str, probability: float, thresholds: dict[str, float],
         }[verdict]
     from . import style
 
-    if style.bistro():  # Cloche gives the verdict with his face; the band shows where the score sits
+    if style.bistro():  # Cloche reacts from his corner (ui/kitchen.py); the band's needle shows where the score sits
         p = min(max(probability, 0.0), 1.0)
         st.html(f"""
 <div class="od-verdict" style="--tone: var(--od-{color})">
-  <div class="od-critic">
-    {cloche(MOODS[verdict], 150)}
+  <div class="od-critic" data-mood="{MOODS[verdict]}">
     <div>
       <div class="od-eyebrow">The critic says</div>
       <div class="od-says"><div class="od-label">{label}</div><span>{probability:.0%} AI likelihood</span></div>
@@ -511,10 +514,10 @@ class Reading:
 
 
 def engine_panel(readings: list[Reading], stats: list[tuple[str, str]],
-                 total: tuple[str, str, str] | None = None) -> None:
+                 total: tuple[str, str, str] | None = None, hygiene: str | None = None) -> None:
     """Each engine's own reading as a labelled meter, with a row of counts underneath. In Bistro it prints
     as the critic's bill instead: each reading and count on a dotted line, then `total` (the AI likelihood,
-    the tone to print it in, and a note under it)."""
+    the tone to print it in, and a note under it), with the `hygiene` line in a panel beside it, as tall."""
     from . import style
 
     if style.bistro():
@@ -528,7 +531,11 @@ def engine_panel(readings: list[Reading], stats: list[tuple[str, str]],
             end = (f'<div class="od-rule"></div><div class="od-line total"><span>TOTAL · AI likelihood</span><i></i>'
                    f'<b style="color: var(--od-{tone})">{html.escape(value)}</b></div>'
                    f'<small>{html.escape(note)}</small>')
-        st.html(f'<div class="od-bill"><div class="od-eyebrow">The bill</div>{"".join(lines)}{end}</div>')
+        bill = f'<div class="od-bill"><div class="od-eyebrow">The bill</div>{"".join(lines)}{end}</div>'
+        if hygiene is not None:
+            bill = (f'<div class="od-billrow">{bill}<div class="od-hygiene"><div class="od-eyebrow">Kitchen hygiene'
+                    f'</div><div>{html.escape(hygiene)}</div></div></div>')
+        st.html(bill)
         return
     rows = []
     for reading in readings:

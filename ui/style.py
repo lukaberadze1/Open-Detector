@@ -27,6 +27,11 @@ ASSETS = ROOT / "ui" / "assets"
 LOOKS = ("bistro", "glass")
 LOOK_LABELS = {"bistro": "Bistro", "glass": "Glass"}
 KEY = "keep:appearance:look"
+# Bistro's finish: Textured (paper grain, kraft sidebar, cards with depth, an order-pad text box, enamel buttons)
+# or Standard (flat).
+FINISHES = ("textured", "standard")
+FINISH_LABELS = {"textured": "Textured", "standard": "Standard"}
+FINISH_KEY = "keep:appearance:finish"
 DEFAULT_LOOK = os.environ.get("OPENDETECTOR_LOOK", "bistro").strip().lower()
 if DEFAULT_LOOK not in LOOKS:
     DEFAULT_LOOK = "bistro"
@@ -98,6 +103,20 @@ def _save_look() -> None:
         prefs.update(look=st.session_state[KEY])
 
 
+def _save_finish() -> None:
+    if not public():
+        prefs.update(finish=st.session_state[FINISH_KEY])
+
+
+def finish() -> str:
+    """Bistro's finish, Textured unless the viewer picked Standard."""
+    value = st.session_state.get(FINISH_KEY)
+    if value not in FINISHES:
+        saved = None if public() else prefs.load().get("finish")
+        value = st.session_state[FINISH_KEY] = saved if saved in FINISHES else FINISHES[0]
+    return value
+
+
 def current_look() -> str:
     look = st.session_state.get(KEY)
     if look not in LOOKS:
@@ -127,11 +146,25 @@ def look_picker() -> None:
     """The Look switch at the foot of the sidebar: Bistro unless the viewer picks Glass. Light or dark stays
     with Streamlit's own Settings."""
     current_look()
+    finish()
     with st.container(key="od-look"):
         st.html('<div class="od-group">Look</div>')
         st.segmented_control("Look", LOOKS, format_func=LOOK_LABELS.get, key=KEY, required=True,
                              label_visibility="collapsed", on_change=_save_look,
                              help="The app's look. Light or dark: app menu > Settings.")
+        if bistro():
+            st.html('<div class="od-group">Finish</div>')
+            st.segmented_control("Finish", FINISHES, format_func=FINISH_LABELS.get, key=FINISH_KEY, required=True,
+                                 label_visibility="collapsed", on_change=_save_finish,
+                                 help="Textured: paper grain, kraft sidebar, cards with depth. Standard: flat.")
+
+
+def heading(text: str, note: str = "") -> None:
+    """A heading inside a page or panel, in the look's heading type, with an optional muted note after it."""
+    import html
+
+    extra = f"<span>{html.escape(note)}</span>" if note else ""
+    st.html(f'<div class="od-section-title"><b>{html.escape(text)}</b>{extra}</div>')
 
 
 def logo_paths() -> tuple[str, str]:
@@ -270,10 +303,10 @@ BASE_CSS = """
 [data-testid="stBaseButton-secondary"] { background: var(--od-panel-strong) !important;
   border-color: var(--od-hair) !important;
   border-radius: 999px !important; }
-[data-testid="stButtonGroup"] { background: var(--od-track); border-radius: 1.4rem; padding: 3px; width: fit-content;
-  max-width: 100%; }
-/* A segmented control wider than its column wraps onto a second row instead of running under the next one */
-[data-testid="stButtonGroup"] > div { flex-wrap: wrap; }
+/* The track goes on the row of buttons, not the whole control, so a label sits above the pill and not inside it.
+   A segmented control wider than its column wraps onto a second row instead of running under the next one. */
+[data-testid="stButtonGroup"] > div:last-child { background: var(--od-track); border-radius: 1.4rem; padding: 3px;
+  max-width: 100%; box-sizing: border-box; flex-wrap: wrap; }
 [data-testid="stButtonGroup"] button { border: 0 !important; border-radius: 999px !important;
   background: transparent !important; }
 [data-testid="stButtonGroup"] button[aria-checked="true"] { background: var(--od-panel-solid) !important;
@@ -281,6 +314,26 @@ BASE_CSS = """
 [data-testid="stButtonGroup"] button[aria-checked="true"] * { color: var(--od-ink) !important; font-weight: 600; }
 [data-testid="stCheckbox"] label[data-selected="true"] > div:first-of-type { background: var(--od-accent) !important;
   box-shadow: 0 0 12px var(--od-glow); }
+/* Form buttons dress like the page's own; text-only buttons take the accent */
+[data-testid="stBaseButton-primaryFormSubmit"] { background: var(--od-accent) !important; border: 0 !important;
+  color: #fff !important; border-radius: 999px !important; font-weight: 600 !important; }
+[data-testid="stBaseButton-secondaryFormSubmit"] { background: var(--od-panel-strong) !important;
+  border-color: var(--od-hair) !important; border-radius: 999px !important; }
+[data-testid="stBaseButton-tertiary"], [data-testid="stBaseButton-tertiary"] p { color: var(--od-accent) !important; }
+[data-testid="stBaseButton-tertiary"]:hover:not(:disabled) { background: var(--od-track) !important; }
+/* A disabled button looks it, whatever its kind */
+.stApp button:disabled, .stApp button[disabled] { opacity: 0.45 !important; box-shadow: none !important;
+  filter: saturate(0.35); cursor: not-allowed !important; transform: none !important; }
+/* Every button presses down */
+.stApp button { transition: transform .08s ease, box-shadow .08s ease, background .15s; }
+.stApp button:active:not(:disabled) { transform: translateY(2px); }
+a, [data-testid="stMarkdownContainer"] a { color: var(--od-accent); }
+[data-testid="stPopoverBody"] { background: var(--od-panel-solid) !important;
+  border: 1px solid var(--od-edge) !important;
+  border-radius: 16px !important; }
+[data-baseweb="tag"] { background: color-mix(in srgb, var(--od-accent) 14%, var(--od-panel-solid)) !important;
+  color: var(--od-ink) !important; border: 1px solid color-mix(in srgb, var(--od-accent) 35%, transparent) !important; }
+[data-baseweb="tag"] span, [data-baseweb="tag"] svg { color: var(--od-ink) !important; fill: var(--od-ink) !important; }
 
 /* Tabs */
 [data-testid="stTabs"] [role="tablist"] { gap: 0.3rem; border-bottom: 1px solid var(--od-hair); }
@@ -320,6 +373,20 @@ BASE_CSS = """
 .od-section-title span { font-size: 0.8rem; color: var(--od-muted); }
 @media (max-width: 640px) { [data-testid="stMainBlockContainer"] { padding-top: 3.6rem; } }
 @media (prefers-reduced-motion: reduce) { .od-pulse, .od-scan { animation: none !important; } }
+/* The stage's hidden spots in the sidebar (ui/kitchen.show) take no room */
+[class*="st-key-od-stage-"] { display: none !important; }
+"""
+
+# Glass on top of BASE_CSS. The base theme (.streamlit/config.toml) is Bistro's, so Glass takes back its own type
+# for headings and turns the widgets it can't recolour from the paprika of the theme to its violet.
+GLASS_CSS = """
+.stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6 {
+  font-family: 'Geist', 'Inter', -apple-system, system-ui, sans-serif !important; }
+[data-testid="stSlider"] [data-baseweb="slider"], [data-testid="stProgress"], [data-testid="stSpinner"] svg,
+[data-testid="stSpinner"] i, [data-testid="stStatusWidget"] svg,
+[data-testid="stExpanderIconSpinner"] { filter: hue-rotate(221deg) saturate(1.25); }
+[data-baseweb="textarea"] textarea, [data-baseweb="input"] input, [data-baseweb="input"] > div,
+[data-baseweb="select"] > div > div { background: transparent !important; }
 """
 
 MONO = "'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace"
@@ -341,7 +408,7 @@ BISTRO_CSS = """
 [data-testid="stSidebarNavLink"] span { font-size: 0.875rem; color: var(--od-ink) !important; }
 [data-testid="stSidebarNavLink"]::after { flex-basis: 100%; font-family: 'Geist', system-ui, sans-serif;
   font-size: 0.75rem; color: var(--od-muted); }
-[data-testid="stSidebarNavLink"][href$="/"]::after, [data-testid="stSidebarNavLink"][href$="/detect"]::after {
+[data-testid="stSidebarNavLink"][href$="/"]::after, [data-testid="stSidebarNavLink"][href$="/check"]::after {
   content: "DETECT"; }
 [data-testid="stSidebarNavLink"][href$="/red-team"]::after { content: "RED_TEAM"; }
 [data-testid="stSidebarNavLink"][href$="/guide"]::after { content: "GUIDE"; }
@@ -351,7 +418,8 @@ BISTRO_CSS = """
 [data-testid="stSidebarNavLink"][aria-current="page"] span { font-weight: 700; }
 .st-key-od-look { margin-top: 1.4rem; padding: 0.75rem; border-radius: 14px; background: var(--od-panel);
   border: 1.5px solid var(--od-edge); gap: 0.5rem; }
-.st-key-od-look [data-testid="stButtonGroup"] { width: 100%; }
+.st-key-od-look [data-testid="stButtonGroup"], .st-key-od-look [data-testid="stButtonGroup"] > div:last-child {
+  width: 100%; }
 .st-key-od-look [data-testid="stButtonGroup"] button { flex: 1 1 0; padding: 4px 8px !important; min-width: 4.6rem; }
 .st-key-od-look .stElementContainer, .st-key-od-look [data-testid="stButtonGroup"] div:has(> button) {
   width: 100% !important; }
@@ -377,14 +445,64 @@ BISTRO_CSS = """
 [data-baseweb="textarea"], [data-baseweb="input"], [data-baseweb="select"] > div {
   border: 1.5px solid var(--od-edge) !important; border-radius: 16px !important; }
 [data-testid="stFileUploaderDropzone"] { border: 2px dashed var(--od-dash) !important; }
-[data-testid="stBaseButton-primary"] { border-radius: 16px !important; font-weight: 800 !important;
-  color: var(--od-on-ink) !important; box-shadow: 0 4px 0 var(--od-press); min-height: 3rem; }
-[data-testid="stBaseButton-primary"] * { color: #FFFCF6 !important; font-weight: 800 !important; }
-[data-testid="stBaseButton-primary"]:hover { background: var(--od-accent-deep) !important;
-  box-shadow: 0 4px 0 var(--od-press); }
-[data-testid="stBaseButton-secondary"] { border: 1.5px solid var(--od-edge) !important; border-radius: 10px !important;
+[data-testid="stBaseButton-primary"], [data-testid="stBaseButton-primaryFormSubmit"] { border-radius: 16px !important;
+  font-weight: 800 !important; background: var(--od-accent) !important; color: #FFFCF6 !important;
+  box-shadow: 0 4px 0 var(--od-press); min-height: 3rem; padding: 0.5rem 1.35rem !important; }
+[data-testid="stBaseButton-primary"] *, [data-testid="stBaseButton-primaryFormSubmit"] * { color: #FFFCF6 !important;
+  font-weight: 800 !important; }
+[data-testid="stBaseButton-primaryFormSubmit"] p { font-family: MONO !important; }
+[data-testid="stBaseButton-primary"]:hover, [data-testid="stBaseButton-primaryFormSubmit"]:hover {
+  background: var(--od-accent-deep) !important; box-shadow: 0 4px 0 var(--od-press); }
+[data-testid="stBaseButton-primary"]:active:not(:disabled),
+[data-testid="stBaseButton-primaryFormSubmit"]:active:not(:disabled) { transform: translateY(3px);
+  box-shadow: 0 1px 0 var(--od-press) !important; }
+[data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-secondaryFormSubmit"] {
+  border: 1.5px solid var(--od-edge) !important; border-radius: 10px !important; background: var(--od-panel) !important;
+  box-shadow: 0 2px 0 var(--od-edge); }
+[data-testid="stBaseButton-secondary"]:active:not(:disabled),
+[data-testid="stBaseButton-secondaryFormSubmit"]:active:not(:disabled) { box-shadow: 0 0 0 var(--od-edge); }
+[data-testid="stBaseButton-secondaryFormSubmit"] p, [data-testid="stBaseButton-tertiary"] p,
+[data-testid="stPopoverButton"] p, [data-testid="stDownloadButton"] p, [data-testid="stPageLink"] p {
+  font-family: MONO !important; font-size: 0.8rem !important; }
+[data-testid="stBaseButton-tertiary"] { border-radius: 10px !important; }
+[data-testid="stPopoverButton"] { border: 1.5px solid var(--od-edge) !important; border-radius: 10px !important;
   background: var(--od-panel) !important; }
-[data-testid="stButtonGroup"] { background: var(--od-track); border-radius: 999px; }
+[data-testid="stButtonGroup"] > div:last-child { background: var(--od-track); border-radius: 999px; }
+/* One heading style everywhere: the kitchen-ticket mono */
+.stApp h3 { font-size: 1.15rem !important; letter-spacing: -0.02em; }
+.od-section-title b, [data-testid="stMetricValue"] div, [data-testid="stHeadingWithActionElements"] {
+  font-family: MONO !important; }
+.od-section-title b { font-size: 1.1rem; font-weight: 800; }
+[data-testid="stMetric"] [data-testid="stMetricValue"] div { font-weight: 800; letter-spacing: -0.03em; }
+[data-testid="stExpander"] details summary:hover, [data-testid="stExpander"] details[open] > summary {
+  background: color-mix(in srgb, var(--od-edge) 30%, transparent) !important; }
+/* The verdict needle shoots past its place and settles */
+.od-band b { animation: od-needle 1.4s cubic-bezier(.34,1.56,.64,1) both; }
+@keyframes od-needle { from { left: 0%; } }
+/* One centred column until there is a result: the setup column fills the row, and the result column, holding only
+   the empty plate, stays out. When a result or the timer arrives, the setup slides left and the result slides in. */
+[data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .od-stage-empty)
+  > [data-testid="stColumn"]:first-child {
+  flex: 0 0 100% !important; max-width: 100% !important; width: 100% !important;
+  padding-inline: max(0px, calc((100% - 780px) / 2)); }
+[data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .od-stage-empty)
+  > [data-testid="stColumn"]:last-child {
+  display: none !important; }
+[data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .od-stage-empty) { gap: 0 !important; }
+[data-testid="stHorizontalBlock"]:has(.st-key-od-setup) > [data-testid="stColumn"] {
+  transition: flex-basis .7s cubic-bezier(.65,0,.35,1), padding .7s cubic-bezier(.65,0,.35,1); }
+[data-testid="stHorizontalBlock"]:has(.st-key-od-setup) > [data-testid="stColumn"]:last-child {
+  animation: od-slide-in .7s cubic-bezier(.65,0,.35,1) both; }
+@keyframes od-slide-in { from { opacity: 0; transform: translateX(60px); } }
+/* The Lab's order button stays in reach at the foot of the screen */
+.st-key-od-order { position: sticky; bottom: 0; z-index: 3; padding: 0.6rem 0 0.9rem;
+  background: linear-gradient(180deg, transparent, var(--od-bg) 40%); }
+.st-key-od-results { gap: 0.5rem; }
+.st-key-od-chef-picks:has(.stElementContainer) { padding: 10px 14px; border-radius: 12px;
+  border: 1px dashed var(--od-dash);
+  background: color-mix(in srgb, var(--od-panel-strong) 70%, transparent); gap: 0.35rem; }
+@media (prefers-reduced-motion: reduce) { .od-band b, [data-testid="stColumn"] { animation: none !important;
+  transition: none !important; } }
 [data-testid="stButtonGroup"] button[aria-checked="true"] { background: var(--od-on) !important; box-shadow: none; }
 [data-testid="stButtonGroup"] button[aria-checked="true"] * { color: var(--od-on-ink) !important; font-weight: 700; }
 [data-testid="stButtonGroup"] button p { font-size: 0.78rem !important; }
@@ -406,6 +524,89 @@ for page, name in (("DETECT", "detect"), ("RED_TEAM", "red-team"), ("GUIDE", "gu
     BISTRO_CSS = BISTRO_CSS.replace(f'"{page}"', f'"{PAGE_FLAVOUR[name]}"')
 BISTRO_CSS = BISTRO_CSS.replace("MONO", MONO)
 
+# Bistro's Textured finish, per mode: paper grain, a kraft-paper sidebar, cards with real depth, a lined order-pad
+# text box, glossy enamel buttons, sunken switch tracks and the order ticket a little crooked.
+TEXTURED_TOKENS = {
+    "light": {"grain": "rgba(120,90,60,0.08)", "grain-2": "rgba(255,255,255,0.55)", "kraft": "#E3CFAB",
+              "kraft-line": "rgba(120,85,45,0.07)", "kraft-dot": "rgba(90,60,30,0.10)", "kraft-edge": "#C9B08A",
+              "card-top": "#FFFDF8", "card-bottom": "#FBF3E4", "card-edge": "#D9C7AA", "card-lip": "#E2D1B5",
+              "card-shade": "rgba(60,40,20,0.45)", "shine": "#FFFFFF", "pad": "#FFFBF2",
+              "pad-line": "rgba(194,65,12,0.13)", "pad-margin": "rgba(194,65,12,0.25)", "sunk": "#E6D6BC",
+              "sunk-shade": "rgba(60,40,20,0.28)", "enamel-top": "#E8662A", "enamel-mid": "#C2410C",
+              "enamel-bottom": "#A8370A", "enamel-edge": "#7A2706", "seg-top": "#4A3829", "seg-bottom": "#24190F",
+              "bg": "#F3EADB"},
+    "dark": {"grain": "rgba(255,230,200,0.035)", "grain-2": "rgba(0,0,0,0.35)", "kraft": "#2A1F16",
+             "kraft-line": "rgba(255,220,180,0.035)", "kraft-dot": "rgba(0,0,0,0.25)", "kraft-edge": "#3B2E24",
+             "card-top": "#2B2119", "card-bottom": "#221A14", "card-edge": "#3B2E24", "card-lip": "#120D09",
+             "card-shade": "rgba(0,0,0,0.6)", "shine": "rgba(255,240,220,0.06)", "pad": "#1E1712",
+             "pad-line": "rgba(234,106,46,0.14)", "pad-margin": "rgba(234,106,46,0.28)", "sunk": "#120D09",
+             "sunk-shade": "rgba(0,0,0,0.55)", "enamel-top": "#F0844B", "enamel-mid": "#EA6A2E",
+             "enamel-bottom": "#C9551F", "enamel-edge": "#7A2A0A", "seg-top": "#F3E7D3", "seg-bottom": "#D9C7AA",
+             "bg": "#18120E"},
+}
+TEXTURED_CSS = """
+.stApp { background-color: var(--od-tx-bg) !important;
+  background-image: radial-gradient(var(--od-tx-grain) 1px, transparent 1.3px),
+    radial-gradient(var(--od-tx-grain-2) 1px, transparent 1.3px) !important;
+  background-size: 7px 7px, 11px 11px !important; background-position: 0 0, 3px 5px !important; }
+[data-testid="stSidebar"] { background-color: var(--od-tx-kraft) !important;
+  background-image: repeating-linear-gradient(95deg, var(--od-tx-kraft-line) 0 2px, transparent 2px 7px),
+    radial-gradient(var(--od-tx-kraft-dot) 1px, transparent 1.4px) !important;
+  background-size: auto, 5px 5px !important; border-right: 1px solid var(--od-tx-kraft-edge) !important;
+  box-shadow: inset -6px 0 12px -8px rgba(60,40,20,0.35); }
+[data-testid="stSidebarNavLink"][aria-current="page"] {
+  background: linear-gradient(180deg, var(--od-tx-card-top), var(--od-tx-card-bottom)) !important;
+  border: 1px solid var(--od-tx-kraft-edge) !important;
+  box-shadow: inset 0 1px 0 var(--od-tx-shine), 0 3px 6px -2px rgba(60,40,20,0.35) !important;
+  transform: rotate(-0.6deg); }
+.st-key-od-look { background: linear-gradient(180deg, var(--od-tx-card-top), var(--od-tx-card-bottom));
+  border: 1px solid var(--od-tx-kraft-edge); box-shadow: 0 3px 6px -2px rgba(60,40,20,0.3); }
+[data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"]),
+.stVerticalBlock[class*="st-key-od-panel"], .od-verdict, .od-bill, .od-hygiene, .od-text, .od-panel,
+[data-testid="stExpander"] details, .od-empty {
+  background: linear-gradient(180deg, var(--od-tx-card-top), var(--od-tx-card-bottom)) !important;
+  border: 1px solid var(--od-tx-card-edge) !important;
+  box-shadow: inset 0 1px 0 var(--od-tx-shine), 0 2px 0 var(--od-tx-card-lip),
+    0 16px 26px -16px var(--od-tx-card-shade) !important; }
+.od-bill { background:
+  radial-gradient(circle at 8px -2px, var(--od-tx-bg) 6px, transparent 6.5px) 0 0 / 16px 12px repeat-x,
+  linear-gradient(180deg, var(--od-tx-card-top), var(--od-tx-card-bottom)) !important; }
+.od-empty { border-style: dashed !important; }
+[data-testid="stTextArea"] textarea { background-color: var(--od-tx-pad) !important;
+  background-image: repeating-linear-gradient(180deg, transparent 0 25px, var(--od-tx-pad-line) 25px 26px),
+    linear-gradient(90deg, transparent 0 34px, var(--od-tx-pad-margin) 34px 35px, transparent 35px) !important;
+  background-attachment: local !important; line-height: 26px !important; padding-left: 46px !important; }
+[data-baseweb="textarea"] { box-shadow: inset 0 2px 6px rgba(60,40,20,0.18) !important; }
+[data-testid="stBaseButton-primary"], [data-testid="stBaseButton-primaryFormSubmit"] {
+  border: 1px solid var(--od-tx-enamel-edge) !important;
+  background: linear-gradient(180deg, var(--od-tx-enamel-top) 0%, var(--od-tx-enamel-mid) 55%,
+    var(--od-tx-enamel-bottom) 100%) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.45), inset 0 -2px 0 rgba(0,0,0,0.12), 0 4px 0 var(--od-tx-enamel-edge),
+    0 12px 18px -8px rgba(122,39,6,0.6) !important; text-shadow: 0 -1px 0 rgba(0,0,0,0.3); }
+[data-testid="stBaseButton-primary"]:hover, [data-testid="stBaseButton-primaryFormSubmit"]:hover {
+  filter: brightness(1.07); }
+[data-testid="stBaseButton-primary"]:active:not(:disabled),
+[data-testid="stBaseButton-primaryFormSubmit"]:active:not(:disabled) {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.3), 0 1px 0 var(--od-tx-enamel-edge) !important; }
+[data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-secondaryFormSubmit"],
+[data-testid="stPopoverButton"] {
+  background: linear-gradient(180deg, var(--od-tx-card-top), var(--od-tx-card-bottom)) !important;
+  border: 1px solid var(--od-tx-kraft-edge) !important;
+  box-shadow: inset 0 1px 0 var(--od-tx-shine), 0 2px 0 var(--od-tx-kraft-edge) !important; }
+[data-testid="stButtonGroup"] > div:last-child { background: var(--od-tx-sunk) !important;
+  box-shadow: inset 0 2px 4px var(--od-tx-sunk-shade), 0 1px 0 var(--od-tx-shine); }
+[data-testid="stButtonGroup"] button[aria-checked="true"] {
+  background: linear-gradient(180deg, var(--od-tx-seg-top), var(--od-tx-seg-bottom)) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.25), 0 2px 3px rgba(42,31,23,0.4) !important; }
+[data-testid="stCheckbox"] label > div:first-of-type { box-shadow: inset 0 2px 4px var(--od-tx-sunk-shade) !important; }
+.od-ticket { transform: rotate(0.4deg);
+  box-shadow: 0 2px 0 var(--od-tx-card-lip), 0 20px 30px -18px var(--od-tx-card-shade);
+  background-image: radial-gradient(circle at 8px -2px, var(--od-tx-bg) 6px, transparent 6.5px),
+    repeating-linear-gradient(180deg, transparent 0 31px, rgba(42,31,23,0.035) 31px 32px) !important;
+  background-size: 16px 12px, auto !important; background-repeat: repeat-x, repeat !important; }
+.st-key-od-order { background: linear-gradient(180deg, transparent, var(--od-tx-bg) 40%); }
+"""
+
 
 def css() -> str:
     look, current = current_look(), mode()
@@ -414,4 +615,9 @@ def css() -> str:
     style = BASE_CSS.replace("FONTS", FONTS).replace("MODE", current)
     if look == "bistro":
         style += BISTRO_CSS
+        if finish() == "textured":
+            variables += "".join(f"--od-tx-{name}: {value};" for name, value in TEXTURED_TOKENS[current].items())
+            style += TEXTURED_CSS
+    else:
+        style += GLASS_CSS
     return f":root {{{variables} --od-radius: 22px;}}" + style

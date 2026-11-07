@@ -124,7 +124,7 @@ from opendetector.generator_inputs import extract_generation_source
 from opendetector.env import env_keys, extra_keys_name, load_env, save_env, save_extra_keys
 from opendetector.segment import count_words
 
-from . import detect, models, nav, style
+from . import detect, kitchen, models, nav, style
 from .components import (VERDICTS, Upload, keep, order_ticket, persistent_upload, priorities_chart,
                          verdict_badge)
 
@@ -1281,9 +1281,10 @@ def own_settings() -> bool:
     return bool(st.session_state.get(OWN_SETTINGS, False))
 
 
-def _setup(profile: str) -> tuple[Plan, Connection]:
+def _setup(profile: str, connection_box=None) -> tuple[Plan, Connection]:
     """The settings column, top to bottom: Mode, Input, Priorities, Rewrite (to regenerate), Writing, Detector,
-    then Model & connection folded away. The priorities need the connection, so their panel is laid out near the
+    then Model & connection folded away, in `connection_box` (under the order button) when given, unless a public
+    visitor still has to paste a key. The priorities need the connection, so their panel is laid out near the
     top and filled after it."""
     engine = "API"
     with style.group("Mode", "01"):
@@ -1327,9 +1328,10 @@ def _setup(profile: str) -> tuple[Plan, Connection]:
                 help="Rule edits leave a text its original author's, so by default they aren't saved as AI data. "
                      "Turn this on only for text an AI wrote.")
     key_missing = public() and not st.session_state.get(PUBLIC_KEY, "").strip()
-    with st.expander("Model & connection" + (" · add your Gemini key" if key_missing else
-                                              style.flavour("", " · the cooks")),
-                     icon=":material/key:", expanded=key_missing):
+    with (connection_box if connection_box is not None and not key_missing else contextlib.nullcontext()), \
+            st.expander("Model & connection" + (" · add your Gemini key" if key_missing else
+                                                 style.flavour("", " · the cooks")),
+                        icon=":material/key:", expanded=key_missing):
         conn = _connection()
     with priorities_box:
         _priorities(plan, conn)
@@ -1459,24 +1461,30 @@ def _priorities(plan: Plan, conn: Connection) -> None:
         _hand_settings(plan)
         return
     points = st.session_state.setdefault(POINTS, dict(generation_settings.EVEN))
-    left = generation_settings.POINTS - sum(points.values())
-    for measure in MEASURES:
-        icon, label = PRIORITIES[measure]
-        with st.container(horizontal=True, vertical_alignment="center", gap="small"):
-            st.markdown(f"{icon} {label}", width="stretch")
-            st.markdown(f":violet[{'●' * points[measure]}]:gray[{'○' * (MAX_POINTS - points[measure])}]",
-                        width="content")
-            st.button("\u2212", key=f"redteam:less:{measure}", type="tertiary",  # a minus sign
-                      on_click=_spend, args=(measure, -1), disabled=points[measure] == 0,
-                      help=f"One point less on {label.lower()}")
-            st.button("+", key=f"redteam:more:{measure}", type="tertiary",
-                      on_click=_spend, args=(measure, 1), disabled=not left or points[measure] == MAX_POINTS,
-                      help=f"One point more on {label.lower()}")
-    st.caption(f"{left} of {generation_settings.POINTS} points left"
-               + (": take one from a priority to give it to another." if not left else ".")
-               + " Even points are the measured balance."
-               + ("" if public() else f" Meaning isn't traded for points: the picked setup keeps "
-                                      f"{recipe.MEANING_FLOOR}% of names and numbers or more."))
+    if kitchen.enabled():  # Bistro: rows of ingredients, a lit one per point, with presets
+        points = st.session_state[POINTS] = kitchen.ingredients(points, generation_settings.POINTS, MAX_POINTS)
+        st.caption("Even points are the measured balance."
+                   + ("" if public() else f" Meaning isn't traded for points: the picked setup keeps "
+                                          f"{recipe.MEANING_FLOOR}% of names and numbers or more."))
+    else:
+        left = generation_settings.POINTS - sum(points.values())
+        for measure in MEASURES:
+            icon, label = PRIORITIES[measure]
+            with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                st.markdown(f"{icon} {label}", width="stretch")
+                st.markdown(f":violet[{'●' * points[measure]}]:gray[{'○' * (MAX_POINTS - points[measure])}]",
+                            width="content")
+                st.button("\u2212", key=f"redteam:less:{measure}", type="tertiary",  # a minus sign
+                          on_click=_spend, args=(measure, -1), disabled=points[measure] == 0,
+                          help=f"One point less on {label.lower()}")
+                st.button("+", key=f"redteam:more:{measure}", type="tertiary",
+                          on_click=_spend, args=(measure, 1), disabled=not left or points[measure] == MAX_POINTS,
+                          help=f"One point more on {label.lower()}")
+        st.caption(f"{left} of {generation_settings.POINTS} points left"
+                   + (": take one from a priority to give it to another." if not left else ".")
+                   + " Even points are the measured balance."
+                   + ("" if public() else f" Meaning isn't traded for points: the picked setup keeps "
+                                          f"{recipe.MEANING_FLOOR}% of names and numbers or more."))
     picked = _apply_recipe(plan, points, measured)
     blocks = len(_batch_jobs(plan)) if plan.batch else 1
     models_on_offer = [name for name in (conn.model, *conn.fallback_models) if name]
@@ -1486,8 +1494,11 @@ def _priorities(plan: Plan, conn: Connection) -> None:
         plan.group_size, plan.parallel = setting.group_size, setting.parallel
         plan.temperature = (setting.temperature if setting.temperature is not None
                             else st.session_state.get("keep:redteam:temperature", Plan.temperature))
-    chart, readout = st.columns([1, 1.6], vertical_alignment="center")
-    chart.html(priorities_chart(points, MAX_POINTS))
+    if kitchen.enabled():  # the ingredients say what the diamond did; the chef's pick goes in a box under them
+        chart, readout = None, st.container(key="od-chef-picks")
+    else:
+        chart, readout = st.columns([1, 1.6], vertical_alignment="center")
+        chart.html(priorities_chart(points, MAX_POINTS))
     with readout:
         if setting:
             _readout(plan, table, setting, blocks)
@@ -2034,6 +2045,14 @@ def _ticket(worker: BatchWorker, done: int, total: int, seconds_left: float | No
     foot = ("Every block is saved as it's cooked. Keep this tab open until it's done." if public() else
             "Every block is saved as it's cooked, and the batch carries on if you close the tab.")
     order_ticket(f"Regenerating {plan.upload.name}", timing, rows, (at + inner) / len(ids), foot)
+    # The kitchen timer at the foot of the ticket counts down in the browser between the page's refreshes, from the
+    # batch's own estimate of the time left; until the first blocks are timed its sector sweeps round.
+    elapsed = max(0.0, time.time() - status.get("started", time.time()))
+    ready = f"ready around {datetime.now() + timedelta(seconds=seconds_left):%H:%M} · " if seconds_left else ""
+    kitchen.timer(f"ticket:{worker.checkpoint.path}", seconds_left,
+                  (elapsed + seconds_left) if seconds_left is not None else None, size=104, layout="row",
+                  note=f"left · {ready}{done} of {total} blocks {'scored' if worker.phase == 'scoring' else 'cooked'}",
+                  stamp=str(worker.checkpoint.path), waiting="Timing…", over="Any minute…")
 
 
 def _progress_panel(worker: BatchWorker, done: int, total: int, seconds_left: float | None,
@@ -2095,6 +2114,9 @@ def _finish_ended_batches() -> None:
                                    "saved and exported. Press Resume to retry scoring, or turn scoring off "
                                    "and Resume to finish without scores.")
         st.session_state[NOTICE] = notice
+        if kitchen.enabled():  # Cloche rings the bell when an order is up, and frowns at one that stopped
+            kitchen.cue(*(("happy", f"Ding! Order up. All {len(keys)} blocks of {name}.", True)
+                          if notice[0] == "success" else ("skeptical", None, False)), ms=3800)
         st.toast(notice[1].split(". ")[0].rstrip(".") + ".", icon={"success": ":material/check_circle:",
                                                         "warning": ":material/pause_circle:"}.get(
                                                             notice[0], ":material/error:"))
@@ -2128,7 +2150,7 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         )
     by_key = {job["key"]: job for job in jobs}
     status = {"model": None, "note": None, "log": [], "released": False,
-              "order": _model_order(plan, conn)}
+              "order": _model_order(plan, conn), "started": time.time()}
     # Adaptive challenge mode drafts and scores each block on its own. A local server, as the main endpoint,
     # answers one request at a time anyway.
     group_size = 1 if plan.evasion else plan.group_size
@@ -2856,11 +2878,11 @@ def _show_result(result: dict, profile: str) -> None:
     row = result.get("row") or {}
     with st.container(border=True):
         with st.container(horizontal=True, vertical_alignment="center"):
-            st.markdown("**Latest result**")
+            style.heading("Latest result")
             if row.get("model"):
                 st.badge(row["model"], icon=":material/smart_toy:", color="gray")
             if row.get("attack"):
-                st.badge(row["attack"], icon=":material/label:", color="violet")
+                st.badge(row["attack"], icon=":material/label:", color="orange")
         if result.get("note"):
             st.caption(result["note"])
         if result.get("evasion_note"):
@@ -2928,8 +2950,8 @@ def _show_result(result: dict, profile: str) -> None:
 
         st.html(f'<div class="od-text od-sample">{html.escape(result["essay"])}</div>')
         # One row of actions: the files on the left, what to do next on the right.
-        files, next_steps = st.columns([1, 1], vertical_alignment="center")
-        with files, st.container(horizontal=True):
+        # One row of actions, wrapping when narrow: the files first, then what to do next.
+        with st.container(horizontal=True, vertical_alignment="center", gap="small", key="od-results"):
             st.download_button("Text file", result["attachment"], file_name=result["filename"], mime="text/plain",
                                icon=":material/download:", key="download_latest_redteam_sample")
             if result.get("bibtex"):
@@ -2944,7 +2966,7 @@ def _show_result(result: dict, profile: str) -> None:
                 st.download_button(f"Document copy ({suffix})", result["document_attachment"],
                                    file_name=result["document_filename"], mime=MIME_TYPES.get(suffix),
                                    icon=":material/download:", key="download_latest_redteam_document")
-        with next_steps, st.container(horizontal=True, horizontal_alignment="right"):
+            st.space("stretch")
             if not public() and result.get("batch_answers") and result.get("checkpoint_path"):
                 st.button("Another adaptive round", icon=":material/refresh:",
                           help="Use these samples as the next benchmark starting point, then compare up to three "
@@ -3002,7 +3024,7 @@ def _history() -> None:
             st.metric("Flagged as AI", f"{flagged:.0%}", border=True,
                       help="Scored samples the detector called Likely AI.")
     if scored:
-        st.markdown("**By attack**")
+        style.heading("By attack")
         attacks: dict[str, list[dict]] = {}
         for row in scored:
             attacks.setdefault(row.get("attack") or "unknown", []).append(row)
@@ -3022,7 +3044,7 @@ def _history() -> None:
                                                                       color=style.tokens()["accent"]),
             },
         )
-    st.markdown("**Latest challenge samples**")
+    style.heading("Latest challenge samples")
     latest = []
     for row in reversed(rows[-200:]):
         stamp = re.match(r"local-(\d{8}T\d{6}Z)", row.get("id", ""))
@@ -3091,6 +3113,20 @@ def _improve_batch(plan: Plan, jobs: list[dict], previous_path: Path) -> tuple[P
     return path, checkpoint
 
 
+def _plated(made: dict | None) -> None:
+    """Cloche's reaction to a finished sample (`made`, None when nothing came out): his face for its verdict and
+    the bell."""
+    if not kitchen.enabled():
+        return
+    if made is None:
+        kitchen.cue("skeptical")  # back from waiting; the error on the page says what went wrong
+        return
+    score = made.get("score") or {}
+    probability = score.get("probability") if "score" in made else made.get("after")
+    line = "Ding! Order up." + (f" {probability:.0%} AI." if isinstance(probability, (int, float)) else "")
+    kitchen.cue(kitchen.VERDICT_CUES.get(score.get("verdict") or "", ("happy", ""))[0], line, ring=True, ms=3800)
+
+
 def render() -> None:
     load_env()
     profile = models.active_profile()
@@ -3116,18 +3152,24 @@ def render() -> None:
     create_tab, saved_tab = st.tabs(["Create", "Saved samples"])
     with create_tab:
         setup, output = st.columns([1, 1.2], gap="large")
-        with setup:
-            plan, conn = _setup(profile)
-            jobs = _batch_jobs(plan) if plan.batch else []
-            path = _checkpoint_path(plan) if plan.batch else None
-            checkpoint = Checkpoint.load(path) if plan.batch else None
-            improve_path = st.session_state.pop(IMPROVE_BATCH, None)
-            if improve_path and plan.batch and (improved := _improve_batch(plan, jobs, Path(improve_path))):
-                path, checkpoint = improved
-            if notice := st.session_state.get(NOTICE):
-                getattr(st, notice[0])(notice[1])
+        with setup, st.container(key="od-setup"):
+            # Laid out first, filled in turn: the settings, the order button (sticky at the foot of the screen),
+            # what the button says back, then Model & connection and revising a text, which are set once.
+            settings_box, order_box, problem_box, after_box = (
+                st.container(), st.container(key="od-order"), st.container(), st.container())
+            with settings_box:
+                plan, conn = _setup(profile, after_box)
+                jobs = _batch_jobs(plan) if plan.batch else []
+                path = _checkpoint_path(plan) if plan.batch else None
+                checkpoint = Checkpoint.load(path) if plan.batch else None
+                improve_path = st.session_state.pop(IMPROVE_BATCH, None)
+                if improve_path and plan.batch and (improved := _improve_batch(plan, jobs, Path(improve_path))):
+                    path, checkpoint = improved
+                if notice := st.session_state.get(NOTICE):
+                    getattr(st, notice[0])(notice[1])
+                if checkpoint:
+                    _saved_progress(plan, jobs, checkpoint)
             if checkpoint:
-                _saved_progress(plan, jobs, checkpoint)
                 saved = len(checkpoint.generated([job["key"] for job in jobs]))
                 label, icon = f"Resume · {saved} of {len(jobs)} blocks saved", ":material/play_arrow:"
             elif plan.batch:
@@ -3136,45 +3178,66 @@ def render() -> None:
                 label, icon = "Regenerate section", ":material/autorenew:"
             else:
                 label, icon = "Generate", ":material/auto_awesome:"
-            clicked = st.button(label, type="primary", icon=icon, width="stretch")
-            if not public():
-                _revise_panel(plan, conn)
+            with order_box:
+                clicked = st.button(label, type="primary", icon=icon, width="stretch")
             problem = None
             if clicked:
                 problem = _math_problem(plan) if plan.engine == "Math" else _problem(plan, conn)
-            if problem:
-                st.error(problem)
             system = None
-            if clicked and not problem and plan.use_profile:
-                try:
-                    system = style_instructions(load_style_profile(plan.style_path), plan.register,
-                                                *writer_samples(plan))
-                except (OSError, ValueError) as exc:
-                    st.error(f"Could not load the style profile: {exc}")
-                    clicked = False
-            st.caption(":material/science: Evaluation use only. Everything made here is AI-generated test data and "
-                       "should stay labelled as such when shared or analyzed.")
+            with problem_box:
+                if problem:
+                    st.error(problem)
+                if clicked and not problem and plan.use_profile:
+                    try:
+                        system = style_instructions(load_style_profile(plan.style_path), plan.register,
+                                                    *writer_samples(plan))
+                    except (OSError, ValueError) as exc:
+                        st.error(f"Could not load the style profile: {exc}")
+                        clicked = False
+            with after_box:
+                if not public():
+                    _revise_panel(plan, conn)
+                st.caption(":material/science: Evaluation use only. Everything made here is AI-generated test data "
+                           "and should stay labelled as such when shared or analyzed.")
 
         with output:
             if clicked and not problem:
                 st.session_state.pop(NOTICE, None)
+                if kitchen.enabled():
+                    kitchen.cue("tasting", "Order in! The cooks are on it.", ms=2400)
                 if plan.batch:
                     _start_batch(plan, conn, jobs, path, checkpoint, system)
                     st.rerun()
+                stage = st.empty()  # the kitchen timer while the sample cooks
+                if kitchen.enabled():
+                    with stage:
+                        kitchen.timer("lab:timer", None, size=150, layout="stack", eyebrow="Cooking",
+                                      note="The cooks are writing your sample, then the critic tastes it.",
+                                      stamp=f"{time.time():.3f}", waiting="Cooking…")
+                    kitchen.show("lab", "order")
+                previous = st.session_state.get(RESULT)
                 st.session_state.pop(MATH_RESULT, None)
                 if plan.engine == "Math":
                     _math_sample(plan)
+                    made = st.session_state.get(MATH_RESULT)
                 else:
                     _generate_sample(plan, conn, system)
+                    made = st.session_state.get(RESULT)
+                stage.empty()
+                _plated(made if made is not previous else None)
             if math_result := st.session_state.get(MATH_RESULT):
                 _show_math_result(math_result)
             elif result := st.session_state.get(RESULT):
                 _show_result(result, profile)
             else:
-                st.html(f'<div class="od-empty"><b>{style.flavour("Nothing made yet", "Nothing on the plate yet")}'
+                # In Bistro the page is one centred column until there is something to show (ui/style.py).
+                st.html(f'<div class="od-empty od-stage-empty"><b>'
+                        f'{style.flavour("Nothing made yet", "Nothing on the plate yet")}'
                         "</b>Choose Generate or Regenerate, fill in the settings on the left and press the "
                         "button. The text appears here with its detector score, ready to download or check in "
                         "Detect.</div>")
+                if kitchen.enabled():
+                    kitchen.greet("lab", "The kitchen is open. What are we making?")
 
     with saved_tab:
         _history()

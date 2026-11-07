@@ -857,9 +857,22 @@ def measured_table(monkeypatch):
     monkeypatch.setattr(redteam.generation_settings, "load_table", lambda: table)
 
 
+def test_bistro_spends_the_points_as_ingredients(stub_model, monkeypatch):
+    measured_table(monkeypatch)
+    at = word_document_page()
+    assert not any(b.key and b.key.startswith("redteam:less:") for b in at.button), "ingredients, not buttons"
+    assert any("gemini-3.6-flash" in m.value and "8 blocks per request · 2 at once" in m.value for m in at.markdown)
+    at.session_state["redteam:points"] = {"detector": 1, "style": 1, "speed": 6, "quota": 4}  # what a click sends
+    at.run()
+    assert not at.exception, at.exception
+    assert any("gemini-3.5-flash-lite" in m.value and "4 at once" in m.value for m in at.markdown)
+
+
 def test_points_pick_the_batch_settings(stub_model, monkeypatch):
     measured_table(monkeypatch)
     at = word_document_page()
+    at.session_state["keep:appearance:look"] = "glass"  # Glass keeps the points as dots with minus and plus buttons
+    at.run()
     assert not any(s.key == "keep:redteam:group_size" for s in at.slider), "points, not sliders"
     assert any("gemini-3.6-flash" in m.value and "8 blocks per request · 2 at once" in m.value for m in at.markdown)
     assert any("1 request (5% of its 20 free requests a day)" in c.value for c in at.caption)
@@ -1305,9 +1318,13 @@ def test_bistro_puts_cloche_and_the_bill_on_the_critics_table():
     at, result = analyze(AI * 30)
     bodies = [h.proto.body for h in at.get("html")]
     card = next(body for body in bodies if 'class="od-critic"' in body)
-    assert "The critic says" in card and "Likely AI" in card and 'alt="Cloche, shocked: likely AI"' in card
+    assert "The critic says" in card and "Likely AI" in card and 'data-mood="shocked"' in card
+    assert 'class="od-cloche"' not in card, "Cloche reacts from his corner, not from inside the card"
+    cue = at.session_state["od:stage"]
+    assert cue["mood"] == "shocked" and cue["ring"] and cue["say"], "Cloche shocked, with the bell, when it lands"
     bill = next(body for body in bodies if 'class="od-bill"' in body)
     assert "Desklib" in bill and "TOTAL · AI likelihood" in bill and f"{result['report'].ai_probability:.0%}" in bill
+    assert 'class="od-billrow"' in bill and "Kitchen hygiene" in bill, "the bill and hygiene share a row, as tall"
     assert any("The critic&#x27;s table" in body or "The critic's table" in body for body in bodies)
     assert at.segmented_control(key="keep:appearance:look").value == "bistro"
 

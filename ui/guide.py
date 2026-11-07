@@ -153,9 +153,12 @@ def render() -> None:
     with st.container(key="od-panel-guide-more"):
         st.subheader("Good to know")
         st.markdown(
-            "- **Look:** Glass or Instrument, under **Settings** at the bottom of the menu on the left"
-            + (" (this site doesn't remember it between visits)" if public else "") + ". For light or dark, "
+            "- **Look:** Bistro or Glass, under **Look** at the bottom of the menu on the left, and for Bistro a "
+            "**Textured** or **Standard** finish"
+            + (" (this site doesn't remember them between visits)" if public else "") + ". For light or dark, "
             "use the **⋮** menu at the top right, then **Settings**.\n"
+            "- **Cloche,** the critic in the bottom corner, waits while a text is scored and reacts to the verdict, "
+            "with a bell when it lands. Click him to say hello.\n"
             + ("- **This site runs Slim,** the strongest single engine, which scores as well as Full on the "
                "project's tests. The downloadable app can run Full too.\n" if public else
                "- **Slim or Full:** Slim, the strongest single engine, scores as well as Full on the project's "
