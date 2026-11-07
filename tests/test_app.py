@@ -80,6 +80,28 @@ def test_human_text_on_the_slim_build_runs_desklib_alone():
     assert set(result["report"].engines) == {"desklib"}
 
 
+def test_every_check_is_kept_in_recent_checks_to_open_again():
+    at, first = analyze(AI * 30, profile="slim")
+    at.text_area(key="keep:detect:text").input(HUMAN * 30)
+    button(at, "Analyze").click()
+    at.run()
+    assert not at.exception, at.exception
+    assert at.session_state["detect:result"]["report"].verdict == "likely_human"
+    assert any(e.label == "Recent checks · 2" for e in at.expander)
+    opens = [b for b in at.button if b.label == "Open"]
+    assert len(opens) == 2, "newest first: the human text, then the AI one"
+    opens[1].click()
+    at.run()
+    assert not at.exception, at.exception
+    reopened = at.session_state["detect:result"]
+    assert reopened["report"].verdict == "likely_ai" and reopened["digest"] == first["digest"], "the check as it was"
+    assert at.text_area(key="keep:detect:text").value == AI * 30, "its text is back in Source"
+    assert any("Opened from Recent checks" in c.value for c in at.caption)
+    button(at, "Clear recent checks").click()
+    at.run()
+    assert not any(e.label.startswith("Recent checks") for e in at.expander)
+
+
 def test_short_text_abstains():
     at, result = analyze(HUMAN * 3)
     assert result["report"].verdict == "insufficient_text"
@@ -114,6 +136,14 @@ def test_redteam_off_leaves_out_the_red_team_page(monkeypatch):
 def red_team_page():
     from ui import redteam
 
+    redteam.render()
+
+
+def settings_and_lab():
+    """The Settings page, where keys and models are set, then the Lab that writes with them, in one session."""
+    from ui import redteam, settings
+
+    settings.render()
     redteam.render()
 
 
@@ -684,7 +714,8 @@ def test_pasted_text_can_be_rewritten_block_by_block_and_exports_its_own_copy(st
     at = AppTest.from_function(red_team_page, default_timeout=60)
     at.session_state["profile"] = "slim"
     at.run()
-    at.segmented_control(key="keep:redteam:mode").set_value("regenerate").run()
+    at.session_state["keep:redteam:mode"] = "regenerate"  # the Regenerate card
+    at.run()
     assert not any(box.key == "keep:redteam:scope" for box in at.selectbox), "nothing to rewrite without a text"
     assert "Upload a document or paste text under Input to regenerate it." in [info.value for info in at.info]
 
@@ -861,11 +892,16 @@ def test_bistro_spends_the_points_as_ingredients(stub_model, monkeypatch):
     measured_table(monkeypatch)
     at = word_document_page()
     assert not any(b.key and b.key.startswith("redteam:less:") for b in at.button), "ingredients, not buttons"
-    assert any("gemini-3.6-flash" in m.value and "8 blocks per request · 2 at once" in m.value for m in at.markdown)
+
+    def bill():  # the chef's pick, printed like the critic's bill
+        return next(h.proto.body for h in at.get("html") if 'class="od-pick"' in h.proto.body)
+
+    assert "gemini-3.6-flash" in bill() and "8 blocks a request · 2 at once" in bill()
+    assert "1 · 5% of 20 a day" in bill()
     at.session_state["redteam:points"] = {"detector": 1, "style": 1, "speed": 6, "quota": 4}  # what a click sends
     at.run()
     assert not at.exception, at.exception
-    assert any("gemini-3.5-flash-lite" in m.value and "4 at once" in m.value for m in at.markdown)
+    assert "gemini-3.5-flash-lite" in bill() and "4 at once" in bill()
 
 
 def test_points_pick_the_batch_settings(stub_model, monkeypatch):
@@ -904,7 +940,7 @@ def test_settings_can_still_be_set_by_hand(stub_model, monkeypatch):
 
 def test_the_downloadable_app_offers_robustness_mode_but_no_local_model(stub_model, monkeypatch):
     monkeypatch.setenv("OPENDETECTOR_PACKAGED", "on")
-    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at = AppTest.from_function(settings_and_lab, default_timeout=60)
     at.session_state["profile"] = "slim"
     at.run()
     assert not at.exception, at.exception
@@ -1089,11 +1125,42 @@ def test_reading_a_section_finds_it_by_position_when_labels_repeat():
     assert at.text[0].value == "the second box"
 
 
+def settings_page():
+    from ui import settings
+
+    settings.render()
+
+
+def test_settings_holds_the_look_the_build_and_the_cooks(stub_model):
+    at = AppTest.from_function(settings_page, default_timeout=60)
+    at.run()
+    assert not at.exception, at.exception
+    assert any(t.key == "keep:appearance:finish" for t in at.segmented_control), "Bistro's finish, in Look"
+    assert at.selectbox(key="keep:redteam:provider").value == "gemini"
+    assert at.text_input(key="keep:redteam:local_model").value, "This computer's back-up model"
+    at.session_state["profile"] = "full"
+    at.run()
+    assert not at.exception, at.exception
+
+
+def test_revise_a_text_is_the_labs_third_card(stub_model):
+    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at.session_state["profile"] = "slim"
+    at.session_state["keep:redteam:mode"] = "revise"
+    at.run()
+    assert not at.exception, at.exception
+    assert any(t.key == "keep:redteam:revise_text" for t in at.text_area)
+    assert not any(t.key == "keep:redteam:score" for t in at.toggle), "no Detector panel: the line does its job"
+    button(at, "Revise passages above 60%").click()
+    at.run()
+    assert [e.value for e in at.error] == ["Paste the text to revise first."]
+
+
 def test_choosing_a_provider_sets_its_address_models_and_key(stub_model, monkeypatch):
     from eval.generate_essays import PROVIDERS
 
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at = AppTest.from_function(settings_and_lab, default_timeout=60)
     at.session_state["profile"] = "slim"
     at.run()
     at.selectbox(key="keep:redteam:provider").select("groq")
@@ -1108,7 +1175,7 @@ def test_choosing_a_provider_sets_its_address_models_and_key(stub_model, monkeyp
     at.text_area(key="keep:redteam:prompt").input("An essay on keeping bees.")
     button(at, "Generate").click()
     at.run()
-    assert [e.value for e in at.error] == ["Add your Groq API key under Model & connection."]
+    assert [e.value for e in at.error] == ["Add your Groq API key under Settings, Keys and models."]
     assert stub_model.prompts == [], "Gemini's key isn't sent to Groq"
 
 
@@ -1117,7 +1184,7 @@ def test_a_provider_writes_with_its_own_key_and_address(stub_model, monkeypatch)
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
     monkeypatch.setattr("ui.redteam._models_on_offer", lambda name, key: ["a/b:free"])
-    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at = AppTest.from_function(settings_and_lab, default_timeout=60)
     at.session_state["profile"] = "slim"
     at.run()
     at.selectbox(key="keep:redteam:provider").select("openrouter")
@@ -1188,7 +1255,7 @@ def test_several_gemini_keys_reach_the_models_as_one_pool(stub_model, monkeypatc
     monkeypatch.setenv("GEMINI_API_KEYS", "second-key")
     monkeypatch.setattr("ui.redteam.save_extra_keys", partial(env.save_extra_keys, path=tmp_path / ".env"))
     monkeypatch.setattr("ui.guide.check_key", lambda key: (True, None))
-    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at = AppTest.from_function(settings_and_lab, default_timeout=60)
     at.session_state["profile"] = "slim"
     at.run()
     assert not at.exception, at.exception
@@ -1213,11 +1280,11 @@ def test_each_gemini_key_shows_the_requests_it_has_left_today(stub_model, monkey
     for _ in range(5):
         key_usage.record("test-key", "gemini-3.8-flash")
     key_usage.record("second-key", "gemini-3.5-flash-lite", spent=True)
-    at = AppTest.from_function(red_team_page, default_timeout=60)
+    at = AppTest.from_function(settings_and_lab, default_timeout=60)
     at.session_state["profile"] = "slim"
     at.run()
     assert not at.exception, at.exception
-    assert [p.proto.popover.label for p in at.get("popover")] == ["2 Gemini keys · 35 left on gemini-3.8-flash"]
+    assert any("Gemini keys" in h.proto.body and "35 left on gemini-3.8-flash" in h.proto.body for h in at.get("html"))
     bars = [(bar.proto.text, bar.proto.value) for bar in at.get("progress")]
     assert bars == [("gemini-3.8-flash · 15 of 20 left", 75), ("gemini-3.8-flash · 20 of 20 left", 100),
                     ("gemini-3.5-flash-lite · out of quota until the reset", 0)]
@@ -1326,7 +1393,7 @@ def test_bistro_puts_cloche_and_the_bill_on_the_critics_table():
     assert "Desklib" in bill and "TOTAL · AI likelihood" in bill and f"{result['report'].ai_probability:.0%}" in bill
     assert 'class="od-billrow"' in bill and "Kitchen hygiene" in bill, "the bill and hygiene share a row, as tall"
     assert any("The critic&#x27;s table" in body or "The critic's table" in body for body in bodies)
-    assert at.segmented_control(key="keep:appearance:look").value == "bistro"
+    assert at.session_state["keep:appearance:look"] == "bistro", "Bistro is the default look"
 
 
 def test_glass_keeps_its_dial_and_meters():

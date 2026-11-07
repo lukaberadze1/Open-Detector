@@ -32,11 +32,16 @@ KEY = "keep:appearance:look"
 FINISHES = ("textured", "standard")
 FINISH_LABELS = {"textured": "Textured", "standard": "Standard"}
 FINISH_KEY = "keep:appearance:finish"
+# The Textured finish's wall: white ceramic kitchen tiles (the default) or the paper of the Standard finish, grained.
+WALLS = ("tiles", "paper")
+WALL_LABELS = {"tiles": "Tiles", "paper": "Paper"}
+WALL_KEY = "keep:appearance:wall"
 DEFAULT_LOOK = os.environ.get("OPENDETECTOR_LOOK", "bistro").strip().lower()
 if DEFAULT_LOOK not in LOOKS:
     DEFAULT_LOOK = "bistro"
 # The kitchen names under each page's link in the sidebar, and over its title, in Bistro.
-PAGE_FLAVOUR = {"detect": "The critic's table", "red-team": "The kitchen", "guide": "The menu"}
+PAGE_FLAVOUR = {"detect": "The critic's table", "red-team": "The kitchen", "guide": "The menu",
+                "settings": "Behind the counter"}
 
 # Each look's surface tokens per mode. Text pairs were checked at 4.5:1 or better against `bg` and `panel`.
 TOKENS = {
@@ -108,6 +113,25 @@ def _save_finish() -> None:
         prefs.update(finish=st.session_state[FINISH_KEY])
 
 
+def _save_wall() -> None:
+    if not public():
+        prefs.update(wall=st.session_state[WALL_KEY])
+
+
+def wall() -> str:
+    """The Textured finish's wall, tiles unless the viewer picked paper."""
+    value = st.session_state.get(WALL_KEY)
+    if value not in WALLS:
+        saved = None if public() else prefs.load().get("wall")
+        value = st.session_state[WALL_KEY] = saved if saved in WALLS else WALLS[0]
+    return value
+
+
+def tiled() -> bool:
+    """Whether the page sits on the tile wall: Bistro, Textured, Tiles."""
+    return bistro() and finish() == "textured" and wall() == "tiles"
+
+
 def finish() -> str:
     """Bistro's finish, Textured unless the viewer picked Standard."""
     value = st.session_state.get(FINISH_KEY)
@@ -142,21 +166,10 @@ def tokens() -> dict[str, str]:
     return TOKENS[(current_look(), mode())]
 
 
-def look_picker() -> None:
-    """The Look switch at the foot of the sidebar: Bistro unless the viewer picks Glass. Light or dark stays
-    with Streamlit's own Settings."""
-    current_look()
-    finish()
-    with st.container(key="od-look"):
-        st.html('<div class="od-group">Look</div>')
-        st.segmented_control("Look", LOOKS, format_func=LOOK_LABELS.get, key=KEY, required=True,
-                             label_visibility="collapsed", on_change=_save_look,
-                             help="The app's look. Light or dark: app menu > Settings.")
-        if bistro():
-            st.html('<div class="od-group">Finish</div>')
-            st.segmented_control("Finish", FINISHES, format_func=FINISH_LABELS.get, key=FINISH_KEY, required=True,
-                                 label_visibility="collapsed", on_change=_save_finish,
-                                 help="Textured: paper grain, kraft sidebar, cards with depth. Standard: flat.")
+def table_accent() -> str:
+    """The bar colour for a table's progress column. Tables draw on a canvas in the base theme's colours, which Glass
+    turns to its own with a hue turn (GLASS_CSS), so in Glass the bar starts as Bistro's paprika and turns violet."""
+    return tokens()["accent"] if bistro() else TOKENS[("bistro", mode())]["accent"]
 
 
 def heading(text: str, note: str = "") -> None:
@@ -274,6 +287,7 @@ BASE_CSS = """
 
 /* Panels: bordered containers and the app's own cards */
 [data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"]),
+.stVerticalBlock:has(> .stElementContainer > .stHtml > .od-group), .stVerticalBlock[class*="st-key-od-box"],
 .stVerticalBlock[class*="st-key-od-panel"], .od-glass {
   background: var(--od-panel); border: 1px solid var(--od-edge) !important;
   border-radius: var(--od-radius) !important;
@@ -282,12 +296,18 @@ BASE_CSS = """
 .stVerticalBlock[class*="st-key-od-panel"] { padding: 1.25rem 1.35rem 1.1rem; }
 
 /* Inputs */
-[data-baseweb="textarea"], [data-baseweb="input"], [data-baseweb="select"] > div {
+[data-baseweb="textarea"],
+[data-testid="stTextAreaRootElement"], [data-baseweb="input"], [data-baseweb="select"] > div {
   background: var(--od-panel-strong) !important; border-color: var(--od-hair) !important;
   border-radius: 14px !important; }
-[data-baseweb="textarea"]:focus-within, [data-baseweb="input"]:focus-within {
+[data-baseweb="textarea"]:focus-within,
+[data-testid="stTextAreaRootElement"]:focus-within, [data-baseweb="input"]:focus-within {
   border-color: var(--od-accent) !important; box-shadow: 0 0 0 4px var(--od-glow) !important; }
 [data-testid="stTextArea"] textarea { line-height: 1.65; font-size: 0.98rem; }
+/* The box clips what's inside it to its own rounded corners, so the focus ring and the paper inside it agree */
+[data-baseweb="textarea"], [data-testid="stTextAreaRootElement"], [data-baseweb="input"] { overflow: hidden; }
+[data-baseweb="textarea"] textarea,
+[data-testid="stTextAreaRootElement"] textarea, [data-baseweb="input"] input { border-radius: inherit; }
 [data-testid="stFileUploaderDropzone"] { background: var(--od-panel-strong) !important;
   border-radius: 16px !important;
   border: 1px dashed var(--od-edge) !important; }
@@ -373,6 +393,11 @@ a, [data-testid="stMarkdownContainer"] a { color: var(--od-accent); }
 .od-section-title span { font-size: 0.8rem; color: var(--od-muted); }
 @media (max-width: 640px) { [data-testid="stMainBlockContainer"] { padding-top: 3.6rem; } }
 @media (prefers-reduced-motion: reduce) { .od-pulse, .od-scan { animation: none !important; } }
+/* The tile wall's broken end, at the foot of the Settings page (wall_end) */
+.od-wall-end { position: relative; margin: 3rem -4rem -6rem; height: 300px; overflow: hidden; }
+.od-wall-end img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.od-wall-end span { position: absolute; left: 4.5rem; bottom: 1.6rem; font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem; color: var(--od-muted); opacity: 0.8; }
 /* The stage's hidden spots in the sidebar (ui/kitchen.show) take no room */
 [class*="st-key-od-stage-"] { display: none !important; }
 """
@@ -387,6 +412,33 @@ GLASS_CSS = """
 [data-testid="stExpanderIconSpinner"] { filter: hue-rotate(221deg) saturate(1.25); }
 [data-baseweb="textarea"] textarea, [data-baseweb="input"] input, [data-baseweb="input"] > div,
 [data-baseweb="select"] > div > div { background: transparent !important; }
+/* White boxes, and violet wherever the theme's paprika would show: hovers, focus, the open menu, tables */
+[data-baseweb="textarea"], [data-baseweb="input"], [data-baseweb="select"] > div,
+[data-testid="stFileUploaderDropzone"], [data-testid="stExpander"] details, [data-testid="stPopoverBody"],
+[data-baseweb="popover"] ul, [data-testid="stTextAreaRootElement"], [data-testid="stTextInputRootElement"],
+[data-testid="stTextInputRootElement"] > div,
+[data-testid="stNumberInputContainer"] > div, [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+  background-color: var(--od-panel-strong) !important; }
+.stApp a, .stApp a:visited, [data-testid="stCaptionContainer"] a { color: var(--od-accent) !important; }
+[data-testid="stCheckbox"] label > div:first-of-type > div { background-color: #FFFFFF !important; }
+[data-baseweb="select"] > div:focus-within, [data-baseweb="select"] > div[aria-expanded="true"] {
+  border-color: var(--od-accent) !important; box-shadow: 0 0 0 4px var(--od-glow) !important; }
+[data-baseweb="popover"] li[aria-selected="true"], [data-baseweb="popover"] li:hover {
+  background: color-mix(in srgb, var(--od-accent) 12%, transparent) !important; }
+[data-testid^="stBaseButton-secondary"]:hover:not(:disabled), [data-testid="stPopoverButton"]:hover,
+[data-testid="stDownloadButton"] button:hover:not(:disabled) { border-color: var(--od-accent) !important;
+  color: var(--od-accent) !important; }
+[data-testid^="stBaseButton-secondary"]:hover:not(:disabled) p, [data-testid="stPopoverButton"]:hover p {
+  color: var(--od-accent) !important; }
+.stApp button:focus-visible, .stApp [role="tab"]:focus-visible, .stApp summary:focus-visible {
+  outline: 2px solid var(--od-accent) !important; box-shadow: 0 0 0 4px var(--od-glow) !important; }
+[data-testid="stTab"]:hover p, [data-testid="stExpander"] summary:hover p,
+[data-testid="stExpander"] summary:hover svg { color: var(--od-accent) !important; fill: var(--od-accent); }
+[data-testid="stCheckbox"] label:hover > div:first-of-type { border-color: var(--od-accent) !important; }
+[data-testid="stFileUploaderDropzone"]:hover { border-color: var(--od-accent) !important; }
+/* Tables take the base theme's cream; a quarter turn of hue makes them Glass's pale blue and their bars violet */
+[data-testid="stDataFrame"] { filter: hue-rotate(221deg); }
 """
 
 MONO = "'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace"
@@ -412,6 +464,7 @@ BISTRO_CSS = """
   content: "DETECT"; }
 [data-testid="stSidebarNavLink"][href$="/red-team"]::after { content: "RED_TEAM"; }
 [data-testid="stSidebarNavLink"][href$="/guide"]::after { content: "GUIDE"; }
+[data-testid="stSidebarNavLink"][href$="/settings"]::after { content: "SETTINGS"; }
 [data-testid="stSidebarNavLink"]:hover { background: color-mix(in srgb, var(--od-edge) 45%, transparent) !important; }
 [data-testid="stSidebarNavLink"][aria-current="page"] { background: var(--od-panel) !important;
   border-color: var(--od-edge); box-shadow: 0 2px 0 var(--od-edge) !important; }
@@ -440,9 +493,11 @@ BISTRO_CSS = """
 .od-empty b { font-family: MONO; }
 
 [data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"]),
+.stVerticalBlock:has(> .stElementContainer > .stHtml > .od-group), .stVerticalBlock[class*="st-key-od-box"],
 .stVerticalBlock[class*="st-key-od-panel"], .od-glass {
   border: 1.5px solid var(--od-edge) !important; -webkit-backdrop-filter: none; backdrop-filter: none; }
-[data-baseweb="textarea"], [data-baseweb="input"], [data-baseweb="select"] > div {
+[data-baseweb="textarea"],
+[data-testid="stTextAreaRootElement"], [data-baseweb="input"], [data-baseweb="select"] > div {
   border: 1.5px solid var(--od-edge) !important; border-radius: 16px !important; }
 [data-testid="stFileUploaderDropzone"] { border: 2px dashed var(--od-dash) !important; }
 [data-testid="stBaseButton-primary"], [data-testid="stBaseButton-primaryFormSubmit"] { border-radius: 16px !important;
@@ -520,7 +575,7 @@ BISTRO_CSS = """
   backdrop-filter: none; }
 .od-verdict::before { display: none; }
 """
-for page, name in (("DETECT", "detect"), ("RED_TEAM", "red-team"), ("GUIDE", "guide")):
+for page, name in (("DETECT", "detect"), ("RED_TEAM", "red-team"), ("GUIDE", "guide"), ("SETTINGS", "settings")):
     BISTRO_CSS = BISTRO_CSS.replace(f'"{page}"', f'"{PAGE_FLAVOUR[name]}"')
 BISTRO_CSS = BISTRO_CSS.replace("MONO", MONO)
 
@@ -562,6 +617,7 @@ TEXTURED_CSS = """
 .st-key-od-look { background: linear-gradient(180deg, var(--od-tx-card-top), var(--od-tx-card-bottom));
   border: 1px solid var(--od-tx-kraft-edge); box-shadow: 0 3px 6px -2px rgba(60,40,20,0.3); }
 [data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"]),
+.stVerticalBlock:has(> .stElementContainer > .stHtml > .od-group), .stVerticalBlock[class*="st-key-od-box"],
 .stVerticalBlock[class*="st-key-od-panel"], .od-verdict, .od-bill, .od-hygiene, .od-text, .od-panel,
 [data-testid="stExpander"] details, .od-empty {
   background: linear-gradient(180deg, var(--od-tx-card-top), var(--od-tx-card-bottom)) !important;
@@ -575,8 +631,18 @@ TEXTURED_CSS = """
 [data-testid="stTextArea"] textarea { background-color: var(--od-tx-pad) !important;
   background-image: repeating-linear-gradient(180deg, transparent 0 25px, var(--od-tx-pad-line) 25px 26px),
     linear-gradient(90deg, transparent 0 34px, var(--od-tx-pad-margin) 34px 35px, transparent 35px) !important;
-  background-attachment: local !important; line-height: 26px !important; padding-left: 46px !important; }
-[data-baseweb="textarea"] { box-shadow: inset 0 2px 6px rgba(60,40,20,0.18) !important; }
+  background-attachment: local !important; line-height: 26px !important; padding: 4px 18px 6px 48px !important;
+  font-size: 0.97rem !important; color: var(--od-ink) !important; caret-color: var(--od-accent);
+  font-feature-settings: "ss01", "cv11"; letter-spacing: 0.005em; }
+/* The text sits on the pad's rules: 26-pixel lines, the first baseline just above the first rule */
+[data-testid="stTextArea"] textarea::placeholder { color: var(--od-faint) !important; font-style: italic; opacity: 1; }
+[data-testid="stTextArea"] textarea::selection { background: color-mix(in srgb, var(--od-accent) 22%, transparent); }
+[data-baseweb="textarea"],
+[data-testid="stTextAreaRootElement"] { box-shadow: inset 0 2px 6px rgba(60,40,20,0.18) !important;
+  border-radius: 14px !important; }
+[data-baseweb="textarea"]:focus-within, [data-testid="stTextAreaRootElement"]:focus-within {
+  box-shadow: inset 0 2px 6px rgba(60,40,20,0.18), 0 0 0 3px var(--od-glow) !important;
+  border-color: var(--od-accent) !important; }
 [data-testid="stBaseButton-primary"], [data-testid="stBaseButton-primaryFormSubmit"] {
   border: 1px solid var(--od-tx-enamel-edge) !important;
   background: linear-gradient(180deg, var(--od-tx-enamel-top) 0%, var(--od-tx-enamel-mid) 55%,
@@ -608,6 +674,110 @@ TEXTURED_CSS = """
 """
 
 
+# Glazed white tiles 88 px square with 3 px of grout, each lit from the top left (a bevel of light on two edges, shade
+# on the others, a soft dome of glaze), and a sheen across the whole wall. In dark mode, charcoal tiles.
+TILES = {
+    "light": {"grout": "#D6D1C8", "glaze": "#FFFFFF", "glaze-2": "#F5F3EF", "glaze-3": "#E9E6E0",
+              "light": "rgba(255,255,255,0.95)", "shade": "rgba(110,98,82,0.16)", "sheen": "rgba(255,255,255,0.32)",
+              "plaster": "#E3DACB", "ridge": "rgba(140,122,98,0.28)"},
+    "dark": {"grout": "#100D0B", "glaze": "#34302B", "glaze-2": "#2A2723", "glaze-3": "#211E1B",
+             "light": "rgba(255,255,255,0.08)", "shade": "rgba(0,0,0,0.38)", "sheen": "rgba(255,255,255,0.04)",
+             "plaster": "#3A3128", "ridge": "rgba(0,0,0,0.35)"},
+}
+TILE = 88
+
+
+def tiles_css(current: str) -> str:
+    t, size = TILES[current], f"{TILE}px {TILE}px"
+    return f"""
+.stApp {{ background-color: {t['grout']} !important;
+  background-image:
+    linear-gradient(115deg, transparent 30%, {t['sheen']} 44%, transparent 58%),
+    linear-gradient(90deg, {t['grout']} 0 3px, transparent 3px),
+    linear-gradient(180deg, {t['grout']} 0 3px, transparent 3px),
+    linear-gradient(90deg, transparent 3px, {t['light']} 3px 5px, transparent 5px calc(100% - 2px),
+      {t['shade']} calc(100% - 2px)),
+    linear-gradient(180deg, transparent 3px, {t['light']} 3px 5px, transparent 5px calc(100% - 2px),
+      {t['shade']} calc(100% - 2px)),
+    radial-gradient(120% 120% at 30% 25%, {t['glaze']} 0%, {t['glaze-2']} 55%, {t['glaze-3']} 100%) !important;
+  background-size: 100% 100%, {size}, {size}, {size}, {size}, {size} !important;
+  background-position: 0 0 !important; background-attachment: fixed !important; }}
+[data-testid="stMainBlockContainer"] {{ position: relative; }}
+[data-testid="stMainBlockContainer"]::before {{ content: ""; position: absolute; top: 0.35rem; right: 7rem;
+  width: 320px; height: 64px; pointer-events: none; background: url("{vegetables_uri()}") no-repeat right top / contain;
+  filter: drop-shadow(0 4px 3px rgba(40,30,20,0.25)); }}
+@media (max-width: 640px) {{ [data-testid="stMainBlockContainer"]::before {{ width: 200px; }} }}
+"""
+
+
+def vegetables_uri() -> str:
+    """Vegetables spilled along the top of the page on the tile wall: a tomato, basil leaves, a chilli, a clove of
+    garlic, a cherry tomato and a few peppercorns, from the Lab's ingredients."""
+    import base64
+    import re
+
+    from .kitchen import ICONS
+
+    inner = {name: re.sub(r"^<svg[^>]*>|</svg>$", "", svg) for name, svg in ICONS.items()}
+    placed = [("basil", 8, 20, -35, 1.2), ("tomato", 52, 10, 12, 1.45), ("basil", 98, 26, 50, 0.95),
+              ("chili", 140, 14, -18, 1.35), ("garlic", 196, 18, 22, 1.05), ("tomato", 238, 30, -8, 0.8),
+              ("basil", 262, 8, 120, 0.85)]
+    parts = [f'<g transform="translate({x} {y}) rotate({r} 16 16) scale({k})">{inner[name]}</g>'
+             for name, x, y, r, k in placed]
+    parts += [f'<circle cx="{x}" cy="{y}" r="2.3" fill="#2A1F17" opacity="0.8"/>'
+              for x, y in ((40, 52), (128, 58), (186, 50), (230, 60), (300, 44))]
+    svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 70">{"".join(parts)}</svg>'
+    return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
+
+
+def wall_end() -> None:
+    """The foot of the Settings page on the tile wall: the tiles break off over bare plaster, combed with adhesive,
+    and a few lie on the floor where they fell. The tiler went home early."""
+    import base64
+    import html
+    import random
+
+    t = TILES[mode()]
+    rng = random.Random(11)
+    width, height = 1400, 320
+    edge = []
+    for x in range(0, width, TILE):  # a column of tiles snapped off at its own depth, the break a small crack
+        depth = rng.choice((26, 26, 70, 114, 114, 158))
+        edge += [(x, depth + rng.uniform(-5, 5)), (x + TILE * rng.uniform(0.3, 0.45), depth + rng.uniform(-9, 9)),
+                 (x + TILE * rng.uniform(0.55, 0.75), depth + rng.uniform(-9, 9)),
+                 (x + TILE, depth + rng.uniform(-5, 5))]
+    edge = [(0, edge[0][1]), *edge]
+    plaster = f"M0 {height} L" + " L".join(f"{x:.0f} {y:.0f}" for x, y in edge) + f" L{width} {height} Z"
+    rim = "M" + " L".join(f"{x:.0f} {y:.0f}" for x, y in edge)
+    ridges = "".join(f'<path d="M{x} {y} q60 -18 120 0 t120 0 t120 0" fill="none" stroke="{t["ridge"]}" '
+                     f'stroke-width="3" stroke-linecap="round"/>'
+                     for y in range(150, 260, 14) for x in range(-60, width, 360))
+    # The tiles' broken edge: their thickness in grout colour, a light lip, and a few chips still stuck on.
+    shards = (f'<path d="{rim}" fill="none" stroke="{t["grout"]}" stroke-width="7" stroke-linejoin="round"/>'
+              f'<path d="{rim}" fill="none" stroke="{t["light"]}" stroke-width="1.5" transform="translate(0 -3)"/>'
+              + "".join(f'<path d="M{x:.0f} {y + 3:.0f} l{rng.uniform(10, 22):.0f} {rng.uniform(5, 12):.0f} '
+                        f'l{rng.uniform(-8, 2):.0f} {rng.uniform(8, 14):.0f} z" fill="{t["glaze-2"]}" '
+                        f'stroke="{t["grout"]}" stroke-width="1.2"/>' for x, y in edge[2::7]))
+
+    def fallen(x: float, y: float, angle: float, broken: bool = False) -> str:
+        crack = (f'<path d="M14 6 L40 44 L32 60 L58 82" fill="none" stroke="{t["shade"]}" stroke-width="2.2"/>'
+                 if broken else "")
+        return (f'<g transform="translate({x} {y}) rotate({angle} 44 44)"><rect x="4" y="10" width="84" height="84" '
+                f'rx="3" fill="rgba(0,0,0,0.18)"/><rect width="84" height="84" rx="3" fill="url(#glaze)" '
+                f'stroke="{t["grout"]}" stroke-width="2"/>{crack}</g>')
+
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
+           'preserveAspectRatio="xMidYMin slice">'
+           f'<defs><radialGradient id="glaze" cx="0.3" cy="0.25" r="1"><stop offset="0" stop-color="{t["glaze"]}"/>'
+           f'<stop offset="0.55" stop-color="{t["glaze-2"]}"/><stop offset="1" stop-color="{t["glaze-3"]}"/>'
+           f'</radialGradient></defs><path d="{plaster}" fill="{t["plaster"]}"/>{ridges}{shards}'
+           f'{fallen(980, 210, -14, True)}{fallen(1090, 228, 23)}{fallen(1185, 200, 61)}'
+           f'<rect x="0" y="{height - 14}" width="{width}" height="14" fill="rgba(0,0,0,0.10)"/></svg>')
+    data = base64.b64encode(svg.encode()).decode()
+    st.html(f'<div class="od-wall-end"><img src="data:image/svg+xml;base64,{data}" alt="" aria-hidden="true">'
+            f'<span>{html.escape("Behind the counter, the tiler went home early.")}</span></div>')
+
+
 def css() -> str:
     look, current = current_look(), mode()
     values = dict(tokens())
@@ -618,6 +788,8 @@ def css() -> str:
         if finish() == "textured":
             variables += "".join(f"--od-tx-{name}: {value};" for name, value in TEXTURED_TOKENS[current].items())
             style += TEXTURED_CSS
+            if wall() == "tiles":
+                style += tiles_css(current)
     else:
         style += GLASS_CSS
     return f":root {{{variables} --od-radius: 22px;}}" + style

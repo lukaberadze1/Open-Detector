@@ -42,3 +42,9 @@ def guide_page() -> st.Page:
     from . import guide
 
     return st.Page(guide.render, title="Guide", icon=":material/help:", url_path="guide")
+
+
+def settings_page() -> st.Page:
+    from . import settings
+
+    return st.Page(settings.render, title="Settings", icon=":material/tune:", url_path="settings")

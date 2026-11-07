@@ -12,6 +12,14 @@ def own_prefs(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def own_recent_checks(monkeypatch, tmp_path_factory):
+    """Every test keeps Detect's recent checks in a folder of its own, never this computer's data/detect_recent."""
+    from ui import detect
+
+    monkeypatch.setattr(detect, "RECENT_DIR", tmp_path_factory.mktemp("recent"))
+
+
+@pytest.fixture(autouse=True)
 def own_limits(monkeypatch, tmp_path_factory):
     """Every test keeps the daily request limits it learns in a file of its own, never this computer's
     data/model_limits.json."""

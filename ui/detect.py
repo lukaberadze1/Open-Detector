@@ -6,11 +6,15 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import html
+import json
 import os
+import pickle
 import time
+from datetime import datetime
 
 import streamlit as st
 
+from opendetector.config import DATA_ROOT
 from opendetector.documents import extract_answer_slots, extract_document
 from opendetector.forensics import inspect_document
 from opendetector.segment import count_words, group_parts, sentence_runs, split_sentences
@@ -42,6 +46,12 @@ PENDING = "detect:pending_text"  # text to put in Source and analyze at the top 
 REVISED = "detect:revised"  # what the last revise did, with the text before it for Undo
 PICK_ROUND = "detect:pick_round"  # bumped to start the picked sentences afresh
 PACE = "detect:pace"  # seconds per word of the last checks, by engines, for the kitchen timer
+# Recent checks: every analysis, newest first, to open again as it was. On this computer they are kept in
+# DATA_ROOT/data/detect_recent (an index and one file per check); a public deploy keeps them only in the session.
+RECENT_DIR = DATA_ROOT / "data" / "detect_recent"
+RECENT_LIMIT = 40
+RECENTS = "detect:recents"  # a public session's checks
+REOPEN = "detect:reopen"  # the check to open at the top of the next run
 
 
 def _digest(text: str) -> str:
@@ -52,7 +62,11 @@ def _engines(profile: str) -> tuple[list[str], bool]:
     """The Engines panel, right above Analyze: the build, which of its engines run, and whether to score
     sentences. The build is shared with the Adversarial Lab."""
     with style.group("Engines", "02"):
-        models.profile_picker()
+        with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+            st.caption(f":material/memory: **{models.PROFILE_LABELS[profile]} build** · "
+                       + ", ".join(models.ENGINES[name][0] for name in models.engines_of(profile)), width="stretch")
+            if not models.PINNED_PROFILE:
+                st.page_link(nav.settings_page(), label="Change", icon=":material/tune:")
         available = models.engines_of(profile)
         enabled = available
         if len(available) > 1:
@@ -170,10 +184,9 @@ def _analyze(text: str, source: str, sections: list | None, profile: str, enable
     tasting = kitchen.enabled() and stage is not None
     if tasting:
         left = _estimate(profile, enabled, sentences, words)
-        with stage:
+        with stage.container(border=True, key="od-box-timer"):
             kitchen.timer("detect:timer", left, left, size=170, layout="stack", eyebrow="The critic is tasting",
-                          steps=[(0.0, "Washing the text: hidden characters, look-alike letters…"),
-                                 (0.2, "Biting through 350-word mouthfuls…"), (0.85, "Adding up the bill…")],
+                          lines=kitchen.TASTING_LINES,
                           stamp=f"{time.time():.3f}", waiting="Tasting…", over="Nearly there…")
         kitchen.cue("tasting", "Tasting… don't rush a critic.", ms=2600)
         kitchen.show("detect", "analyze")
@@ -199,11 +212,145 @@ def _analyze(text: str, source: str, sections: list | None, profile: str, enable
     upload = st.session_state.get("upload:detect:file") if sections else None
     result["forensics"] = inspect_document(upload.name, upload.data) if upload else None
     st.session_state[RESULT] = result
+    _save_recent(result, text, sections, sentences)
     if stage is not None:
         stage.empty()
     if kitchen.enabled():  # Cloche reacts as the verdict lands, not when the rest of the page is drawn
         kitchen.verdict_cue(report.verdict, report.ai_probability)
         kitchen.show("detect", "verdict")
+
+
+def _recent_index() -> list[dict]:
+    """The recent checks, newest first: what the list shows of each, without the result itself."""
+    if style.public():
+        return [{k: v for k, v in entry.items() if k != "saved"} for entry in st.session_state.get(RECENTS, [])]
+    try:
+        entries = json.loads((RECENT_DIR / "index.json").read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict) and "id" in entry]
+
+
+def _write_index(entries: list[dict]) -> None:
+    keep = entries[:RECENT_LIMIT]
+    try:
+        RECENT_DIR.mkdir(parents=True, exist_ok=True)
+        (RECENT_DIR / "index.json").write_text(json.dumps(keep))
+        for path in RECENT_DIR.glob("*.pkl"):  # the files of checks that fell off the list
+            if path.stem not in {entry["id"] for entry in keep}:
+                path.unlink(missing_ok=True)
+    except OSError:
+        pass  # a recent check is a convenience, never worth an error
+
+
+def _save_recent(result: dict, text: str, sections: list | None, sentences: bool) -> None:
+    """Keeps a check in Recent checks. The same text checked again with the same engines replaces its older entry."""
+    report = result["report"]
+    same = f"{result['digest']}|{result['profile']}|{','.join(result['engines'])}|{int(sentences)}"
+    entry = {"id": f"{int(time.time() * 1000)}-{result['digest'][:10]}", "same": same,
+             "at": datetime.now().isoformat(timespec="seconds"), "source": result["source"], "words": report.words,
+             "verdict": report.verdict, "probability": report.ai_probability, "profile": result["profile"],
+             "preview": " ".join(text.split())[:120]}
+    saved = {"result": result, "text": text, "sentences": sentences,
+             "sections": [(section.label, section.text) for section in sections] if sections else None}
+    if style.public():
+        recents = [e for e in st.session_state.get(RECENTS, []) if e.get("same") != same]
+        st.session_state[RECENTS] = [{**entry, "saved": saved}, *recents][:RECENT_LIMIT]
+        return
+    try:
+        RECENT_DIR.mkdir(parents=True, exist_ok=True)
+        (RECENT_DIR / f"{entry['id']}.pkl").write_bytes(pickle.dumps(saved))
+    except (OSError, pickle.PicklingError):
+        return
+    _write_index([entry, *(e for e in _recent_index() if e.get("same") != same)])
+
+
+def _load_recent(entry_id: str) -> dict | None:
+    """A recent check as saved: its result, text, sections and whether sentences were scored. None when its file is
+    gone or no longer reads (an older version of the app wrote it)."""
+    if style.public():
+        return next((e["saved"] for e in st.session_state.get(RECENTS, []) if e["id"] == entry_id), None)
+    try:  # written by this app on this computer, in its own data folder
+        saved = pickle.loads((RECENT_DIR / f"{entry_id}.pkl").read_bytes())
+    except (OSError, pickle.UnpicklingError, AttributeError, ImportError, EOFError, TypeError, ValueError):
+        return None
+    return saved if isinstance(saved, dict) and "result" in saved else None
+
+
+def _reopen(entry_id: str) -> None:
+    st.session_state[REOPEN] = entry_id
+
+
+def _clear_recents() -> None:
+    if style.public():
+        st.session_state.pop(RECENTS, None)
+    else:
+        _write_index([])
+
+
+def _open_recent(entry_id: str) -> None:
+    """Puts a recent check back on the page as it was, at the top of a run, before Source draws: a pasted text goes
+    back in the text box, and a check whose file no longer reads is scored again from its text."""
+    entry = next((e for e in _recent_index() if e["id"] == entry_id), None)
+    saved = _load_recent(entry_id)
+    if saved is None:
+        st.toast("That check couldn't be opened: its saved copy is gone or from an older version of the app. "
+                 "Check the text again.", icon=":material/history:")
+        return
+    result, text = dict(saved["result"]), saved.get("text")
+    if result.get("source") == "Pasted text" and text:  # back in the text box, so Analyze checks it again
+        st.session_state["keep:detect:source"] = SOURCES[0]
+        st.session_state["keep:detect:text"] = text
+    result["reopened"] = entry["at"] if entry else ""
+    st.session_state[RESULT] = result
+    if kitchen.enabled():
+        verdict = result["report"].verdict
+        kitchen.cue(kitchen.VERDICT_CUES.get(verdict, ("happy", ""))[0], "Back from the pantry, as I left it.", ms=3000)
+
+
+def _recents_panel() -> None:
+    """Recent checks, under Analyze: each one's verdict, where it came from and when, to open again."""
+    entries = _recent_index()
+    if not entries:
+        return
+    with st.expander(f"Recent checks · {len(entries)}", icon=":material/history:"):
+        for entry in entries[:20]:
+            label, color, _ = VERDICTS.get(entry.get("verdict") or "", ("Not scored", "gray", ""))
+            score = f" {entry['probability']:.0%}" if isinstance(entry.get("probability"), (int, float)) else ""
+            when = _when(entry.get("at", ""))
+            preview = _plain(entry.get("preview", "")[:70])
+            with st.container(horizontal=True, vertical_alignment="center", gap="small",
+                              key=f"od-recent-{entry['id']}"):
+                st.markdown(f":{color}[**{label}{score}**] · {_plain(entry.get('source', ''))}  \n"
+                            f":gray[{entry.get('words', 0):,} words · {when} · {preview}…]", width="stretch")
+                st.button("Open", key=f"detect:recent:{entry['id']}", type="tertiary", icon=":material/open_in_new:",
+                          on_click=_reopen, args=(entry["id"],), help="Shows this check's result again, as it was.")
+        st.caption("Kept only while this tab is open." if style.public() else
+                   "Kept on this computer, with the texts checked, the latest 40.")
+        st.button("Clear recent checks", type="tertiary", icon=":material/delete_sweep:", key="detect:recent:clear",
+                  on_click=_clear_recents)
+
+
+def _plain(text: str) -> str:
+    """`text` shown as written in Markdown: its Markdown characters escaped."""
+    return "".join(f"\\{c}" if c in "\\`*_[]{}()#+-.!|<>:~$" else c for c in text)
+
+
+def _when(stamp: str) -> str:
+    try:
+        then = datetime.fromisoformat(stamp)
+    except ValueError:
+        return ""
+    seconds = (datetime.now() - then).total_seconds()
+    if seconds < 90:
+        return "just now"
+    if seconds < 3600:
+        return f"{seconds // 60:.0f} min ago"
+    if then.date() == datetime.now().date():
+        return f"today {then:%H:%M}"
+    return f"{then:%d %b %H:%M}"
 
 
 def score_parts(detector, parts: list[tuple[str, str]], scored: list[dict] | None = None) -> list[dict]:
@@ -306,13 +453,13 @@ def _sections_table(rows: list[dict], min_words: int, thresholds: dict[str, floa
           "AI likelihood": row["probability"]} for row in rows],
         hide_index=True, width="stretch",
         column_config={"AI likelihood": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1,
-                                                                        color=style.tokens()["accent"])},
+                                                                        color=style.table_accent())},
     )
     chosen = st.selectbox("Read a section", range(len(rows)), index=None, format_func=lambda i: rows[i]["label"],
                           placeholder="Choose a section to read")  # by position: two slides' boxes can share a label
     if chosen is not None:
         row = rows[chosen]
-        with st.container(border=True):
+        with st.container(border=True, key="od-box-1"):
             verdict_badge(row["verdict"] or "insufficient_text")
             st.text(row["text"])
 
@@ -499,11 +646,15 @@ def show_result(result: dict, digest: str | None = None, revise: bool = False) -
         _revised_note(result)
     elif offered and report.sentences and st.button("Revise flagged passages in the Lab", icon=":material/rule:"):
         st.session_state["keep:redteam:revise_text"] = report.text
+        st.session_state["keep:redteam:mode"] = "revise"  # the Lab's Revise a text card
         st.switch_page(nav.redteam_page())
     with st.container(horizontal=True, vertical_alignment="center"):
         st.html(f'<div class="od-section-title"><b>Result</b><span>{html.escape(result["source"])} · '
                 f'{models.PROFILE_LABELS[result["profile"]]} build</span></div>')
-    if digest is not None and result["digest"] != digest:
+    if result.get("reopened"):
+        st.caption(f":material/history: Opened from Recent checks · checked {_when(result['reopened'])}. "
+                   "Analyze checks the text in Source again.")
+    elif digest is not None and result["digest"] != digest:
         st.caption(":material/info: The input has changed since this analysis. Analyze again to update it.")
 
     norm = report.normalization
@@ -566,7 +717,7 @@ def show_result(result: dict, digest: str | None = None, revise: bool = False) -
                      for i, (s, band) in enumerate(zip(report.sentences, result["bands"], strict=True), 1)],
                     hide_index=True, width="stretch",
                     column_config={"AI likelihood": st.column_config.ProgressColumn(
-                        format="percent", min_value=0, max_value=1, width="small", color=style.tokens()["accent"]),
+                        format="percent", min_value=0, max_value=1, width="small", color=style.table_accent()),
                         "Band": st.column_config.TextColumn(width="small")},
                 )
             elif name == "Sections":
@@ -579,6 +730,8 @@ def show_result(result: dict, digest: str | None = None, revise: bool = False) -
 
 
 def render() -> None:
+    if (reopen := st.session_state.pop(REOPEN, None)) is not None:  # before Source draws its text box
+        _open_recent(reopen)
     if (pending := st.session_state.pop(PENDING, None)) is not None:  # before Source draws its text box
         st.session_state["keep:detect:source"] = SOURCES[0]
         st.session_state["keep:detect:text"] = pending
@@ -611,6 +764,7 @@ def render() -> None:
             st.warning(problem, icon=":material/info:")
         st.caption(":material/balance: A detector score is statistical evidence, not proof of authorship. Don't "
                    "use it as the only basis for an academic integrity decision.")
+        recents = st.container()  # filled once this run's check, if any, is saved
 
     with output:
         stage = st.empty()  # the kitchen timer while the critic tastes
@@ -629,3 +783,5 @@ def render() -> None:
                     "verdict, each engine's reading and the sentences that drive the score appear here.</div>")
             if kitchen.enabled():
                 kitchen.greet("detect", "Paste me something. I am starving.")
+    with recents:
+        _recents_panel()

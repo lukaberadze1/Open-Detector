@@ -60,26 +60,23 @@ def download_gb(profile: str, names: Iterable[str] | None = None) -> float:
 
 
 def active_profile() -> str:
-    """The build chosen on the Detect page."""
-    return PINNED_PROFILE or st.session_state.get("profile") or DEFAULT_PROFILE
-
-
-def profile_picker() -> None:
-    """The detector build, shared by both pages. Drawn in the Detect page's Engines panel; app.py keeps
-    the choice while the other page is open."""
+    """The build chosen on the Settings page: this session's pick, else the one saved on this computer."""
     if PINNED_PROFILE:
-        st.caption("Slim build: Desklib alone, the strongest single engine, on the CPU to fit this host."
-                   if PINNED_PROFILE == "slim" else "Full build: every engine.")
-        return
-    st.session_state.setdefault("profile", DEFAULT_PROFILE)
-    profile = st.segmented_control("Build", PROFILES, format_func=lambda name: f"{PROFILE_LABELS[name]} build",
-                                   key="profile", required=True, label_visibility="collapsed")
-    if profile == "slim":
-        st.caption("Desklib alone on the CPU, about 1.5 GB. Scores as well as the full build on the "
-                   "held-out test.")
-    else:
-        st.caption(f"GLYPH, Desklib and Binoculars, about 3.5 GB. This computer has {RAM_GB:.0f} GB"
-                   + (", so Slim leaves more room for a local text model." if RAM_GB <= 8.5 else "."))
+        return PINNED_PROFILE
+    if st.session_state.get("profile") not in PROFILES:
+        from . import prefs, style
+
+        saved = None if style.public() else prefs.load().get("profile")
+        st.session_state["profile"] = saved if saved in PROFILES else DEFAULT_PROFILE
+    return st.session_state["profile"]
+
+
+def remember_profile(profile: str) -> None:
+    """Keeps the build picked on the Settings page for next time, on this computer."""
+    from . import prefs, style
+
+    if not style.public() and profile in PROFILES:
+        prefs.update(profile=profile)
 
 
 @st.cache_resource

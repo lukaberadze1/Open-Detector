@@ -90,7 +90,7 @@ def _key_panel() -> None:
             st.rerun()
         st.caption(f"The key is kept only on this computer, in {_where()}. The Adversarial Lab sends your "
                    "instructions to Google to write each sample; checking a text sends nothing anywhere. Keys from "
-                   "other Google accounts can be added in the Adversarial Lab, under Model & connection.")
+                   "other Google accounts can be added on the Settings page, under Keys and models.")
 
 
 def _public_key_panel() -> None:
@@ -153,8 +153,9 @@ def render() -> None:
     with st.container(key="od-panel-guide-more"):
         st.subheader("Good to know")
         st.markdown(
-            "- **Look:** Bistro or Glass, under **Look** at the bottom of the menu on the left, and for Bistro a "
-            "**Textured** or **Standard** finish"
+            "- **Look:** Bistro or Glass, on the **Settings** page in the menu on the left, and for Bistro a "
+            "**Textured** or **Standard** finish. The detector build"
+            + (" and the Lab's keys and models are set there too" if not public else " is shown there")
             + (" (this site doesn't remember them between visits)" if public else "") + ". For light or dark, "
             "use the **⋮** menu at the top right, then **Settings**.\n"
             "- **Cloche,** the critic in the bottom corner, waits while a text is scored and reacts to the verdict, "

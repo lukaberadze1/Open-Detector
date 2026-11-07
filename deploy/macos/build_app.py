@@ -7,7 +7,8 @@ Spotlight or the Finder, in a window of its own (deploy/macos/launcher.py).
 
 By default the app runs this checkout's code with its .venv and holds no copy of the project, so a
 git pull, a refit or a new style profile shows up the next time it opens. Build it again after moving
-the project folder. The icon is drawn from ui/assets/mark.svg.
+the project folder. The icon is Cloche on a cream tile (ui/assets/app-icon-bistro.png), and the running app swaps it in
+the Dock for Glass's mark (ui/assets/mark.svg) when Glass is the picked look.
 
 --standalone builds the app other people download: it carries its own Python (the standalone CPython
 uv installed for the .venv), the packages in deploy/macos/requirements.txt at the .venv's versions, and
@@ -276,9 +277,26 @@ def _is_macho(path: Path) -> bool:
         return False
 
 
-def render_icon(svg: Path, out: Path) -> None:
-    """Draw `svg` on macOS's icon grid (824 px of artwork on a 1024 px canvas, rounded corners, a soft
-    shadow) and write every size of an .icns to `out`."""
+# The icon of each look: Glass's violet mark, and Bistro's Cloche on a tile of grained paper. The bundle's own
+# icon (the Finder's) is Bistro's, the default look; the launcher shows the picked look's in the Dock while the app
+# runs (ICON_FILES, launcher.set_dock_icon), since a signed bundle can't change its own icon.
+ICON_LOOKS = {"bistro": "ui/assets/app-icon-bistro.png", "glass": "ui/assets/mark.svg"}
+ICON_FILES = {look: f"AppIcon-{look}.png" for look in ICON_LOOKS}
+
+
+def _rgb(hex_colour: str, alpha: float = 1.0):
+    import AppKit
+
+    red, green, blue = (int(hex_colour.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    return AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(red, green, blue, alpha)
+
+
+def draw_icon(svg: Path, out: Path, look: str = "glass") -> None:
+    """Draw `svg` on macOS's icon grid (824 px of artwork on a 1024 px canvas, rounded corners, a soft shadow) in
+    `look`'s tile, and write it to `out` as a 1024-pixel PNG. A .png is a finished tile (Bistro's, Cloche on cream
+    plastic, ui/assets/app-icon-bistro.png) and goes on the grid as it is."""
+    import random
+
     import AppKit
 
     size, inset = 1024, 100
@@ -288,6 +306,12 @@ def render_icon(svg: Path, out: Path) -> None:
         None, size, size, 8, 4, True, False, AppKit.NSDeviceRGBColorSpace, 0, 0)
     AppKit.NSGraphicsContext.saveGraphicsState()
     AppKit.NSGraphicsContext.setCurrentContext_(AppKit.NSGraphicsContext.graphicsContextWithBitmapImageRep_(rep))
+    if svg.suffix == ".png":
+        AppKit.NSImage.alloc().initWithContentsOfFile_(str(svg)).drawInRect_(rect)
+        AppKit.NSGraphicsContext.restoreGraphicsState()
+        rep.representationUsingType_properties_(AppKit.NSBitmapImageFileTypePNG, {}).writeToFile_atomically_(
+            str(out), True)
+        return
     shape = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(rect, side * 0.2237, side * 0.2237)
     shadow = AppKit.NSShadow.alloc().init()
     shadow.setShadowColor_(AppKit.NSColor.colorWithWhite_alpha_(0, 0.28))
@@ -295,22 +319,52 @@ def render_icon(svg: Path, out: Path) -> None:
     shadow.setShadowOffset_((0, -10))
     AppKit.NSGraphicsContext.saveGraphicsState()
     shadow.set()
-    AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(0.39, 0.40, 0.95, 1).setFill()
+    (_rgb("#F3EADB") if look == "bistro" else AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(0.39, 0.40, 0.95, 1)
+     ).setFill()
     shape.fill()
     AppKit.NSGraphicsContext.restoreGraphicsState()
-    # The mark's own gradient, filling the corners its rounder square leaves inside the icon shape.
     shape.addClip()
-    AppKit.NSGradient.alloc().initWithStartingColor_endingColor_(
-        AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(0x63 / 255, 0x66 / 255, 0xF1 / 255, 1),
-        AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(0x8B / 255, 0x5C / 255, 0xF6 / 255, 1),
-    ).drawInBezierPath_angle_(shape, -45)
-    AppKit.NSImage.alloc().initWithContentsOfFile_(str(svg)).drawInRect_(rect)
+    if look == "bistro":
+        # Paper: cream, lighter at the top, with the app's two layers of grain and a pressed rim.
+        AppKit.NSGradient.alloc().initWithStartingColor_endingColor_(_rgb("#FBF5EA"), _rgb("#EADBC2")) \
+            .drawInBezierPath_angle_(shape, -90)
+        grain = random.Random(7)
+        for _ in range(5200):
+            x, y = inset + grain.random() * side, inset + grain.random() * side
+            dark = grain.random() < 0.62
+            (_rgb("#785A3C", 0.10) if dark else _rgb("#FFFFFF", 0.55)).setFill()
+            radius = grain.uniform(1.6, 3.4)
+            AppKit.NSBezierPath.bezierPathWithOvalInRect_(((x, y), (radius, radius))).fill()
+        rim = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            ((inset + 6, inset + 6), (side - 12, side - 12)), side * 0.2237 - 6, side * 0.2237 - 6)
+        rim.setLineWidth_(12)
+        _rgb("#D9C7AA").setStroke()
+        rim.stroke()
+        # Cloche keeps his own proportions (120 by 112), a little below the middle, on the plate's shadow.
+        width = side * 0.74
+        height = width * 112 / 120
+        art = ((inset + (side - width) / 2, inset + (side - height) / 2 - side * 0.03), (width, height))
+        _rgb("#2A1F17", 0.12).setFill()
+        AppKit.NSBezierPath.bezierPathWithOvalInRect_(
+            ((art[0][0] + width * 0.08, art[0][1] + height * 0.02), (width * 0.84, height * 0.12))).fill()
+    else:
+        # The mark's own gradient, filling the corners its rounder square leaves inside the icon shape.
+        AppKit.NSGradient.alloc().initWithStartingColor_endingColor_(
+            AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(0x63 / 255, 0x66 / 255, 0xF1 / 255, 1),
+            AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(0x8B / 255, 0x5C / 255, 0xF6 / 255, 1),
+        ).drawInBezierPath_angle_(shape, -45)
+        art = rect
+    AppKit.NSImage.alloc().initWithContentsOfFile_(str(svg)).drawInRect_(art)
     AppKit.NSGraphicsContext.restoreGraphicsState()
+    rep.representationUsingType_properties_(AppKit.NSBitmapImageFileTypePNG, {}).writeToFile_atomically_(
+        str(out), True)
 
+
+def render_icon(svg: Path, out: Path, look: str = "glass") -> None:
+    """Draw `svg` in `look`'s tile (draw_icon) and write every size of an .icns to `out`."""
     with tempfile.TemporaryDirectory() as tmp:
         master = Path(tmp) / "icon.png"
-        rep.representationUsingType_properties_(AppKit.NSBitmapImageFileTypePNG, {}).writeToFile_atomically_(
-            str(master), True)
+        draw_icon(svg, master, look)
         iconset = Path(tmp) / "AppIcon.iconset"
         iconset.mkdir()
         for points in (16, 32, 128, 256, 512):
@@ -319,6 +373,13 @@ def render_icon(svg: Path, out: Path) -> None:
                 subprocess.run(["sips", "-z", str(points * scale), str(points * scale), str(master), "--out",
                                 str(name)], check=True, capture_output=True)
         subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(out)], check=True)
+
+
+def render_icons(root: Path, resources: Path) -> None:
+    """The bundle's icon (Bistro's, the default look) and each look's for the Dock (ICON_FILES)."""
+    render_icon(root / ICON_LOOKS["bistro"], resources / "AppIcon.icns", "bistro")
+    for look, svg in ICON_LOOKS.items():
+        draw_icon(root / svg, resources / ICON_FILES[look], look)
 
 
 def build(dest: Path, root: Path = ROOT, icon: bool = True, register: bool = True,
@@ -348,7 +409,7 @@ def build(dest: Path, root: Path = ROOT, icon: bool = True, register: bool = Tru
         compile_executable(root, executable)
     (contents / "Info.plist").write_bytes(plistlib.dumps(plist))
     if icon:
-        render_icon(root / "ui/assets/mark.svg", contents / "Resources/AppIcon.icns")
+        render_icons(root, contents / "Resources")
     if standalone:
         sign_code(contents / "Resources")
     # Apple silicon runs only signed code; an ad-hoc signature is enough on the Mac that built the app.

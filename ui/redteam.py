@@ -167,13 +167,21 @@ MIME_TYPES = {
 }
 # The page asks two things: Generate (new text from instructions) or Regenerate (rewrite a document's own
 # text), and, to regenerate, what to rewrite. Both pick one of these tasks.
-MODES = {"generate": "Generate", "regenerate": "Regenerate"}
+MODES = {"generate": "Generate", "regenerate": "Regenerate", "revise": "Revise a text"}
+MODE_CARDS = {  # what each card says on the page
+    "generate": "New text from your instructions. A file is only source material.",
+    "regenerate": "Rewrite the text inside a document. Layout, headings and questions stay.",
+    "revise": "Touch up only the passages the critic flags in a text you paste.",
+}
 MODE_NOTES = {
     "generate": "Writes new text from your instructions. A document or pasted text is only source material: it "
                 "is never changed.",
     "regenerate": "Rewrites the text inside your document or pasted text. Headings, questions, tables and layout "
                   "stay as they are, and a test copy is exported.",
+    "revise": "Rewrites only the passages of a text you paste that score above a line you pick. The rest stays word "
+              "for word.",
 }
+MODE = "keep:redteam:mode"
 TASKS = {
     "sample": ("Generate", "A new labelled AI sample from your instructions."),
     "blocks": ("Whole document", "Rewrites every text block. Headings, titles, questions and tables stay as they "
@@ -531,11 +539,32 @@ def _key_box(name: str) -> None:
             st.rerun()
 
 
+CONNECTION_DEFAULTS = {  # the Settings page's fields, and what they start as
+    "keep:redteam:base_url": GEMINI_API_URL, "keep:redteam:model": DEFAULT_MODEL,
+    "keep:redteam:fallbacks": "\n".join(DEFAULT_FALLBACK_MODELS), "keep:redteam:local_url": LOCAL_URL,
+    "keep:redteam:key_env": "GEMINI_API_KEY",
+}
+
+
 def _connection() -> Connection:
-    """Model & connection, at the foot of the settings: which text models to use, and whether they can
-    run. Drawn into the current container."""
+    """Which text models write and with what keys, as set on the Settings page (connection_settings), read without
+    drawing anything. A public deploy's visitor sets theirs in the Lab (_public_connection)."""
     if public():
         return _public_connection()
+    values = {key: st.session_state[keep(key, default)] for key, default in CONNECTION_DEFAULTS.items()}
+    local_model = st.session_state[keep("keep:redteam:local_model", "" if packaged() else LOCAL_MODEL)].strip()
+    fallback_models = [line.strip() for line in values["keep:redteam:fallbacks"].replace(",", "\n").splitlines()
+                       if line.strip()]
+    key_env = values["keep:redteam:key_env"]
+    keys = env_keys(key_env)
+    return Connection(values["keep:redteam:base_url"], values["keep:redteam:model"], fallback_models, local_model,
+                      values["keep:redteam:local_url"].strip(), key_env, keys[0] if keys else "",
+                      KeyPool(keys) if len(keys) > 1 else None)
+
+
+def connection_settings() -> Connection:
+    """The Settings page's Keys and models: the provider, its models in order and the keys, each Gemini key with
+    the requests it has left today. Drawn into the current container; the Lab and Detect read it (_connection)."""
     status = st.container()
     name = st.selectbox(
         "Provider", (*PROVIDERS, "custom"), format_func=lambda n: PROVIDERS[n].label if n in PROVIDERS else "Other",
@@ -543,31 +572,25 @@ def _connection() -> Connection:
         on_change=_provider_changed,
         help="Sets the fields below. Each has its own models and limits, and is measured on its own.",
     )
-    base_url = st.text_input("API URL", key=keep("keep:redteam:base_url", GEMINI_API_URL),
-                             help="Gemini uses its Interactions API. Any OpenAI-compatible endpoint "
-                                  "works too.")
-    model = st.text_input("Model", key=keep("keep:redteam:model", DEFAULT_MODEL))
+    model = st.text_input("Model, tried first", key=keep("keep:redteam:model", DEFAULT_MODEL))
     fallback_text = st.text_area(
-        "Fallback models, in order", key=keep("keep:redteam:fallbacks", "\n".join(DEFAULT_FALLBACK_MODELS)),
-        height=130,
-        help="Used in turn after quota or temporary errors. Models unavailable to your account are skipped. "
-             "Edit or clear this list for another OpenAI-compatible provider.",
+        "Then, if it fails", key=keep("keep:redteam:fallbacks", "\n".join(DEFAULT_FALLBACK_MODELS)),
+        height=110,
+        help="One model a line, used in turn after quota or temporary errors. Models unavailable to your account "
+             "are skipped. Edit or clear this list for another OpenAI-compatible provider.",
     )
-    local_model = st.text_input(
-        "Local fallback model (Ollama)",
-        key=keep("keep:redteam:local_model", "" if packaged() else LOCAL_MODEL),
-        help="Used after every model above fails. Runs on this computer with no key or quota; needs "
-             "`ollama serve` running and the model fetched with `ollama pull`. Clear to turn it off.",
-    ).strip()
-    local_url = st.text_input("Local fallback URL", key=keep("keep:redteam:local_url", LOCAL_URL)).strip()
-    api_key_env = st.text_input("API key environment variable",
-                                key=keep("keep:redteam:key_env", "GEMINI_API_KEY"))
+    with st.expander("Connection details · API URL, key variable", icon=":material/link:"):
+        st.text_input("API URL", key=keep("keep:redteam:base_url", GEMINI_API_URL),
+                      help="Gemini uses its Interactions API. Any OpenAI-compatible endpoint works too.")
+        api_key_env = st.text_input("API key environment variable",
+                                    key=keep("keep:redteam:key_env", "GEMINI_API_KEY"))
     fallback_models = [line.strip() for line in fallback_text.replace(",", "\n").splitlines() if line.strip()]
     keys = env_keys(api_key_env)
     api_key = keys[0] if keys else ""
+    local_model = st.session_state[keep("keep:redteam:local_model", "" if packaged() else LOCAL_MODEL)].strip()
     with status:
-        st.caption(f":material/smart_toy: **{model}**, then {len(fallback_models)} fallback models"
-                   + (f" and {local_model} locally." if local_model else "."))
+        st.caption(f":material/smart_toy: Writes with **{model}**, then {len(fallback_models)} fallback models"
+                   + (f" and {local_model} on this computer." if local_model else "."))
         if len(keys) > 1:
             st.caption(f":material/key: Using {len(keys)} keys, from {api_key_env} and {extra_keys_name(api_key_env)}. "
                        "Each model runs on every key before the next model is tried.")
@@ -578,7 +601,7 @@ def _connection() -> Connection:
             if name in ("groq", "openrouter"):
                 _key_box(name)
             else:
-                st.page_link(nav.guide_page(), label="Add your Gemini API key", icon=":material/key:")
+                st.page_link(nav.guide_page(), label="Add your Gemini API key in the Guide", icon=":material/key:")
         if api_key and name == "gemini":
             _gemini_keys(api_key_env, keys, [model, *fallback_models])
         if api_key and name in ("groq", "openrouter") and (names := _models_on_offer(name, api_key)):
@@ -586,13 +609,25 @@ def _connection() -> Connection:
                 st.caption("Copy a name into Model or the fallbacks." + (
                     " Free ones come first, and their list changes often." if name == "openrouter" else ""))
                 st.code("\n".join(names[:80]), language=None)
-        if local_model:
-            if problem := local_fallback_problem(local_url, local_model):
-                st.caption(f":orange[:material/cloud_off: The local fallback can't run: {problem}]")
-            else:
-                st.caption(f":material/check_circle: Local fallback ready: {local_model}.")
-    return Connection(base_url, model, fallback_models, local_model, local_url, api_key_env, api_key,
-                      KeyPool(keys) if len(keys) > 1 else None)
+    return _connection()
+
+
+def local_settings() -> None:
+    """The Settings page's This computer: the local model used after every hosted one fails, and whether it runs."""
+    local_model = st.text_input(
+        "Local fallback model (Ollama)",
+        key=keep("keep:redteam:local_model", "" if packaged() else LOCAL_MODEL),
+        help="Used after every hosted model fails. Runs on this computer with no key or quota; needs "
+             "`ollama serve` running and the model fetched with `ollama pull`. Clear to turn it off.",
+    ).strip()
+    local_url = st.text_input("Local fallback URL", key=keep("keep:redteam:local_url", LOCAL_URL)).strip()
+    if not local_model:
+        st.caption(":material/do_not_disturb_on: Off. Type a model to turn the back-up cook on.")
+    elif problem := local_fallback_problem(local_url, local_model):
+        st.caption(f":orange[:material/cloud_off: Can't run: {problem}]")
+    else:
+        st.caption(f":green[:material/check_circle: Ready: {local_model}.]")
+    st.button("Check again", icon=":material/refresh:", key="settings:check_local")
 
 
 def _remove_key(name: str, key: str) -> None:
@@ -601,7 +636,11 @@ def _remove_key(name: str, key: str) -> None:
 
 def _key_allowance(rows: list[dict]) -> None:
     """One key's requests left today on each model it has used or has a known limit for, as bars."""
-    shown = [row for row in rows if row["limit"] or row["used"] or row["spent"]]
+    known = [row for row in rows if row["limit"] or row["used"] or row["spent"]]
+    shown = known[:2]  # the models tried first; the rest in one line
+    if len(known) > 2:
+        st.caption(f"{len(known) - 2} more model{'s' * (len(known) != 3)} · "
+                   + ", ".join(f"{row['model']}: {'out' if row['spent'] else row['left']}" for row in known[2:]))
     if not shown:
         st.caption("No requests counted today, and no daily limits known yet for these models.")
     for row in shown:
@@ -626,7 +665,8 @@ def _gemini_keys(name: str, keys: list[str], models: list[str]) -> None:
     label = f"{len(keys)} Gemini key{'s' * (len(keys) != 1)}"
     if main and len(main) == len(keys):
         label += f" · {sum(row['left'] for row in main)} left on {models[0]}"
-    with st.popover(label, icon=":material/key:"):
+    with st.container(key="od-keys"):
+        style.heading("Gemini keys", label.split(" · ", 1)[1] if " · " in label else "")
         st.caption("Keys from other Google accounts add their free allowances together. A batch uses each model on "
                    "every key, taking turns, and moves to the next model only when all of them are out of quota. "
                    "Keys made in the same Cloud project share one allowance, so make each in its own project.")
@@ -720,9 +760,9 @@ def _public_connection() -> Connection:
 
 
 def _mode() -> str:
-    """Generate or Regenerate: the page's first choice."""
-    mode = st.segmented_control("Mode", list(MODES), format_func=MODES.get, key=keep("keep:redteam:mode", "generate"),
-                                required=True, label_visibility="collapsed", width="stretch")
+    """What are we making: Generate, Regenerate or, off a public deploy, Revise a text (a drafting aid), as cards."""
+    offered = [mode for mode in MODES if mode != "revise" or not public()]
+    mode = kitchen.cards([(mode, MODES[mode], MODE_CARDS[mode]) for mode in offered], MODE, "What are we making?")
     st.caption(MODE_NOTES[mode])
     return mode
 
@@ -1071,8 +1111,9 @@ def revise_settings(profile: str) -> tuple[Plan, Connection]:
     st.toggle("The source is AI text", key=keep("keep:redteam:panel_is_ai", False),
               help="Turn this on only for text an AI wrote. Then each revision is saved as AI-labelled evaluation "
                    "data; otherwise nothing is saved.")
-    st.divider()
     conn = _connection()
+    st.page_link(nav.settings_page(), label=f"Writes with {conn.model} · keys and models in Settings",
+                 icon=":material/tune:")
     return plan, conn
 
 
@@ -1122,42 +1163,68 @@ def revise_chosen(plan: Plan, conn: Connection, text: str, sentences: list, chos
             "saved": saved, "changed": new != text}
 
 
-def _revise_panel(plan: Plan, conn: Connection) -> None:
-    """Revise a text you already have: only what scores above a chosen percentage."""
-    with st.expander("Revise a text above a percentage", icon=":material/rule:",
-                     expanded=bool(st.session_state.get(REVISE_TEXT))):
-        text = st.text_area("Text", key=keep(REVISE_TEXT, ""), height=180)
-        above = st.slider("Revise passages above", 5, 95, step=5, key=keep("keep:redteam:panel_above", 60),
-                          format="%d%%", help="Passages under this stay word for word. Passage scores are less "
-                                              "reliable than the whole text's.")
-        where = "With the model"
-        if _deep_math_offered():
-            where = st.segmented_control("Rewrite", ("With the model", "On this computer"), required=True,
-                                         key=keep("keep:redteam:panel_where", "With the model"),
-                                         help="On this computer uses no API or quota, but it's far weaker and much "
-                                              "slower: it leaves anything its meaning checks refuse as it was.")
-        is_ai = st.toggle("The source is AI text", key=keep("keep:redteam:panel_is_ai", False),
-                          help="Turn this on only for text an AI wrote. Otherwise the result isn't saved as AI data.")
-        if st.button("Revise", icon=":material/auto_fix_high:", disabled=not text.strip()):
-            problem = None if where == "On this computer" else _problem(plan, conn)
-            if problem:
-                st.error(problem)
+def _revise_problem(plan: Plan, conn: Connection) -> str | None:
+    if not st.session_state.get(REVISE_TEXT, "").strip():
+        return "Paste the text to revise first."
+    if st.session_state.get("keep:redteam:panel_where") == "On this computer":
+        return None
+    return key_problem(conn)
+
+
+def _revise_output(plan: Plan, conn: Connection, run: bool) -> None:
+    """Revise a text's result column: the timer while it works, then the scores before and after and the text."""
+    stage = st.empty()
+    if run:
+        text = st.session_state[REVISE_TEXT]
+        local = st.session_state.get("keep:redteam:panel_where") == "On this computer"
+        if kitchen.enabled():
+            kitchen.cue("tasting", "Back to the stove with the burnt bits.", ms=2400)
+            with stage.container(border=True, key="od-box-revising"):
+                kitchen.timer("lab:revise_timer", None, size=150, layout="stack", eyebrow="Revising",
+                              note="Rewriting only the passages above the line, and tasting each try.",
+                              stamp=f"{time.time():.3f}", waiting="Revising…", lines=kitchen.REVISING_LINES)
+            kitchen.show("lab", "revise")
+        busy = contextlib.nullcontext() if kitchen.enabled() else st.spinner("Revising the passages above the line…")
+        st.session_state.pop(REVISE_RESULT, None)
+        with busy:
+            try:
+                _revise_existing(plan, conn, text, st.session_state.get("keep:redteam:panel_above", 60) / 100, local,
+                                 bool(st.session_state.get("keep:redteam:panel_is_ai")))
+            except APIError as exc:
+                st.error(str(exc), icon=":material/error:")
+        stage.empty()
+        if kitchen.enabled():
+            done = st.session_state.get(REVISE_RESULT)
+            if done and done.get("after") is not None:
+                kitchen.cue("happy" if done["after"] < done["before"] else "skeptical",
+                            f"Ding! {done['before']:.0%} down to {done['after']:.0%}." if done["changed"] else
+                            "Nothing tasted better, so it's as it was.", ring=done["changed"], ms=3800)
             else:
-                with st.spinner("Revising the passages above that score…"):
-                    try:
-                        _revise_existing(plan, conn, text, above / 100, where == "On this computer", is_ai)
-                    except APIError as exc:
-                        st.error(str(exc), icon=":material/error:")
-        if result := st.session_state.get(REVISE_RESULT):
-            first, second, third = st.columns(3)
-            first.metric("Before", f"{result['before']:.1%}")
-            second.metric("After", f"{result['after']:.1%}" if result["after"] is not None else "n/a")
-            third.metric("Requests", result["requests"])
-            st.caption(f"{result['flagged']} passages were above the line."
-                       + (" Saved as AI-labelled evaluation data." if result["saved"] else ""))
-            if not result["changed"]:
-                st.info("No revision lowered the score, so the text is as it was.")
-            st.text_area("Revised text", result["text"], height=220, disabled=True)
+                kitchen.cue("skeptical")
+    result = st.session_state.get(REVISE_RESULT)
+    if not result:
+        empty = style.flavour("Nothing revised yet", "Nothing on the plate yet")
+        stage.html(f'<div class="od-empty od-stage-empty"><b>{empty}'
+                   "</b>Paste a text on the left, pick the line and press the button. Only the passages above it are "
+                   "rewritten; the rest stays word for word.</div>")
+        return
+    with st.container(border=True, key="od-box-2"):
+        style.heading("Revised", f"{result['flagged']} passage{'s' * (result['flagged'] != 1)} above the line")
+        with st.container(horizontal=True):
+            st.metric("Before", f"{result['before']:.1%}", width="content")
+            st.metric("After", f"{result['after']:.1%}" if result["after"] is not None else "n/a", width="content")
+            st.metric("Requests", result["requests"], width="content")
+        if not result["changed"]:
+            st.info("No revision lowered the score, so the text is as it was.")
+        st.html(f'<div class="od-text od-sample">{html.escape(result["text"])}</div>')
+        with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+            st.download_button("Text file", result["text"], file_name="revised.txt", mime="text/plain",
+                               icon=":material/download:", key="download_revised")
+            st.space("stretch")
+            if st.button("Analyze in Detect", icon=":material/search:", type="primary", key="redteam:revised:detect"):
+                _open_in_detect(result["text"])
+        if result["saved"]:
+            st.caption("Saved as AI-labelled evaluation data.")
 
 
 def _deep_math_offered() -> bool:
@@ -1287,22 +1354,25 @@ def _setup(profile: str, connection_box=None) -> tuple[Plan, Connection]:
     visitor still has to paste a key. The priorities need the connection, so their panel is laid out near the
     top and filled after it."""
     engine = "API"
-    with style.group("Mode", "01"):
-        regenerate = _mode() == "regenerate"
-        if not public():  # drafting aids stay out of public mode
+    mode = _mode()
+    if mode == "revise":
+        return _revise_setup(profile)
+    regenerate = mode == "regenerate"
+    if not public():  # drafting aids stay out of public mode
+        with st.container(key="od-engine"):
             engine = st.segmented_control(
                 "Engine", ENGINES, key=keep("keep:redteam:engine", "API"), required=True,
                 help="API writes with the models. Math uses no model or quota: it edits text you supply by rules, "
                      "keeping an edit only if the detector then scores lower. Combo writes with the models, then "
                      "runs the math script on the result.")
-    with style.group("Input", "02", "the ingredients"):
+    with style.group("Input", "01", "the ingredients"):
         prompt, upload, sections, slots, blocks = _source(regenerate)
     plan = Plan(prompt, upload, sections, slots, blocks, "sample", profile)
     plan.citations = st.session_state.get("redteam:validated_references", []) if not regenerate else []
     if not regenerate and st.session_state.get("redteam:references_invalid"):
         plan.blocked = "Fix or clear the reference JSON before generating."
     plan.context_sections = sections
-    steps = iter(("03", "04", "05", "06"))
+    steps = iter(("02", "03", "04", "05"))
     with style.group("Priorities", next(steps), "the head chef"):
         priorities_box = st.container()  # filled once Model & connection, at the foot, says which models there are
     if regenerate:
@@ -1327,12 +1397,58 @@ def _setup(profile: str, connection_box=None) -> tuple[Plan, Connection]:
                 "The source is AI text", key=keep("keep:redteam:source_is_ai", False),
                 help="Rule edits leave a text its original author's, so by default they aren't saved as AI data. "
                      "Turn this on only for text an AI wrote.")
-    key_missing = public() and not st.session_state.get(PUBLIC_KEY, "").strip()
-    with (connection_box if connection_box is not None and not key_missing else contextlib.nullcontext()), \
-            st.expander("Model & connection" + (" · add your Gemini key" if key_missing else
-                                                 style.flavour("", " · the cooks")),
-                        icon=":material/key:", expanded=key_missing):
-        conn = _connection()
+    conn = _connection_panel(connection_box)
+    with priorities_box:
+        _priorities(plan, conn)
+    return plan, conn
+
+
+def _connection_panel(connection_box=None) -> Connection:
+    """Which models write, as set on the Settings page, in a line with a link there. A public deploy has no
+    Settings for this: its visitor pastes their own key here, in Model & connection."""
+    if public():
+        key_missing = not st.session_state.get(PUBLIC_KEY, "").strip()
+        with (connection_box if connection_box is not None and not key_missing else contextlib.nullcontext()), \
+                st.expander("Model & connection" + (" · add your Gemini key" if key_missing else ""),
+                            icon=":material/key:", expanded=key_missing):
+            return _public_connection()
+    conn = _connection()
+    with (connection_box if connection_box is not None else contextlib.nullcontext(),
+          st.container(horizontal=True, vertical_alignment="center", gap="small", key="od-cooks")):
+            keys = len(conn.pool) if conn.pool else int(bool(conn.api_key))
+            st.caption(f":material/smart_toy: Writes with **{conn.model}**, then {len(conn.fallback_models)} "
+                       f"fallback models" + (f" and {conn.local_model} on this computer" if conn.local_model else "")
+                       + (f" · {keys} key{'s' * (keys != 1)}" if keys else
+                          " · :orange[no key yet: local models only]"), width="stretch")
+            st.page_link(nav.settings_page(), label="Keys and models", icon=":material/tune:")
+    return conn
+
+
+def _revise_setup(profile: str) -> tuple[Plan, Connection]:
+    """Revise a text: the text and the line in Input, then Priorities and Writing. No Detector panel: the line does
+    its job, and every revision is scored anyway."""
+    plan = Plan("", None, [], [], [], "revise", profile)
+    with style.group("Text to revise", "01", "the dish sent back"):
+        st.text_area("Text to revise", key=keep(REVISE_TEXT, ""), height=240, label_visibility="collapsed",
+                     placeholder="Paste the text. Only the passages scoring above the line are rewritten.")
+        st.slider("Revise passages above", 5, 95, step=5, key=keep("keep:redteam:panel_above", 60), format="%d%%",
+                  help="Passages under this stay word for word. Passage scores are less reliable than the whole "
+                       "text's.")
+        if _deep_math_offered():
+            st.segmented_control("Rewrite", ("With the model", "On this computer"), required=True,
+                                 key=keep("keep:redteam:panel_where", "With the model"),
+                                 help="On this computer uses no API or quota, but it's far weaker and much slower: "
+                                      "it leaves anything its meaning checks refuse as it was.")
+        st.toggle("The source is AI text", key=keep("keep:redteam:panel_is_ai", False),
+                  help="Turn this on only for text an AI wrote. Otherwise the result isn't saved as AI data.")
+    with style.group("Priorities", "02", "the head chef"):
+        priorities_box = st.container()
+    with style.group("Writing", "03", "the recipe card"):
+        _writing(plan, brief=True)
+        plan.mask_facts = st.toggle(
+            "Hold names and numbers exactly", key=keep("keep:redteam:mask_facts", MASK_BY_DEFAULT),
+            help="Names, numbers, citations and links go to the model as placeholders and come back as they were.")
+    conn = _connection_panel()
     with priorities_box:
         _priorities(plan, conn)
     return plan, conn
@@ -1508,7 +1624,7 @@ def _priorities(plan: Plan, conn: Connection) -> None:
             st.caption("Holding names and numbers is on. The recipe's other features were measured on document "
                        "rewrites only, so a sample from a prompt goes without them.")
     if not setting:
-        st.caption("None of the measured settings uses the models under Model & connection, so the model's own "
+        st.caption("None of the measured settings uses the models set under Keys and models, so the model's own "
                    "settings are set by hand.")
         _hand_settings(plan)
 
@@ -1577,6 +1693,33 @@ def _hand_settings(plan: Plan) -> None:
             )
 
 
+def _chef_bill(plan: Plan, table: dict, setting: generation_settings.Setting, estimate: dict) -> None:
+    """Bistro's readout of the picked setting: the model and its thinking, then what it should cost and score, each
+    on a dotted line like the critic's bill."""
+    requests = max(1, round(estimate["requests"]))
+    limit = estimate["daily_limit"]
+    keys = table.get("keys", 1)
+    allowance = (f"{min(1.0, requests / limit):.0%} of {limit:,} a day" + (f" · {keys} keys" if keys > 1 else "")
+                 if limit else "daily limit not known yet")
+    lines = [("Time", f"about {duration(estimate['seconds'])}"),
+             ("Requests", f"{requests} · {allowance}"),
+             ("Tokens", f"{estimate['tokens'] / 1000:,.0f}k")]
+    if plan.batch:
+        lines.append(("In the pan", f"{setting.group_size} blocks a request · {setting.parallel} at once"))
+    if setting.temperature is not None:
+        lines.append(("Temperature", f"{setting.temperature:g}"))
+    word = "Measured" if setting.measured else "Predicted"
+    if setting.ai is not None:
+        lines.append((f"{word} AI likelihood", f"{setting.ai:.0%}"))
+    if setting.style is not None:
+        lines.append((f"{word} style match", f"{setting.style:.0f}%"))
+    rows = "".join(f'<div class="od-line"><span>{html.escape(name)}</span><i></i><b>{html.escape(value)}</b></div>'
+                   for name, value in lines)
+    st.html(f'<div class="od-pick"><div class="od-eyebrow">The chef picks</div><div class="od-pick-model">'
+            f'<b>{html.escape(setting.model)}</b><span>{html.escape(setting.thinking)} thinking</span></div>'
+            f'{rows}<small>For this {"document" if plan.batch else "sample"}, from the measured runs.</small></div>')
+
+
 def _readout(plan: Plan, table: dict, setting: generation_settings.Setting, blocks: int) -> None:
     """The picked setting and what it should cost this document, from the measured table."""
     context = len(plan.context_text)
@@ -1585,6 +1728,9 @@ def _readout(plan: Plan, table: dict, setting: generation_settings.Setting, bloc
             context += len(style_instructions(load_style_profile(plan.style_path), plan.register,
                                               *writer_samples(plan)))
     estimate = generation_settings.estimate(setting, blocks, table, context)
+    if kitchen.enabled():
+        _chef_bill(plan, table, setting, estimate)
+        return
     heat = f" · temperature {setting.temperature:g}" if setting.temperature is not None else ""
     st.markdown(f":material/auto_awesome: **{setting.model}** · {setting.thinking} thinking{heat}"
                 + (f" · {setting.group_size} blocks per request · {setting.parallel} at once" if plan.batch else ""))
@@ -1691,7 +1837,7 @@ def key_problem(conn: Connection) -> str | None:
         return "Paste your Gemini API key under Model & connection first."
     if not conn.api_key and not conn.base_url.strip().startswith(("http://localhost", "http://127.0.0.1")):
         if provider_for(conn.base_url) in ("groq", "openrouter"):
-            return f"Add your {PROVIDERS[provider_for(conn.base_url)].label} API key under Model & connection."
+            return f"Add your {PROVIDERS[provider_for(conn.base_url)].label} API key under Settings, Keys and models."
         return "Add your Gemini API key on the Guide page, or use a local model endpoint."
     return None
 
@@ -2060,7 +2206,7 @@ def _progress_panel(worker: BatchWorker, done: int, total: int, seconds_left: fl
     """Glass's batch progress: what is being done, the time left or the revision round, and a bar."""
     scoring = worker.phase == "scoring"
     verb = "scored" if scoring else "written"
-    with st.container(border=True):
+    with st.container(border=True, key="od-box-3"):
         model_note = f" · {worker.status['model']}" if not scoring and worker.status.get("model") else ""
         st.markdown(f":material/autorenew: **{'Scoring' if scoring else 'Writing'} {worker.plan.upload.name}** · "
                     f"{TASKS[worker.plan.task][0]}{model_note}")
@@ -2126,7 +2272,7 @@ def _saved_progress(plan: Plan, jobs: list[dict], checkpoint: Checkpoint) -> Non
     """Offer a batch's saved progress, from an earlier run with these settings, to resume or discard."""
     keys = [job["key"] for job in jobs]
     saved, scored = len(checkpoint.generated(keys)), len(checkpoint.scored(keys))
-    with st.container(border=True):
+    with st.container(border=True, key="od-box-4"):
         st.markdown(f":material/save: **Saved progress for this document:** {saved} of {len(keys)} blocks "
                     "generated" + (f", {scored} scored" if plan.score else "")
                     + (f". Resume continues from block {checkpoint.first_missing(keys)}." if saved < len(keys)
@@ -2876,13 +3022,13 @@ def _breakdown(result: dict, profile: str) -> None:
 
 def _show_result(result: dict, profile: str) -> None:
     row = result.get("row") or {}
-    with st.container(border=True):
+    with st.container(border=True, key="od-box-5"):
         with st.container(horizontal=True, vertical_alignment="center"):
             style.heading("Latest result")
             if row.get("model"):
                 st.badge(row["model"], icon=":material/smart_toy:", color="gray")
             if row.get("attack"):
-                st.badge(row["attack"], icon=":material/label:", color="orange")
+                st.badge(row["attack"], icon=":material/label:", color="orange" if style.bistro() else "violet")
         if result.get("note"):
             st.caption(result["note"])
         if result.get("evasion_note"):
@@ -2945,7 +3091,7 @@ def _show_result(result: dict, profile: str) -> None:
                  for item in result["batch_answers"]],
                 hide_index=True, width="stretch",
                 column_config={"AI likelihood": st.column_config.ProgressColumn(
-                    format="percent", min_value=0, max_value=1, color=style.tokens()["accent"])},
+                    format="percent", min_value=0, max_value=1, color=style.table_accent())},
             )
 
         st.html(f'<div class="od-text od-sample">{html.escape(result["essay"])}</div>')
@@ -3039,9 +3185,9 @@ def _history() -> None:
             hide_index=True, width="stretch",
             column_config={
                 "Passed as human": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1,
-                                                                   color=style.tokens()["accent"]),
+                                                                   color=style.table_accent()),
                 "Mean AI likelihood": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1,
-                                                                      color=style.tokens()["accent"]),
+                                                                      color=style.table_accent()),
             },
         )
     style.heading("Latest challenge samples")
@@ -3063,7 +3209,7 @@ def _history() -> None:
         column_config={
             "Saved": st.column_config.DatetimeColumn(format="D MMM YYYY, HH:mm"),
             "AI likelihood": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1,
-                                                             color=style.tokens()["accent"]),
+                                                             color=style.table_accent()),
             "Text": st.column_config.TextColumn(width="large"),
         },
     )
@@ -3124,7 +3270,9 @@ def _plated(made: dict | None) -> None:
     score = made.get("score") or {}
     probability = score.get("probability") if "score" in made else made.get("after")
     line = "Ding! Order up." + (f" {probability:.0%} AI." if isinstance(probability, (int, float)) else "")
-    kitchen.cue(kitchen.VERDICT_CUES.get(score.get("verdict") or "", ("happy", ""))[0], line, ring=True, ms=3800)
+    verdict = score.get("verdict") or ""
+    kitchen.cue(kitchen.VERDICT_CUES.get(verdict, ("happy", ""))[0], line, ring=True, ms=3800,
+                lines=[line, *kitchen.VERDICT_LINES.get(verdict, [])])
 
 
 def render() -> None:
@@ -3176,18 +3324,23 @@ def render() -> None:
                 label, icon = f"Regenerate {len(jobs)} block{'s' * (len(jobs) != 1)}", ":material/autorenew:"
             elif plan.task == "section":
                 label, icon = "Regenerate section", ":material/autorenew:"
+            elif plan.task == "revise":
+                above = st.session_state.get("keep:redteam:panel_above", 60)
+                label, icon = f"Revise passages above {above}%", ":material/auto_fix_high:"
             else:
                 label, icon = "Generate", ":material/auto_awesome:"
             with order_box:
                 clicked = st.button(label, type="primary", icon=icon, width="stretch")
             problem = None
-            if clicked:
+            if clicked and plan.task == "revise":
+                problem = _revise_problem(plan, conn)
+            elif clicked:
                 problem = _math_problem(plan) if plan.engine == "Math" else _problem(plan, conn)
             system = None
             with problem_box:
                 if problem:
                     st.error(problem)
-                if clicked and not problem and plan.use_profile:
+                if clicked and not problem and plan.use_profile and plan.task != "revise":
                     try:
                         system = style_instructions(load_style_profile(plan.style_path), plan.register,
                                                     *writer_samples(plan))
@@ -3195,13 +3348,13 @@ def render() -> None:
                         st.error(f"Could not load the style profile: {exc}")
                         clicked = False
             with after_box:
-                if not public():
-                    _revise_panel(plan, conn)
                 st.caption(":material/science: Evaluation use only. Everything made here is AI-generated test data "
                            "and should stay labelled as such when shared or analyzed.")
 
         with output:
-            if clicked and not problem:
+            if plan.task == "revise":
+                _revise_output(plan, conn, clicked and not problem)
+            elif clicked and not problem:
                 st.session_state.pop(NOTICE, None)
                 if kitchen.enabled():
                     kitchen.cue("tasting", "Order in! The cooks are on it.", ms=2400)
@@ -3210,10 +3363,10 @@ def render() -> None:
                     st.rerun()
                 stage = st.empty()  # the kitchen timer while the sample cooks
                 if kitchen.enabled():
-                    with stage:
+                    with stage.container(border=True, key="od-box-cooking"):
                         kitchen.timer("lab:timer", None, size=150, layout="stack", eyebrow="Cooking",
                                       note="The cooks are writing your sample, then the critic tastes it.",
-                                      stamp=f"{time.time():.3f}", waiting="Cooking…")
+                                      stamp=f"{time.time():.3f}", waiting="Cooking…", lines=kitchen.COOKING_LINES)
                     kitchen.show("lab", "order")
                 previous = st.session_state.get(RESULT)
                 st.session_state.pop(MATH_RESULT, None)
@@ -3225,7 +3378,9 @@ def render() -> None:
                     made = st.session_state.get(RESULT)
                 stage.empty()
                 _plated(made if made is not previous else None)
-            if math_result := st.session_state.get(MATH_RESULT):
+            if plan.task == "revise":
+                pass
+            elif math_result := st.session_state.get(MATH_RESULT):
                 _show_math_result(math_result)
             elif result := st.session_state.get(RESULT):
                 _show_result(result, profile)

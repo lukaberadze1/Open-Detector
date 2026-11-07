@@ -87,6 +87,8 @@ def test_build_writes_a_signed_app_that_runs_the_launcher(tmp_path):
     assert os.access(executable, os.X_OK)
     assert str(build_app.ROOT / "deploy/macos/launcher.py").encode() in executable.read_bytes()
     assert (app / "Contents/Resources/AppIcon.icns").stat().st_size > 10_000
+    for look in ("bistro", "glass"):  # each look's icon, for the Dock while the app runs
+        assert (app / f"Contents/Resources/AppIcon-{look}.png").stat().st_size > 10_000
     subprocess.run(["codesign", "--verify", "--strict", str(app)], check=True)
     assert build_app.build(tmp_path, icon=False, register=False) == app  # replaces its own earlier build
 
@@ -108,6 +110,16 @@ def test_the_loading_page_follows_the_look_in_the_data_folder(tmp_path, monkeypa
     assert launcher.look() == "glass"
     (tmp_path / "data/ui_prefs.json").write_text(json.dumps({"look": "instrument", "welcomed": True}))
     assert launcher.look() == "bistro", "the retired Instrument look opens as Bistro"
+
+
+def test_the_loading_page_wears_bistros_finish(tmp_path, monkeypatch):
+    monkeypatch.setattr(launcher, "DATA_ROOT", tmp_path)
+    assert '<body class="bistro textured">' in launcher.loading_page(), "Textured is Bistro's default finish"
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data/ui_prefs.json").write_text(json.dumps({"look": "bistro", "finish": "standard"}))
+    assert '<body class="bistro standard">' in launcher.loading_page()
+    (tmp_path / "data/ui_prefs.json").write_text(json.dumps({"look": "glass"}))
+    assert '<body class="glass textured">' in launcher.loading_page() and "mark-bistro" not in launcher.loading_page()
 
 
 def test_the_standalone_app_carries_the_code_it_runs_and_nothing_under_data(tmp_path):

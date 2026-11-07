@@ -13,6 +13,7 @@ build_app.py wraps this script in Open Detector.app, deploy/windows/build_app.py
 from __future__ import annotations
 
 import argparse
+import contextlib
 import html
 import json
 import os
@@ -175,14 +176,50 @@ def dark_mode() -> bool:
     return found.stdout.strip() == "Dark"
 
 
-def look() -> str:
-    """The look picked under Settings in the app (ui/prefs.py keeps it in data/ui_prefs.json), so the
-    loading and error pages match the app they open into."""
+def _prefs() -> dict:
     try:
-        chosen = json.loads((DATA_ROOT / "data/ui_prefs.json").read_text()).get("look")
-    except (OSError, ValueError, AttributeError):
-        chosen = None
+        prefs = json.loads((DATA_ROOT / "data/ui_prefs.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return prefs if isinstance(prefs, dict) else {}
+
+
+def look() -> str:
+    """The look picked in the app's sidebar (ui/prefs.py keeps it in data/ui_prefs.json), so the loading and
+    error pages and the Dock icon match the app they open into."""
+    chosen = _prefs().get("look")
     return chosen if chosen in ("bistro", "glass") else "bistro"
+
+
+def finish() -> str:
+    """Bistro's finish picked in the app: Textured (the default) or Standard."""
+    return "standard" if _prefs().get("finish") == "standard" else "textured"
+
+
+def set_dock_icon(chosen: str) -> None:
+    """Shows `chosen` look's icon in the Dock (build_app.py writes AppIcon-<look>.png beside the bundle's icon,
+    which a signed bundle can't change). Does nothing outside an app bundle, or in a build without them."""
+    import AppKit
+    from PyObjCTools import AppHelper
+
+    path = AppKit.NSBundle.mainBundle().pathForResource_ofType_(f"AppIcon-{chosen}", "png")
+    if not path:
+        return
+    image = AppKit.NSImage.alloc().initWithContentsOfFile_(path)
+    if image is not None:
+        AppHelper.callAfter(AppKit.NSApplication.sharedApplication().setApplicationIconImage_, image)
+
+
+def follow_look(stop: threading.Event, every: float = 1.5) -> None:
+    """Keeps the Dock icon on the look picked in the app, checking the saved choice every `every` seconds."""
+    shown = None
+    while not stop.is_set():
+        current = look()
+        if current != shown:
+            with contextlib.suppress(Exception):  # an icon is never worth stopping the app over
+                set_dock_icon(current)
+            shown = current
+        stop.wait(every)
 
 
 # Window background behind the first paint, per look and mode.
@@ -238,6 +275,22 @@ pre {{ text-align: left; background: rgba(127,127,127,.08); border: 1px solid va
 button {{ font: inherit; font-weight: 600; padding: 8px 18px; margin: 10px 4px 0; border-radius: 999px; cursor: pointer;
   border: 1px solid var(--hair); background: transparent; color: var(--text); }}
 button.primary {{ background: var(--accent); border-color: var(--accent); color: #fff; }}
+body.bistro.textured {{ background-color: var(--bg);
+  background-image: radial-gradient(rgba(120,90,60,.08) 1px, transparent 1.3px),
+    radial-gradient(rgba(255,255,255,.55) 1px, transparent 1.3px);
+  background-size: 7px 7px, 11px 11px; background-position: 0 0, 3px 5px; }}
+@media (prefers-color-scheme: dark) {{ body.bistro.textured {{
+  background-image: radial-gradient(rgba(255,230,200,.035) 1px, transparent 1.3px),
+    radial-gradient(rgba(0,0,0,.35) 1px, transparent 1.3px); }} }}
+body.bistro.textured main {{ background: linear-gradient(180deg, #FFFDF8, #FBF3E4); border-color: #D9C7AA;
+  box-shadow: inset 0 1px 0 #fff, 0 2px 0 #E2D1B5, 0 18px 30px -16px rgba(60,40,20,.45); }}
+@media (prefers-color-scheme: dark) {{ body.bistro.textured main {{
+  background: linear-gradient(180deg, #2B2119, #221A14); border-color: #3B2E24;
+  box-shadow: 0 2px 0 #120D09, 0 18px 30px -16px rgba(0,0,0,.6); }} }}
+body.bistro .mark svg {{ transform-origin: 50% 85%; animation: bob 1.3s ease-in-out infinite; }}
+body.bistro .stopped .mark svg {{ animation: none; }}
+@keyframes bob {{ 0%, 100% {{ transform: translateY(0) rotate(0); }}
+  50% {{ transform: translateY(-4px) rotate(-3deg); }} }}
 body.bistro main {{ border-radius: 24px; border-width: 1.5px; box-shadow: 0 3px 0 var(--edge); backdrop-filter: none;
   -webkit-backdrop-filter: none; }}
 body.bistro h1, body.bistro button {{ font-family: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas,
@@ -248,21 +301,22 @@ body.bistro button.primary {{ box-shadow: 0 3px 0 #8A2E08; }}
 @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
 @keyframes sweep {{ 0% {{ transform: translateX(-100%); }} 100% {{ transform: translateX(260%); }} }}
 @keyframes show {{ to {{ opacity: 1; }} }}
-@media (prefers-reduced-motion: reduce) {{ .halo, .bar i {{ animation: none; }} }}
-</style></head><body class="{look}"><main class="{state}"><div class="mark"><div class="halo"></div>{mark}</div>
+@media (prefers-reduced-motion: reduce) {{ .halo, .bar i, .mark svg {{ animation: none !important; }} }}
+</style></head><body class="{look} {finish}"><main class="{state}">
+<div class="mark"><div class="halo"></div>{mark}</div>
 {body}</main></body></html>"""
 
 
 def loading_page() -> str:
     starting = "Warming up the kitchen…" if look() == "bistro" else "Starting the detector…"
-    return PAGE.format(look=look(), state="loading", mark=_mark(), body=(
+    return PAGE.format(look=look(), finish=finish(), state="loading", mark=_mark(), body=(
         f"<h1>{APP_NAME}</h1><p>{starting}</p><div class='bar'><i></i></div>"
         "<p class='later'>The first start after an update or restart can take a minute.</p>"))
 
 
 def error_page(message: str) -> str:
     tail = log_tail()
-    return PAGE.format(look=look(), state="stopped", mark=_mark(), body=(
+    return PAGE.format(look=look(), finish=finish(), state="stopped", mark=_mark(), body=(
         f"<h1>{APP_NAME} stopped</h1><p>{html.escape(message)}</p>"
         + (f"<pre>{html.escape(tail)}</pre>" if tail else "")
         + "<button class='primary' onclick='pywebview.api.restart()'>Start again</button>"
@@ -304,6 +358,7 @@ class DesktopApp:
         self.window = None
         self.server: subprocess.Popen | None = None
         self.quitting = False
+        self.looking = threading.Event()  # set to stop following the look for the Dock icon
         self.size = self._saved_size()
 
     def run(self) -> None:
@@ -320,12 +375,14 @@ class DesktopApp:
             webview.start(self.start, private_mode=False)
         finally:
             self.quitting = True
+            self.looking.set()
             self.stop_server(wait=True)
 
     def start(self) -> None:
         """Start a server and show it once it answers; show what went wrong if it stops."""
         if not WINDOWS:
             add_undo_to_edit_menu()
+            threading.Thread(target=follow_look, args=(self.looking,), daemon=True).start()
         port = pick_port()
         server = self.server = start_server(port)
         url = f"http://127.0.0.1:{port}"

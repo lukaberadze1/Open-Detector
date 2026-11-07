@@ -38,6 +38,8 @@ LINES = {
     "lab": ["A pinch of basil never hurt anyone.", "Six tomatoes? Bold. I like it.",
             "Moustache freshly waxed, thank you.", "The cooks are nervous when I watch.",
             "Careful, the dome is hot.", "Everything from this kitchen is labelled AI. House rules."],
+    "settings": ["Change nothing sharp.", "Two keys? Twice the cooks.", "Slim build. Like my waistline.",
+                 "The light switch is in the ⋮ menu. I checked.", "Textured. As a dome should be."],
 }
 # The verdict, as Cloche's face and what he says when it lands.
 VERDICT_CUES = {
@@ -47,6 +49,32 @@ VERDICT_CUES = {
     "insufficient_text": ("skeptical", "A nibble, not a meal. I need 150 words to judge."),
     "not_prose": ("skeptical", "Poetry? Lists? I only judge prose."),
 }
+# What else he has to say about a verdict: one is picked when it lands, and clicking him afterwards repeats it, then
+# goes through the others, his face staying the verdict's.
+VERDICT_LINES = {
+    "likely_ai": ["Sacré bleu! This came out of a machine.", "I taste… silicon. With a hint of autocomplete.",
+                  "Mon dieu. This was microwaved.", "Too smooth. Nobody writes this clean before coffee.",
+                  "Delve? DELVE? Send it back to the kitchen.", "A robot cooked this. With a thesaurus."],
+    "needs_review": ["Hm. Something is off. Monocle up.", "Half chef, half toaster, I'd say.",
+                     "I'm torn. Like a croissant.", "Some bites are home-made. Some came out of a packet.",
+                     "Let me look closer. The monocle never lies."],
+    "likely_human": ["Délicieux. A person cooked this.", "Lumpy in all the right places. Human.",
+                     "Home-made. Chef's kiss.", "Made by hand, with love and a little panic.",
+                     "I can taste the second thoughts. Wonderful."],
+    "insufficient_text": ["A nibble, not a meal. I need 150 words to judge.",
+                          "That's an amuse-bouche. Bring me a main course.", "Is that all? I'm still hungry."],
+    "not_prose": ["Poetry? Lists? I only judge prose.", "Lovely shopping list. I review dinners."],
+}
+# What the timer's note says while the detector or the cooks work, in turn.
+TASTING_LINES = ["Washing the text: hidden characters, look-alike letters…", "Dicing the sentences…",
+                 "Tasting in 350-word bites…", "Simmering the paragraphs on low heat…",
+                 "Sniffing for synthetic spices…", "Checking the seasoning against human recipes…",
+                 "Scraping the pan for stock phrases…", "Letting the verdict rest a moment…"]
+COOKING_LINES = ["Whisking the clauses…", "Folding in the writer's voice…", "Chopping long sentences into bites…",
+                 "Marinating the first draft…", "Holding names and numbers aside in the fridge…",
+                 "Letting the critic have a taste…", "Scraping off the burnt passages…", "Plating the paragraphs…"]
+REVISING_LINES = ["Scraping off the burnt bits…", "Re-seasoning the flagged passages…", "Tasting each try…",
+                  "Sending the worst bites back to the stove…", "Keeping the good parts exactly as they were…"]
 
 STAGE_CSS = """
 #od-stage { position: fixed; right: 26px; bottom: 20px; z-index: 999990; display: flex; align-items: flex-end;
@@ -145,6 +173,13 @@ function say(text, ms) {
 
 function poke() {
   if (S.base === "tasting") { say(S.busyLine || "Shh. I am tasting.", 1800); return; }
+  if (S.verdict && S.verdict.length) {  // after a verdict: the same face, and that verdict's lines in turn
+    clearTimeout(S.moodTimer);
+    face(S.base, true);
+    say(S.verdict[S.said % S.verdict.length], 3800);
+    S.said += 1;
+    return;
+  }
   if (!S.lines.length) return;
   S.poked = (S.poked + 1) % S.lines.length;
   clearTimeout(S.moodTimer);
@@ -190,6 +225,8 @@ export default function (component) {
   if ((cue.id || 0) > S.seen) {
     S.seen = cue.id;
     S.base = cue.mood || "happy";
+    S.verdict = cue.lines && cue.lines.length ? cue.lines : null;
+    S.said = 0;
     clearTimeout(S.moodTimer);
     if (cue.mood) face(cue.mood, true);
     if (cue.say) say(cue.say, cue.ms);
@@ -248,31 +285,42 @@ export default function (component) {
   const timeEl = host.querySelector(".od-kt-time"), noteEl = host.querySelector(".od-kt-note");
   const dial = host.querySelector(".od-kt-dial"), box = host.querySelector(".od-kt");
   box.classList.add("od-kt-run");
-  const paint = () => {
-    const at = performance.now();
-    let label, share, step = data.note || "";
+  t.lines = data.lines || [];
+  const paint = (at) => {
+    let label, from = 0, to, step = data.note || "";
     if (t.endAt !== null) {
-      const left = (t.endAt - at) / 1000;
-      share = Math.max(0, Math.min(1, left / t.total));
+      // The end eases towards a new estimate over about a second instead of jumping.
+      if (t.shownEnd == null) t.shownEnd = t.endAt;
+      t.shownEnd += (t.endAt - t.shownEnd) * Math.min(1, (at - (t.lastAt || at)) / 900);
+      const left = (t.shownEnd - at) / 1000;
+      to = Math.max(0, Math.min(1, left / t.total)) * 360;
       label = left > 0 ? clock(left) : (data.over || "Any second…");
-      const done = 1 - share;
-      for (const [from, text] of t.steps) if (done >= from) step = text;
+      const done = 1 - to / 360;
+      for (const [share, text] of t.steps) if (done >= share) step = text;
     } else {
-      const spent = (at - t.startAt) / 1000;
-      share = 1 - ((spent % 6) / 6);  // no estimate yet: the sector sweeps round
+      // No estimate yet: a quarter of red turns smoothly round the dial.
+      from = (((at - t.startAt) / 1000) * 60) % 360;
+      to = 90;
       label = data.waiting || "Timing…";
-      for (const [from, text] of t.steps) if (spent >= from * 12) step = text;
     }
-    const deg = Math.round(share * 360);
-    dial.style.background = "conic-gradient(var(--od-kt-red, #D7261E) 0deg " + deg + "deg, var(--od-kt-face, #FFFCF6) "
-      + deg + "deg 360deg)";
+    t.lastAt = at;
+    if (t.lines.length) step = t.lines[Math.floor((at - t.startAt) / 2600) % t.lines.length];
+    dial.style.background = "conic-gradient(from " + from.toFixed(2) + "deg, var(--od-kt-red, #D7261E) 0deg "
+      + to.toFixed(2) + "deg, var(--od-kt-face, #FFFCF6) " + to.toFixed(2) + "deg 360deg)";
     if (timeEl.textContent !== label) timeEl.textContent = label;
-    if (noteEl.textContent !== step) noteEl.textContent = step;
+    if (noteEl.textContent !== step) {
+      noteEl.textContent = step;
+      noteEl.classList.remove("od-kt-new"); void noteEl.offsetWidth; noteEl.classList.add("od-kt-new");
+    }
     box.setAttribute("aria-label", "Kitchen timer: " + label + (t.endAt !== null ? " left" : ""));
   };
-  paint();
-  clearInterval(host._tick);
-  host._tick = setInterval(() => { if (!host.isConnected) { clearInterval(host._tick); return; } paint(); }, 250);
+  cancelAnimationFrame(host._frame);
+  const loop = (at) => {
+    if (!host.isConnected) return;
+    paint(at);
+    host._frame = requestAnimationFrame(loop);
+  };
+  host._frame = requestAnimationFrame(loop);
 }
 """
 
@@ -281,8 +329,10 @@ TIMER_CSS = """
 .od-kt { display: flex; align-items: center; gap: 18px; }
 .od-kt-host[data-layout="stack"] .od-kt { flex-direction: column; gap: 12px; text-align: center; }
 .od-kt-face { position: relative; flex: 0 0 auto; transform-origin: 50% 60%; }
-.od-kt-run .od-kt-face { animation: od-kt-tick 1s steps(2, jump-none) infinite; }
-@keyframes od-kt-tick { 0% { transform: rotate(-1.5deg); } 100% { transform: rotate(1.5deg); } }
+.od-kt-run .od-kt-face { animation: od-kt-tick 1s ease-in-out infinite alternate; }
+@keyframes od-kt-tick { 0% { transform: rotate(-0.8deg); } 100% { transform: rotate(0.8deg); } }
+.od-kt-new { animation: od-kt-note .45s ease-out; }
+@keyframes od-kt-note { 0% { opacity: 0; transform: translateY(4px); } 100% { opacity: 1; transform: none; } }
 .od-kt-face i { position: absolute; display: block; }
 .od-kt-winder { left: 50%; top: -7%; width: 22%; height: 12%; margin-left: -11%; border-radius: 6px 6px 3px 3px;
   background: linear-gradient(180deg, #E9DCC6, #BFAE93);
@@ -433,8 +483,87 @@ INGREDIENTS_CSS = """
 .od-ing-left.spare { color: var(--od-accent); }
 @media (prefers-reduced-motion: reduce) { .od-ing.pop svg { animation: none; } }
 """
-# The page's own styles for the timer and the ingredients, which are drawn in the page (ui/components.apply_theme).
-CSS = TIMER_CSS + INGREDIENTS_CSS
+CARDS_JS = """
+export default function (component) {
+  const { data, parentElement, setStateValue } = component;
+  let host = parentElement.querySelector(":scope > .od-cards");
+  if (!host) {
+    host = document.createElement("div");
+    host.className = "od-cards";
+    host.setAttribute("role", "radiogroup");
+    parentElement.appendChild(host);
+    host.addEventListener("click", (event) => {
+      const card = event.target.closest("button[data-id]");
+      if (!card || card.getAttribute("aria-checked") === "true") return;
+      host._pending = card.dataset.id;
+      paint(host, card.dataset.id, true);
+      setStateValue("value", card.dataset.id);
+    });
+  }
+  host.setAttribute("aria-label", data.label);
+  host.dataset.check = data.check ? "1" : "";
+  const ids = data.cards.map((c) => c.id).join("|");
+  if (host.dataset.ids !== ids) {
+    host.dataset.ids = ids;
+    host.classList.toggle("od-tiles", data.cards.some((c) => c.preview));
+    host.innerHTML = data.cards.map((c, i) => '<button type="button" class="od-card" role="radio" data-id="' + c.id
+      + '">' + (c.preview ? '<span class="od-card-preview" aria-hidden="true">' + c.preview + '</span>' : '')
+      + '<span class="od-card-row"><span class="od-card-n" aria-hidden="true">' + (data.check ? '' : (i + 1))
+      + '</span><span class="od-card-body"><b></b><small></small></span></span></button>').join("");
+    data.cards.forEach((c, i) => {
+      const card = host.children[i];
+      card.querySelector("b").textContent = c.title;
+      card.querySelector("small").textContent = c.desc;
+    });
+  }
+  if (host._pending && host._pending === data.value) host._pending = null;
+  paint(host, host._pending || data.value, false);
+}
+
+function paint(host, value, pop) {
+  host.querySelectorAll("button[data-id]").forEach((card) => {
+    const on = card.dataset.id === value, badge = card.querySelector(".od-card-n");
+    card.setAttribute("aria-checked", on ? "true" : "false");
+    if (host.dataset.check === "1") badge.textContent = on ? "✓" : "";
+    card.tabIndex = on ? 0 : -1;
+    if (on && pop) { badge.classList.remove("pop"); void badge.offsetWidth; badge.classList.add("pop"); }
+  });
+}
+"""
+
+CARDS_CSS = """
+.od-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 10px; }
+.od-card { display: flex; align-items: flex-start; gap: 12px; padding: 14px 15px; border-radius: 18px; text-align: left;
+  color: var(--od-ink); cursor: pointer; font: inherit; border: 1px solid var(--od-edge);
+  background: linear-gradient(180deg, var(--od-tx-card-top, var(--od-panel)),
+    var(--od-tx-card-bottom, var(--od-panel)));
+  box-shadow: inset 0 1px 0 var(--od-tx-shine, transparent), 0 2px 0 var(--od-edge);
+  transition: transform .08s, border-color .15s; }
+.od-card:hover { border-color: var(--od-accent); }
+.od-card:active { transform: translateY(3px); }
+.od-card:focus-visible { outline: 2.5px solid var(--od-accent); outline-offset: 3px; }
+.od-card[aria-checked="true"] { border: 2px solid var(--od-accent); padding: 13px 14px;
+  background: linear-gradient(180deg, var(--od-panel-solid), var(--od-soft, var(--od-panel-strong)));
+  box-shadow: 0 4px 0 var(--od-accent), 0 14px 22px -14px var(--od-glow); }
+.od-card-n { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; font-family: var(--od-mono); font-size: .875rem; font-weight: 800; color: var(--od-ink);
+  background: var(--od-track); box-shadow: inset 0 2px 3px rgba(60,40,20,.22); }
+.od-card[aria-checked="true"] .od-card-n { color: #FFFCF6; background: var(--od-accent);
+  box-shadow: 0 2px 0 var(--od-press, var(--od-accent)); }
+.od-card-n.pop { animation: od-card-pop .4s cubic-bezier(.3,1.7,.5,1); }
+@keyframes od-card-pop { 0% { transform: scale(.6); } 100% { transform: none; } }
+.od-tiles .od-card { flex-direction: column; align-items: stretch; }
+.od-card-row { display: flex; align-items: flex-start; gap: 12px; }
+.od-card-preview { display: flex; align-items: center; justify-content: center; height: 64px; border-radius: 10px;
+  overflow: hidden; }
+.od-card-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.od-card-body b { font-family: var(--od-mono); font-size: .98rem; font-weight: 800; letter-spacing: -.01em; }
+.od-card-body small { font-size: .76rem; line-height: 1.4; color: var(--od-muted); }
+@media (prefers-reduced-motion: reduce) { .od-card-n.pop { animation: none; } }
+"""
+
+# The page's own styles for the timer, the ingredients and the cards, drawn in the page (ui/components.apply_theme).
+CSS = TIMER_CSS + INGREDIENTS_CSS + CARDS_CSS
 
 _components: dict[str, object] = {}
 
@@ -452,19 +581,25 @@ def enabled() -> bool:
     return style.bistro()
 
 
-def cue(mood: str, say: str | None = None, ring: bool = False, ms: int | None = None) -> None:
+def cue(mood: str, say: str | None = None, ring: bool = False, ms: int | None = None,
+        lines: list[str] | None = None) -> None:
     """Cloche's next reaction: his face (MOODS), a line in his speech bubble, and the kitchen bell. It plays once,
-    the next time the page draws him (`show`)."""
+    the next time the page draws him (`show`). With `lines` (a verdict's), his face stays and a click on him says
+    them in turn, starting with `say`; without, a click gives his small talk with a smile."""
     state = st.session_state.get(STATE) or {"id": 0}
     st.session_state[STATE] = {"id": state["id"] + 1, "mood": mood if mood in MOODS else "happy", "say": say,
-                               "ring": ring, "ms": ms}
+                               "ring": ring, "ms": ms, "lines": lines or []}
 
 
 def verdict_cue(verdict: str | None, probability: float | None = None, ring: bool = True,
                 say: str | None = None) -> None:
     """Cloche's reaction to a verdict, with the bell."""
+    import random
+
     mood, line = VERDICT_CUES.get(verdict or "", ("happy", "Done."))
-    cue(mood, say or line, ring=ring, ms=3800)
+    lines = list(VERDICT_LINES.get(verdict or "", [line]))
+    first = say or random.choice(lines)
+    cue(mood, first, ring=ring, ms=4200, lines=[first, *(other for other in lines if other != first)])
 
 
 def greet(page: str, line: str) -> None:
@@ -493,13 +628,36 @@ def show(page: str = "detect", where: str = "app") -> None:
 
 def timer(key: str, left: float | None, total: float | None = None, *, size: int = 120, layout: str = "row",
           eyebrow: str = "", note: str = "", steps: list[tuple[float, str]] | None = None, stamp: str = "",
-          over: str = "Any second…", waiting: str = "Timing…") -> None:
+          over: str = "Any second…", waiting: str = "Timing…", lines: list[str] | None = None) -> None:
     """The kitchen timer, counting down in the browser from `left` seconds (None: no estimate yet, the sector
     sweeps round) out of `total`. `steps` are (share of the time gone, line) pairs for the note as it goes. A new
     `stamp` starts it afresh; the same one keeps the hand where it is across reruns."""
     data = {"left": left, "total": total, "size": size, "layout": layout, "eyebrow": eyebrow, "note": note,
-            "steps": steps or [], "stamp": stamp, "over": over, "waiting": waiting}
+            "steps": steps or [], "stamp": stamp, "over": over, "waiting": waiting, "lines": lines or []}
     _component("od_kitchen_timer", TIMER_JS)(data=data, key=key)
+
+
+def cards(options: list[tuple[str, str, str]], key: str, label: str, check: bool = False,
+          previews: dict[str, str] | None = None) -> str:
+    """Big numbered cards to pick one of (id, title, description), as the Lab's "What are we making?"; with `check`,
+    a tick marks the picked one instead of numbers, and `previews` (trusted HTML from the code, by id) tops a card with
+    a picture. The pick is kept in session state under `key`, so it can be set from elsewhere (a hand-off from
+    Detect). Gives the pick."""
+    ids = [option for option, _, _ in options]
+    if st.session_state.get(key) not in ids:
+        st.session_state[key] = ids[0]
+    data = {"label": label, "value": st.session_state[key],
+            "check": check,
+            "cards": [{"id": option, "title": title, "desc": desc, "preview": (previews or {}).get(option, "")}
+                      for option, title, desc in options]}
+    result = _component("od_cards", CARDS_JS)(data=data, key=f"od-cards:{key}", default={"value": data["value"]},
+                                              on_value_change=lambda: None)
+    chosen = (result or {}).get("value") if hasattr(result, "get") else None
+    seen = st.session_state.get(f"od-cards-seen:{key}")
+    st.session_state[f"od-cards-seen:{key}"] = chosen
+    if chosen != seen and chosen in ids:  # a click: the component sent a new value
+        st.session_state[key] = chosen
+    return st.session_state[key]
 
 
 ROWS = (("detector", "tomato", "Beat the critic", "Tomatoes · lower AI likelihood"),

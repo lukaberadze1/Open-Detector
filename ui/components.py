@@ -118,9 +118,14 @@ CSS = """
 .od-band i { border-radius: 2px; }
 .od-band i:first-child { border-radius: 6px 2px 2px 6px; }
 .od-band i:last-of-type { border-radius: 2px 6px 6px 2px; flex: 1 1 auto; }
-.od-band i.human { background: color-mix(in srgb, var(--od-human) 26%, var(--od-panel)); }
-.od-band i.review { background: color-mix(in srgb, var(--od-review) 45%, var(--od-panel)); }
-.od-band i.ai { background: color-mix(in srgb, var(--od-ai) 28%, var(--od-panel)); }
+.od-band i.human { background: color-mix(in srgb, var(--od-human) 38%, var(--od-panel)); }
+.od-band i.review { background: color-mix(in srgb, var(--od-review) 55%, var(--od-panel)); }
+.od-band i.ai { background: color-mix(in srgb, var(--od-ai) 38%, var(--od-panel)); }
+.od-band i.on { box-shadow: inset 0 -3px 0 rgba(0,0,0,.12),
+  0 0 0 1.5px color-mix(in srgb, var(--od-ink) 18%, transparent); }
+.od-band i.human.on { background: var(--od-human); }
+.od-band i.review.on { background: var(--od-review); }
+.od-band i.ai.on { background: var(--od-ai); }
 .od-band b { position: absolute; top: -6px; width: 4px; height: 24px; margin-left: -2px; border-radius: 2px;
   background: var(--od-ink); }
 .od-band-ends { display: flex; justify-content: space-between; gap: 0.5rem; margin-top: 0.4rem;
@@ -140,6 +145,13 @@ CSS = """
 .od-hygiene { height: 100%; box-sizing: border-box; padding: 1.25rem; border-radius: 20px; background: var(--od-panel);
   border: 1.5px solid var(--od-edge); display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.82rem;
   line-height: 1.5; }
+.od-pick { display: flex; flex-direction: column; gap: 0.4rem; font-family: var(--od-mono); font-size: 0.78rem;
+  color: var(--od-ink); }
+.od-pick .od-eyebrow { color: var(--od-accent); font-weight: 700; }
+.od-pick-model { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 0.6rem; margin-bottom: 0.2rem; }
+.od-pick-model b { font-size: 1rem; font-weight: 800; letter-spacing: -0.02em; }
+.od-pick-model span { color: var(--od-muted); }
+.od-pick small { font-size: 0.68rem; color: var(--od-faint, var(--od-muted)); margin-top: 0.15rem; }
 .od-billrow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0.9rem; }
 .od-billrow > .od-bill { flex: 1.6 1 17rem; min-width: 0; height: auto; }
 .od-billrow > .od-hygiene { flex: 1 1 12rem; min-width: 0; height: auto; }
@@ -463,6 +475,7 @@ def verdict_card(verdict: str, probability: float, thresholds: dict[str, float],
 
     if style.bistro():  # Cloche reacts from his corner (ui/kitchen.py); the band's needle shows where the score sits
         p = min(max(probability, 0.0), 1.0)
+        on = {tone: " on" if BANDS.get(verdict) == tone else "" for tone in ("human", "review", "ai")}
         st.html(f"""
 <div class="od-verdict" style="--tone: var(--od-{color})">
   <div class="od-critic" data-mood="{MOODS[verdict]}">
@@ -471,8 +484,9 @@ def verdict_card(verdict: str, probability: float, thresholds: dict[str, float],
       <div class="od-says"><div class="od-label">{label}</div><span>{probability:.0%} AI likelihood</span></div>
       <div class="od-meaning">{meaning}</div>
       <div class="od-band" role="img" aria-label="AI likelihood {probability:.0%} against the cut-offs at
-        {review:.0%} and {ai:.0%}"><i class="human" style="flex: 0 0 {review * 100:.1f}%"></i>
-        <i class="review" style="flex: 0 0 calc({(ai - review) * 100:.1f}% - 8px)"></i><i class="ai"></i>
+        {review:.0%} and {ai:.0%}"><i class="human{on['human']}" style="flex: 0 0 {review * 100:.1f}%"></i>
+        <i class="review{on['review']}" style="flex: 0 0 calc({(ai - review) * 100:.1f}% - 8px)"></i>
+        <i class="ai{on['ai']}"></i>
         <b style="left: {p * 100:.1f}%"></b></div>
       <div class="od-band-ends"><span>Likely human &lt; {review:.0%}</span><span>Needs review</span>
         <span>Likely AI &gt; {ai:.0%}</span></div>

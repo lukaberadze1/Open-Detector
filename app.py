@@ -34,13 +34,12 @@ pages = [nav.detect_page()]
 if nav.redteam_enabled():
     pages.append(nav.redteam_page())
 pages.append(nav.guide_page())
+pages.append(nav.settings_page())
 pages.append(nav.detect_alias())  # hidden: the old /detect address
-page = st.navigation(pages, position="sidebar" if len(pages) > 2 else "hidden")
+page = st.navigation(pages, position="sidebar")
 if not style.public() and not prefs.load().get("welcomed"):
     prefs.update(welcomed=True)  # the Guide opens first once per computer, then stays a tab away
     st.switch_page(nav.guide_page())
 page.run()
-with st.sidebar:
-    style.look_picker()
 # Cloche, in the corner of every page in Bistro, gets the run's latest cue (ui/kitchen.py).
-kitchen.show("lab" if page.url_path == "red-team" else "detect")
+kitchen.show({"red-team": "lab", "settings": "settings"}.get(page.url_path, "detect"))
