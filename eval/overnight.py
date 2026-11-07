@@ -566,14 +566,36 @@ def day_plan(stages: list[Stage]) -> list[Stage]:
     return [by_name[name] for name in DAY]
 
 
+def running(pid: int) -> bool:
+    """Whether process `pid` is still running. On Windows os.kill(pid, 0) would send CTRL_C_EVENT (which is 0) to
+    the console's whole process group instead of checking, so there it asks the process for its exit code."""
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        try:
+            return bool(kernel32.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code))) and code.value == 259
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))  # 259 above: STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 def live_lock(lock: Path) -> int | None:
     """The process holding the lock, if it is still running."""
     try:
         pid = int(lock.read_text())
-        os.kill(pid, 0)
-        return pid
     except (OSError, ValueError):
         return None
+    return pid if running(pid) else None
 
 
 def wait_for_lock(lock: Path, sleep: Callable[[float], None] = time.sleep) -> None:
