@@ -463,6 +463,7 @@ _DAILY = re.compile(r"per[ -]?day", re.I)  # Gemini's "requests per day", its "P
 # Per-minute refusals in a row before a key counts as spent on a model, since a daily limit can look alike.
 RATE_STRIKES = 3
 MAX_HOLDS = 3  # waits for a rate-limited model's keys before one request moves on to the next model
+CLOCK_SLACK = 0.05  # seconds added to a wait for a cooling key, so it has cooled when the wait ends
 DEFAULT_RATE_WAIT = 30  # seconds, when a 429 doesn't say how long
 RATE_MARGIN = 1  # seconds added to the wait a 429 asks for
 
@@ -581,7 +582,7 @@ def _on_every_key(pool: KeyPool, model: str, ask: Callable[[str], str], pause: C
             if wait is None or wait > MAX_WAIT or holds == MAX_HOLDS:
                 raise last or APIError(f"every key is out of quota or rate-limited on {model}")
             holds += 1
-            pause(wait, model)
+            pause(wait + CLOCK_SLACK, model)  # a coarse clock (Windows: ~15 ms) mustn't wake a hair too early
             continue
         try:
             reply = ask(key)
