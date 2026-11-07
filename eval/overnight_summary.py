@@ -23,7 +23,7 @@ from opendetector.metrics import wilson_interval
 
 METHODS = ("anchored", "sentences")  # revise_anchored, the page's loop since 6 Nov, or revise_blocks before it
 FACTS_KEPT = 70  # percent of names and numbers; a hand-set line, so a pass can't be bought by losing them
-VARIANTS = ("+drafts", "+roundtrip", "+clauses", "+freetrip", "+masked", "+anchored")
+VARIANTS = ("+drafts", "+roundtrip", "+clauses", "+freetrip", "+masked", "+anchored", "+human-sources")
 
 
 def is_baseline(style: str) -> bool:

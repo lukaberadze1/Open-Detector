@@ -44,6 +44,7 @@ from eval.text_attacks import (
     run_attacks,
 )
 from eval.tune_generation import StyleYardstick, _log_labelled, run_trial, sample_jobs, writer_shapes
+from opendetector.combiner import HUMAN_CUTOFF
 from opendetector.env import load_env
 from opendetector.metrics import wilson_interval
 from opendetector.segment import count_words, split_sentences
@@ -97,17 +98,20 @@ def facts_kept(source: str, text: str) -> float | None:
     return round(100 * sum(term in text for term in terms) / len(terms), 1) if terms else None
 
 
-def mage_documents(folder: Path, count: int, seed: int = 11, words: int = 400, score_above: float = 0.8) -> list[Path]:
+def mage_documents(folder: Path, count: int, seed: int = 11, words: int = 400, score_above: float = 0.8,
+                   human: bool = False) -> list[Path]:
     """Up to `count` AI-written documents from MAGE as Markdown files, one per domain and generator before any
     repeats. Each is one the slim detector reads as AI, and none is in the evaluation's cached sample. MAGE keeps
-    no paragraph breaks, so sentences are grouped into paragraphs of three."""
+    no paragraph breaks, so sentences are grouped into paragraphs of three. With `human`, human-written ones the
+    detector reads as human (at or under HUMAN_CUTOFF) instead: the page's own case, a writer regenerating their
+    work, where a revision can start from the original's wording."""
     from eval.datasets import load_mage
     from opendetector import Detector, DetectorConfig
 
     cached = ROOT / "eval/cache/mage.jsonl"
     used = {json.loads(line)["id"] for line in cached.open(encoding="utf-8")} if cached.exists() else set()
     frame = load_mage("test", n=20000, seed=seed)
-    frame = frame[(frame["label"] == 1) & (frame["attack"] == "none") & ~frame["id"].isin(used)]
+    frame = frame[(frame["label"] == (0 if human else 1)) & (frame["attack"] == "none") & ~frame["id"].isin(used)]
     frame = frame[frame["text"].map(count_words) >= words]
     detector = Detector.from_config(DetectorConfig.for_profile("slim"))
     folder.mkdir(parents=True, exist_ok=True)
@@ -120,7 +124,8 @@ def mage_documents(folder: Path, count: int, seed: int = 11, words: int = 400, s
                 continue
             if fresh and (row["domain"] in domains or row["model"] in generators):
                 continue
-            if detector.score(row["text"]) < score_above:
+            score = detector.score(row["text"])
+            if (score > HUMAN_CUTOFF) if human else (score < score_above):
                 continue
             sentences = [row["text"][s.start:s.end].strip() for s in split_sentences(row["text"])]
             body = "\n\n".join(" ".join(sentences[at:at + 3]) for at in range(0, len(sentences), 3))
@@ -180,6 +185,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("documents", type=Path, nargs="*")
     parser.add_argument("--mage", type=int, metavar="N",
                         help="write N documents from MAGE to the folder given, and stop")
+    parser.add_argument("--tag", help="added to the setup label, to keep these runs apart, e.g. human-sources")
+    parser.add_argument("--human-sources", action="store_true",
+                        help="with --mage, human-written documents the detector reads as human, not AI-written ones")
     parser.add_argument("--style", type=Path, default=ROOT / "data/styles/alexandria_profile.json")
     parser.add_argument("--register", default="finalized")
     parser.add_argument("--structure", default="writer")
@@ -226,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.mage:
         if len(args.documents) != 1:
             parser.error("--mage takes one folder to write to")
-        return 0 if mage_documents(args.documents[0], args.mage) else 1
+        return 0 if mage_documents(args.documents[0], args.mage, human=args.human_sources) else 1
     load_env()
     style = f"{args.style.stem}:{args.register}+{args.structure}+passages+patience"  # as revise_blocks now does
     system = style_instructions(load_style_profile(args.style), args.register)
@@ -243,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     if unknown := set(methods) - {"sentences", "windows", "anchored"}:
         parser.error(f"unknown --methods: {', '.join(sorted(unknown))}")
     style += "+anchored" if methods == ["anchored"] else ""  # a different loop: its runs are cached apart
+    style += f"+{args.tag}" if args.tag else ""
     saved = [json.loads(line) for line in args.out.open(encoding="utf-8")] if args.out.exists() else []
     rows = [row for row in saved if row["style"] == style and row["model"] == args.model and "document" in row]
 

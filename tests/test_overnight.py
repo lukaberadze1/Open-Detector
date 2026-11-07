@@ -100,8 +100,9 @@ def test_a_spent_model_hands_on_and_the_next_measures_every_setup(tmp_path, monk
     item = night(tmp_path, [Stage("round", "?", gemini=1)], run, monkeypatch)
     item.run_all()
     first, second = overnight.MODELS[:2]
-    assert calls == [("anchored", first), ("anchored_masked", first), ("anchored", second),
-                     ("anchored_masked", second), ("masked", second), ("baseline", second)]
+    setups = [name for name, _ in overnight.gemini_setups(item.paths, True)]
+    assert calls == [("human_anchored_masked", first), ("anchored_masked", first),
+                     *[(name, second) for name in setups]]
     assert status(item, "round") == "done" and item.spent(first) and not item.spent(second)
 
 
@@ -266,8 +267,9 @@ def test_a_spent_model_is_tried_again_an_hour_later_and_the_night_comes_back_to_
     item.sleep = sleep
     item.models = overnight.MODELS[:1]
     item.run_all()
-    assert calls[0] == "anchored" and calls[1] == "other", "a spent quota moves the night on to other work"
-    assert calls[-1] == "close" and calls.count("anchored") >= 2, "then it comes back to the round before closing"
+    first = overnight.gemini_setups(item.paths, True)[0][0]
+    assert calls[0] == first and calls[1] == "other", "a spent quota moves the night on to other work"
+    assert calls[-1] == "close" and calls.count(first) >= 2, "then it comes back to the round before closing"
     assert status(item, "round") == "done"
 
 
@@ -311,8 +313,17 @@ def test_no_api_is_on_the_command_line():
 def test_tonight_measures_the_pages_loop_first_and_the_recipe_is_rebuilt_last(tmp_path):
     paths = Paths(True)
     setups = overnight.gemini_setups(paths, True)
-    assert [name for name, _ in setups][:2] == ["anchored", "anchored_masked"]
-    assert all("anchored" in extra for name, extra in setups if name.startswith("anchored"))
+    assert [name for name, _ in setups][:2] == ["human_anchored_masked", "anchored_masked"], "the page's own case"
+    assert all("anchored" in extra for name, extra in setups if "anchored" in name)
     stages = overnight.plan(paths, True)
     assert stages[-1].name == "recipe" and stages[-1].closing
     assert str(paths.recipe).startswith(str(paths.out)), "a smoke run never writes the page's models/recipe.json"
+
+
+def test_the_human_setup_rewrites_the_human_written_documents():
+    paths = Paths(True)
+    human = [str(part) for part in overnight.gemini_command(paths, False, "human_anchored_masked",
+                                                            ["--tag", "human-sources"], 1, overnight.MODELS[0])]
+    other = [str(part) for part in overnight.gemini_command(paths, False, "anchored", [], 1, overnight.MODELS[0])]
+    assert any(str(overnight.HUMAN_DOCUMENTS) in part for part in human)
+    assert not any(str(overnight.HUMAN_DOCUMENTS) in part for part in other)

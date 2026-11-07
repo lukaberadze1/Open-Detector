@@ -47,6 +47,11 @@ def features_of(style: str) -> tuple[str, ...]:
     return tuple(found)
 
 
+def source_of(style: str) -> str:
+    """Whose writing a run rewrote: `human` (tune_revise --tag human-sources, the page's own case) or `ai`."""
+    return "human" if "+human-sources" in style else "ai"
+
+
 def describe(feature: str) -> str:
     base = feature.split("-")[0].rstrip("0123456789")
     language = feature.split("-", 1)[1].capitalize() if "-" in feature else ""
@@ -79,16 +84,16 @@ def _mean(values: list) -> float | None:
 
 def build(rows: list[dict]) -> dict:
     """The table: each setup's measures by model, and its pooled estimate against the baseline."""
-    by_setup: dict[tuple[str, ...], dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
+    by_setup: dict[tuple, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for row in rows:
         if "document" not in row or not (measured := run_measures(row)):
             continue
-        by_setup[features_of(row["style"])][row["model"]].append(measured)
+        by_setup[source_of(row["style"]), features_of(row["style"])][row["model"]].append(measured)
     names = ("under", "end", "facts", "distance", "minutes", "requests", "rounds")
-    baseline = by_setup.get((), {})
-    pooled = {name: _mean([_mean([run[name] for run in runs]) for runs in baseline.values()]) for name in names}
     setups = []
-    for features, models in by_setup.items():
+    for (source, features), models in by_setup.items():
+        baseline = by_setup.get((source, ()), {})  # each source against its own baseline, when it has one
+        pooled = {name: _mean([_mean([run[name] for run in runs]) for runs in baseline.values()]) for name in names}
         estimate, runs = {}, sum(len(group) for group in models.values())
         for name in names:
             if not features:
@@ -103,9 +108,9 @@ def build(rows: list[dict]) -> dict:
                 estimate[name] = max(0.0, min(top, estimate[name]) if top is not None else estimate[name])
             else:
                 estimate[name] = _mean([run[name] for group in models.values() for run in group])
-        setups.append({"features": list(features), "runs": runs, "models": sorted(models),
+        setups.append({"features": list(features), "source": source, "runs": runs, "models": sorted(models),
                        "loop": "anchored" if "anchored" in features else "sentences", **estimate})
-    setups.sort(key=lambda setup: (len(setup["features"]), setup["features"]))
+    setups.sort(key=lambda setup: (setup["source"], len(setup["features"]), setup["features"]))
     return {"setups": setups, "meaning_floor": MEANING_FLOOR, "min_runs": MIN_RUNS,
             "runs": sum(setup["runs"] for setup in setups)}
 
@@ -144,6 +149,8 @@ def choose(table: dict, points: dict[str, int], allowed: tuple[str, ...] = OFFER
     floor = table.get("meaning_floor", MEANING_FLOOR)
     pool = [setup for setup in table.get("setups", [])
             if setup.get("runs", 0) >= table.get("min_runs", MIN_RUNS) and offered(setup, allowed)]
+    # Runs on human-written documents are the page's own case, so they decide once there are enough of them.
+    pool = [setup for setup in pool if setup.get("source") == "human"] or pool
     if not pool:
         return None
     keeping = [setup for setup in pool if (setup.get("facts") or 0) >= floor]
@@ -170,7 +177,8 @@ def choose(table: dict, points: dict[str, int], allowed: tuple[str, ...] = OFFER
     best = candidates[max(range(len(candidates)), key=value)]
     features = tuple(feature for feature in best["features"] if feature != "anchored")
     return Recipe(features, {name: best.get(name) for name in
-                             ("runs", "under", "end", "facts", "distance", "minutes", "requests", "rounds", "loop")},
+                             ("runs", "under", "end", "facts", "distance", "minutes", "requests", "rounds", "loop",
+                              "source")},
                   below)
 
 
@@ -179,15 +187,17 @@ def report(table: dict) -> str:
              f"Under the line is the share of runs at or under {HUMAN_CUTOFF:.0%}. Each setup is its model's baseline "
              f"plus its average difference from it. The page picks only setups keeping {table['meaning_floor']}% of "
              f"names and numbers, measured on {table['min_runs']} runs or more.", "",
-             "| Setup | Loop | Runs | Under the line | Mean end | Facts % | Rounds to the line | Minutes | Requests |",
-             "|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+             "| Setup | Source | Loop | Runs | Under the line | Mean end | Facts % | Rounds to the line | Minutes "
+             "| Requests |",
+             "|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
 
     def cell(value, form):
         return "-" if value is None else format(value, form)
 
     for setup in table["setups"]:
         name = ", ".join(describe(f) for f in setup["features"] if f != "anchored") or "Baseline"
-        lines.append(f"| {name} | {setup['loop']} | {setup['runs']} | {cell(setup['under'], '.0%')} | "
+        lines.append(f"| {name} | {setup.get('source', 'ai')} | {setup['loop']} | {setup['runs']} | "
+                     f"{cell(setup['under'], '.0%')} | "
                      f"{cell(setup['end'], '.0%')} | {cell(setup['facts'], '.0f')} | {cell(setup['rounds'], '.1f')} | "
                      f"{cell(setup['minutes'], '.1f')} | {cell(setup['requests'], '.0f')} |")
     return "\n".join(lines) + "\n"

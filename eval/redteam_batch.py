@@ -559,6 +559,9 @@ def borrowed_plan(shapes: list[list[tuple[int, str]]], words: int, key: str) -> 
 # a draft to be restyled is asked for this much longer than the sample.
 RESTYLE_STRETCH = 1.35
 DRAFT_STRETCH = 1.25
+# Revisions came back short too: on 6-7 Nov 634 of 4,378 tries were dropped as under 0.6 of their passage's length
+# (median 0.49; a quarter of gemini-3.5-flash-lite's), and those kept ran a median 0.88. Short also means said less.
+REVISE_STRETCH = 1.25
 
 
 _PARAGRAPH = re.compile(r"\S(?:(?!\n[ \t]*\n).)*", re.S)
@@ -803,8 +806,7 @@ def revise_flagged(text: str, analyze: Callable[[str], object], ask: Callable[[s
 
         plan = SimpleNamespace(prompt=prompt, context_text=base, blocks=[], answer_slots=[],
                                match_existing_lengths=True, answer_words=100, structure="writer" if shapes else "free",
-                               # no stretch: a revised passage keeps its length, round after round
-                               shapes=shapes, mask_facts=mask)
+                               shapes=shapes, mask_facts=mask, stretch=REVISE_STRETCH)  # models write short
         written = _written_tries(plan, jobs, ask, clean, candidates)
         passages = [base[start:end] for start, end in spans]
         gaps = [base[:spans[0][0]]] + [base[end:after[0]] for (_, end), after in pairwise(spans)] \
@@ -1025,6 +1027,10 @@ ANCHORED = ("Start from the writer's original of this part, given with it: keep 
             "copied word for word.")
 REVISE_GROUP = 6  # passages in one revise request, each with all its tries
 ANCHORED_CANDIDATES = 4  # tries a passage gets a round in revise_anchored, half of them from the original
+# ...and in its first round, to win in fewer rounds: every try of a group comes back in one request, so more cost
+# tokens and detector time, not requests. On 6-7 Nov a try lowered its document 25% of the time: if tries were
+# independent, 4 would fix about 68% of flagged passages and 8 about 90%.
+ANCHORED_FIRST_ROUND = 8
 
 
 def chunk_scorer(detector) -> Callable[[list[str]], list[float | None]]:
@@ -1054,13 +1060,15 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
                     prompt: str = REVISE_KEEPING, facts: bool = True, candidates: int = ANCHORED_CANDIDATES,
                     progress: Callable[[dict], None] | None = None, stats: Counter | None = None,
                     mask: bool = False, saved: Callable[[dict[str, str], list[float | None]], None] | None = None,
-                    parallel: int = 1, trace=None) -> tuple[dict[str, str], list[float | None]]:
+                    parallel: int = 1, trace=None, first_round: int = ANCHORED_FIRST_ROUND
+                    ) -> tuple[dict[str, str], list[float | None]]:
     """A document's rewritten blocks revised back toward the writer's originals where the detector reads them as AI.
 
     revise_blocks capped a round at a few passages, chosen by sentence scores, and wrote every try in a borrowed
     sentence plan, so a long document took many rounds and drifted from its original. Here each round takes every
     passage that reads as AI (at `target` / 2 or more) inside the `CONTEXT_WORDS` around it, as the document's
-    windows read it, since the score is their mean and maximum. Each such passage gets `candidates` tries: half start
+    windows read it, since the score is their mean and maximum. Each such passage gets `candidates` tries
+    (`first_round` in the first, to win in fewer rounds; plans stretched by REVISE_STRETCH): half start
     from the writer's original of its block (`originals`, by key; ANCHORED), the rest rewrite it as revise_blocks
     does, in the writer's sentence plans when `shapes` are given. A try is scored on its own surroundings
     (`score_chunks`, chunk_scorer), and the lowest is kept if it beats the passage there; among tries that already
@@ -1113,7 +1121,6 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
     history = [best]
     if trace:
         trace.version("revise_start", whole(shown), score=best, loop="anchored")
-    anchored_tries = (candidates + 1) // 2
 
     def note(name: str, round_: int, new: str, **fields) -> None:
         if trace:
@@ -1132,9 +1139,11 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
         tell({"round": round_, "rounds": rounds, "tested": 0, "passages": len(hot), "likelihood": best})
         context = whole(shown)
         failures: list[Exception] = []
+        count = max(first_round, candidates) if round_ == 1 else candidates
+        anchored_tries = (count + 1) // 2
 
-        def request(group: list[str], anchored: bool, round_=round_, context=context,
-                    parts=shown, failures=failures) -> dict[str, list[str]]:
+        def request(group: list[str], anchored: bool, round_=round_, context=context, parts=shown,
+                    failures=failures, count=count, anchored_tries=anchored_tries) -> dict[str, list[str]]:
             def jobs(attempt: int) -> list[dict]:
                 number = attempt if anchored else anchored_tries + attempt
                 return [{"kind": "text_block", "label": f"Passage {index}", "question": "", "previous": parts[name],
@@ -1145,8 +1154,9 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
             writer = bool(shapes) and not anchored
             plan = SimpleNamespace(prompt=prompt, context_text=context, blocks=[], answer_slots=[],
                                    match_existing_lengths=True, answer_words=100,
-                                   structure="writer" if writer else "free", shapes=shapes or [], mask_facts=mask)
-            tries = anchored_tries if anchored else candidates - anchored_tries
+                                   structure="writer" if writer else "free", shapes=shapes or [], mask_facts=mask,
+                                   stretch=REVISE_STRETCH)
+            tries = anchored_tries if anchored else count - anchored_tries
             try:
                 return _written_tries(plan, jobs, ask, clean, tries) if tries else {}
             except StopRequested:
@@ -1428,9 +1438,9 @@ def sample_prompt(material: str, words: int, voice: str, framing: str = "task",
 
 
 def target_words(plan, job: dict) -> int:
-    """About how long a block's new text should be."""
+    """About how long a block's new text should be: its original's length, stretched where models write short."""
     if plan.match_existing_lengths and job["previous"].strip():
-        return count_words(job["previous"])
+        return round(count_words(job["previous"]) * getattr(plan, "stretch", 1.0))
     return plan.answer_words
 
 

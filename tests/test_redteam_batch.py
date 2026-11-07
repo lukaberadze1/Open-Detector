@@ -950,7 +950,8 @@ def test_revise_anchored_takes_every_flagged_passage_and_prefers_the_closest_hum
                                       for n, job in enumerate(pending, 1)]})
 
     changed, _ = revise_anchored({"a": tidy}, {"a": original}, lambda chunks: [human(c) for c in chunks], human,
-                                 copying, str.strip, rounds=1, candidates=2, facts=False, stats=stats)
+                                 copying, str.strip, rounds=1, candidates=2, facts=False, stats=stats,
+                                 first_round=2)
     assert changed == {"a": far} and stats["copied"] == 1
 
 
@@ -1127,3 +1128,24 @@ def test_revise_anchored_traces_each_try_and_why_it_was_kept_or_dropped(tmp_path
     assert any(event["kind"] == "passage" and event["kept"] for event in events)
     stages = [event["stage"] for event in events if event["kind"] == "version"]
     assert stages == ["revise_start", "revise_round"] and all(event["run"] == "r1" for event in events)
+
+
+def test_revise_anchored_tries_more_in_its_first_round_in_the_same_requests_and_stretches_plans():
+    from eval.redteam_batch import REVISE_STRETCH, revise_anchored, target_words
+
+    tidy = ("The acquisition of a first skateboard in August marked the beginning of a learning journey that "
+            "involved numerous falls and a growing appreciation for persistence in the face of challenges.")
+    asked = []
+
+    def ask(prompt, pending):
+        asked.append(len(pending))
+        text = "I got my first board in August and spent the week falling off it at the park, which I loved."
+        return json.dumps({"blocks": [{"id": f"B{n}", "text": text} for n in range(1, len(pending) + 1)]})
+
+    original = "My first skateboard came in August. I fell a lot that week but kept at it until I could ride."
+    revise_anchored({"a": tidy}, {"a": original}, lambda chunks: [0.9 for _ in chunks], lambda text: 0.9, ask,
+                    str.strip, rounds=2, candidates=4, first_round=8, facts=False)
+    assert asked == [4, 4, 2, 2], "round 1: 8 tries in its two requests; round 2: 4, still two requests"
+    from types import SimpleNamespace
+    plan = SimpleNamespace(match_existing_lengths=True, answer_words=100, stretch=REVISE_STRETCH)
+    assert target_words(plan, {"previous": " ".join(["word"] * 40)}) == 50, "models write short: ask for more"

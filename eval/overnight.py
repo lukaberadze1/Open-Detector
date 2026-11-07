@@ -51,6 +51,9 @@ MEMORY_GB = 1.5  # wanted free before a stage starts; it starts anyway after MEM
 MEMORY_PATIENCE = 300
 PROBLEM = re.compile(r"^.*(?:\b\w+Error\b|Traceback|Giving up|can't start).*$", re.M)
 DOCUMENTS = ROOT / "data/essays/sources/revise"
+# Human-written MAGE documents the detector reads as human (tune_revise --mage 8 --human-sources): the page's own
+# case, a writer regenerating their work, where half the anchored loop's tries start from the original's wording.
+HUMAN_DOCUMENTS = ROOT / "data/essays/sources/human"
 DAIGT_CSV = ROOT / "data/pairs/train_v2_drcat_02.csv"
 DEMOS = ROOT / "data/pairs/humanize_text_demo"
 
@@ -108,13 +111,16 @@ ANCHORED = ["--methods", "anchored", "--rounds", 5]  # the page's revision loop 
 def gemini_setups(paths: Paths, smoke: bool) -> list[tuple[str, list[str]]]:
     """Newest question first, so a spent quota leaves the old ones short. On 6-7 Nov multi-start and the German
     round trip did no better than the baseline and are left out; holding names and numbers kept twice the meaning.
-    Now: does the page's anchored loop, masked or not, reach the line in fewer rounds and keep more?"""
-    return [("anchored", ANCHORED), ("anchored_masked", [*ANCHORED, "--mask-facts"]), ("masked", ["--mask-facts"]),
+    Now: does the page's anchored loop, masked or not, reach the line in fewer rounds and keep more, first on
+    human-written documents, the page's own case?"""
+    return [("human_anchored_masked", [*ANCHORED, "--mask-facts", "--tag", "human-sources"]),
+            ("anchored_masked", [*ANCHORED, "--mask-facts"]), ("anchored", ANCHORED), ("masked", ["--mask-facts"]),
             ("baseline", [])]
 
 
 def gemini_command(paths: Paths, smoke: bool, setup: str, extra: list, repeats: int, model: str) -> list[str]:
-    documents = sorted(DOCUMENTS.glob("*.md"))[:1 if smoke else None]
+    folder = HUMAN_DOCUMENTS if setup.startswith("human_") else DOCUMENTS
+    documents = sorted(folder.glob("*.md"))[:1 if smoke else None]
     tiny = ["--rounds", 1, "--no-log"] if smoke else []
     provider, name = model.split(":", 1) if model.split(":")[0] in ("groq", "openrouter") else ("gemini", model)
     label = re.sub(r"[^\w.-]", "-", name)
