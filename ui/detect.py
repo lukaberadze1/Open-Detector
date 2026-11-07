@@ -138,7 +138,7 @@ def _load(profile: str, enabled: list[str]):
 def _analyze(text: str, source: str, sections: list | None, profile: str, enabled: list[str],
              sentences: bool) -> None:
     detector = _load(profile, enabled)
-    with st.spinner("Scoring the text with every engine…"):
+    with st.spinner(style.flavour("Scoring the text with every engine…", "Tasting in 350-word bites…")):
         report = detector.analyze(text, sentences=sentences)
 
     if sections:
@@ -231,7 +231,22 @@ def _engine_readings(report, bands: list[str]) -> None:
         words = [count_words(s.text) for s in report.sentences]
         flagged = sum(w for w, band in zip(words, bands, strict=True) if band in ("likely_ai", "needs_review"))
         stats += [(f"{len(report.sentences):,}", "sentences"), (f"{flagged / max(sum(words), 1):.0%}", "words flagged")]
-    engine_panel(readings, stats)
+    if not style.bistro():
+        engine_panel(readings, stats)
+        return
+    color = VERDICTS[report.verdict][1]
+    note = (("Calibrated" if report.calibrated else "Uncalibrated")
+            + f" · cut-offs at {report.thresholds['review']:.0%} and {report.thresholds['ai']:.0%}")
+    bill, hygiene = st.columns([1.5, 1], gap="small")
+    with bill:
+        engine_panel(readings, stats, (f"{report.ai_probability:.0%}", color, note))
+    norm = report.normalization
+    with hygiene:  # what the normalizer removed; the warning above says more when it found any
+        found = norm.invisible_chars + norm.homoglyphs
+        st.html('<div class="od-hygiene"><div class="od-eyebrow">Kitchen hygiene</div><div>'
+                + ("No hidden characters or look-alike letters found." if not found else
+                   f"Removed {norm.invisible_chars} hidden character(s) and {norm.homoglyphs} look-alike "
+                   "letter(s) before scoring.") + "</div></div>")
 
 
 def _sections_table(rows: list[dict], min_words: int, thresholds: dict[str, float]) -> None:
@@ -523,7 +538,8 @@ def render() -> None:
     on = sum(st.session_state.get(f"keep:detect:engine:{name}", True) for name in models.engines_of(profile)) \
         if len(names) > 1 else len(names)
     style.page_header("Check a text", "Paste text or upload a document, then press Analyze.",
-                      f"{models.PROFILE_LABELS[profile]} build · {on} of {len(names)} engines on", ready=on > 0)
+                      f"{models.PROFILE_LABELS[profile]} build · {on} of {len(names)} engines on", ready=on > 0,
+                      page="detect")
 
     setup, output = st.columns([1, 1.45], gap="large")
     with setup:
@@ -550,6 +566,6 @@ def render() -> None:
         if result := st.session_state.get(RESULT):
             show_result(result, _digest(text), revise=True)
         else:
-            st.html('<div class="od-empty"><b>No result yet</b>Paste at least 150 words of prose or upload a '
-                    "document on the left, then press Analyze. The verdict, each engine's reading and the "
-                    "sentences that drive the score appear here.</div>")
+            st.html(f'<div class="od-empty"><b>{style.flavour("No result yet", "Nothing on the plate yet")}</b>'
+                    "Paste at least 150 words of prose or upload a document on the left, then press Analyze. The "
+                    "verdict, each engine's reading and the sentences that drive the score appear here.</div>")

@@ -182,12 +182,12 @@ def look() -> str:
         chosen = json.loads((DATA_ROOT / "data/ui_prefs.json").read_text()).get("look")
     except (OSError, ValueError, AttributeError):
         chosen = None
-    return chosen if chosen in ("glass", "instrument") else "glass"
+    return chosen if chosen in ("bistro", "glass") else "bistro"
 
 
 # Window background behind the first paint, per look and mode.
-BACKGROUNDS = {("glass", False): "#EEF0F8", ("glass", True): "#06070D",
-               ("instrument", False): "#EEF1F0", ("instrument", True): "#05070A"}
+BACKGROUNDS = {("bistro", False): "#F8F1E4", ("bistro", True): "#18120E",
+               ("glass", False): "#EEF0F8", ("glass", True): "#06070D"}
 
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><style>
@@ -203,16 +203,11 @@ PAGE = """<!doctype html>
            radial-gradient(44rem 30rem at 100% 5%, rgba(20,170,200,.2), transparent 60%),
            radial-gradient(48rem 34rem at 65% 115%, rgba(170,60,220,.2), transparent 60%); }}
 }}
-body.instrument {{ --bg: #EEF1F0; --text: #0A1E25; --muted: #4A6470; --panel: #fff; --edge: rgba(0,70,90,.24);
-  --hair: rgba(0,70,90,.12); --accent: #00788C; --accent2: #4C7A00;
-  --sky: linear-gradient(rgba(0,90,110,.06) 1px, transparent 1px) 0 0 / 32px 32px,
-         linear-gradient(90deg, rgba(0,90,110,.06) 1px, transparent 1px) 0 0 / 32px 32px; }}
+body.bistro {{ --bg: #F8F1E4; --text: #2A1F17; --muted: #6E5B4B; --panel: #FFFCF6; --edge: #E7DAC4; --hair: #E7DAC4;
+  --accent: #C2410C; --accent2: #E9B949; --sky: linear-gradient(transparent, transparent); }}
 @media (prefers-color-scheme: dark) {{
-  body.instrument {{ --bg: #05070A; --text: #D9F4FA; --muted: #7896A1; --panel: rgba(9,15,20,.9);
-    --edge: rgba(90,230,255,.2); --hair: rgba(90,230,255,.1); --accent: #45E0FF; --accent2: #B6FF5C;
-    --sky: linear-gradient(rgba(90,230,255,.045) 1px, transparent 1px) 0 0 / 32px 32px,
-           linear-gradient(90deg, rgba(90,230,255,.045) 1px, transparent 1px) 0 0 / 32px 32px,
-           radial-gradient(60rem 40rem at 50% -20%, rgba(69,224,255,.1), transparent 70%); }}
+  body.bistro {{ --bg: #18120E; --text: #F3E7D3; --muted: #BBA58E; --panel: #221A14; --edge: #3B2E24; --hair: #3B2E24;
+    --accent: #EA6A2E; --accent2: #E9B949; --sky: linear-gradient(transparent, transparent); }}
 }}
 body {{ margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
   background: var(--sky), var(--bg); color: var(--text);
@@ -243,19 +238,13 @@ pre {{ text-align: left; background: rgba(127,127,127,.08); border: 1px solid va
 button {{ font: inherit; font-weight: 600; padding: 8px 18px; margin: 10px 4px 0; border-radius: 999px; cursor: pointer;
   border: 1px solid var(--hair); background: transparent; color: var(--text); }}
 button.primary {{ background: var(--accent); border-color: var(--accent); color: #fff; }}
-body.instrument main {{ border-radius: 4px; box-shadow: 0 24px 60px -30px rgba(0,0,0,.8); backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  background-image: linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent)),
-    linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent));
-  background-size: 16px 1.5px, 1.5px 16px, 16px 1.5px, 1.5px 16px;
-  background-position: top left, top left, bottom right, bottom right; background-repeat: no-repeat; }}
-body.instrument h1, body.instrument p, body.instrument button {{ font-family: "SF Mono", ui-monospace, Menlo, Consolas,
-  monospace;
-  text-transform: uppercase; letter-spacing: .1em; }}
-body.instrument h1 {{ font-size: 17px; letter-spacing: .2em; }}
-body.instrument p {{ font-size: 12px; }}
-body.instrument button {{ border-radius: 3px; font-size: 12px; }}
-body.instrument button.primary {{ color: var(--bg); }}
+body.bistro main {{ border-radius: 24px; border-width: 1.5px; box-shadow: 0 3px 0 var(--edge); backdrop-filter: none;
+  -webkit-backdrop-filter: none; }}
+body.bistro h1, body.bistro button {{ font-family: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas,
+  monospace; }}
+body.bistro h1 {{ font-weight: 800; letter-spacing: -.03em; }}
+body.bistro button {{ border-radius: 12px; font-weight: 700; }}
+body.bistro button.primary {{ box-shadow: 0 3px 0 #8A2E08; }}
 @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
 @keyframes sweep {{ 0% {{ transform: translateX(-100%); }} 100% {{ transform: translateX(260%); }} }}
 @keyframes show {{ to {{ opacity: 1; }} }}
@@ -265,7 +254,7 @@ body.instrument button.primary {{ color: var(--bg); }}
 
 
 def loading_page() -> str:
-    starting = "Booting the detector" if look() == "instrument" else "Starting the detector…"
+    starting = "Warming up the kitchen…" if look() == "bistro" else "Starting the detector…"
     return PAGE.format(look=look(), state="loading", mark=_mark(), body=(
         f"<h1>{APP_NAME}</h1><p>{starting}</p><div class='bar'><i></i></div>"
         "<p class='later'>The first start after an update or restart can take a minute.</p>"))
@@ -281,7 +270,7 @@ def error_page(message: str) -> str:
 
 
 def _mark() -> str:
-    name = "mark-instrument.svg" if look() == "instrument" else "mark.svg"
+    name = "mark-bistro.svg" if look() == "bistro" else "mark.svg"
     try:
         return (ROOT / "ui/assets" / name).read_text()
     except OSError:

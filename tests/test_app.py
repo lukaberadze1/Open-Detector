@@ -491,9 +491,28 @@ def test_red_team_rewrites_every_block_of_a_word_document(stub_model, tmp_path):
     assert not list((tmp_path / "batches").glob("*.json")), "a finished batch's checkpoint is discarded"
 
 
+def test_a_running_batch_shows_as_an_order_ticket_in_bistro(stub_model, tmp_path):
+    stub_model.gate.clear()  # hold the first block until the end of the test
+    at = word_document_page()
+    button(at, "Regenerate 2 blocks").click()
+    at.run()
+    assert not at.exception, at.exception
+    ticket = next(h.proto.body for h in at.get("html") if 'class="od-ticket"' in h.proto.body)
+    assert "Regenerating bees.docx" in ticket and "Timing the first block" in ticket
+    stations = re.findall(r'<li class="(\w+)">.*?<b>([^<]+)</b>', ticket, re.S)
+    assert stations[0] == ("done", "Unpack the document")
+    assert ("now", "Cooking the first draft") in stations and stations[-1] == ("todo", "Plating and labelling")
+    assert ("done", "Hold names and numbers aside") in stations, "holding names and numbers is on by default"
+    assert [b.label for b in at.button] == ["Stop"]
+    stub_model.gate.set()
+    assert run_until_batch_ends(at)[0] == "success"
+
+
 def test_a_running_batch_takes_over_the_page_with_a_countdown(stub_model, tmp_path):
     stub_model.gate.clear()  # hold the first block until the end of the test
     at = word_document_page()
+    at.session_state["keep:appearance:look"] = "glass"
+    at.run()
     button(at, "Regenerate 2 blocks").click()
     at.run()
     assert not at.exception, at.exception
@@ -1280,3 +1299,30 @@ def test_a_public_deploy_never_takes_the_recipe(stub_model, monkeypatch):
     assert not at.exception, at.exception
     assert not any("Round trip through German" in m.value for m in at.markdown)
     assert not any(t.key == "keep:redteam:mask_facts" for t in at.toggle)
+
+
+def test_bistro_puts_cloche_and_the_bill_on_the_critics_table():
+    at, result = analyze(AI * 30)
+    bodies = [h.proto.body for h in at.get("html")]
+    card = next(body for body in bodies if 'class="od-critic"' in body)
+    assert "The critic says" in card and "Likely AI" in card and 'alt="Cloche, shocked: likely AI"' in card
+    bill = next(body for body in bodies if 'class="od-bill"' in body)
+    assert "Desklib" in bill and "TOTAL · AI likelihood" in bill and f"{result['report'].ai_probability:.0%}" in bill
+    assert any("The critic&#x27;s table" in body or "The critic's table" in body for body in bodies)
+    assert at.segmented_control(key="keep:appearance:look").value == "bistro"
+
+
+def test_glass_keeps_its_dial_and_meters():
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.session_state["profile"] = "full"
+    at.session_state["keep:appearance:look"] = "glass"
+    at.run()
+    at.text_area(key="keep:detect:text").input(AI * 30)
+    button(at, "Analyze").click()
+    at.run()
+    assert not at.exception, at.exception
+    bodies = [h.proto.body for h in at.get("html")]
+    assert any('class="od-dial"' in body for body in bodies)
+    assert not any('class="od-critic"' in body for body in bodies)
+    assert any("Engine readings" in body for body in bodies) and not any('class="od-bill"' in body for body in bodies)
+    assert not any('class="od-page-eyebrow"' in body for body in bodies), "the kitchen names are Bistro's alone"

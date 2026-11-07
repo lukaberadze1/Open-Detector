@@ -14,17 +14,13 @@ deploy sets the profile and public mode; the Hugging Face one leaves the lab pag
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import streamlit as st
 
 from ui import nav, prefs, style
 from ui.components import apply_theme
 
-ASSETS = Path(__file__).resolve().parent / "ui" / "assets"
-
-st.set_page_config(page_title="Open Detector", page_icon=str(ASSETS / "mark.svg"), layout="wide")
 logo, mark = style.logo_paths()
+st.set_page_config(page_title="Open Detector", page_icon=mark, layout="wide")
 st.logo(logo, icon_image=mark, size="large")
 apply_theme()
 

@@ -116,7 +116,7 @@ def _public_key_panel() -> None:
 
 def render() -> None:
     public = style.public()
-    style.hero("Welcome", "How Open Detector works",
+    style.hero(style.flavour("Welcome", "The menu"), "How Open Detector works",
                "Check whether a text was written by AI. "
                + ("The detector runs on this site's server, which doesn't keep the texts you check."
                   if public else "The detector runs on this computer, so the texts you check never leave it."),

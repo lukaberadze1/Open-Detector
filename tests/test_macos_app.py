@@ -102,15 +102,18 @@ def test_build_leaves_an_app_it_did_not_make(tmp_path):
 
 def test_the_loading_page_follows_the_look_in_the_data_folder(tmp_path, monkeypatch):
     monkeypatch.setattr(launcher, "DATA_ROOT", tmp_path)
-    assert launcher.look() == "glass"
+    assert launcher.look() == "bistro"
     (tmp_path / "data").mkdir()
+    (tmp_path / "data/ui_prefs.json").write_text(json.dumps({"look": "glass", "welcomed": True}))
+    assert launcher.look() == "glass"
     (tmp_path / "data/ui_prefs.json").write_text(json.dumps({"look": "instrument", "welcomed": True}))
-    assert launcher.look() == "instrument"
+    assert launcher.look() == "bistro", "the retired Instrument look opens as Bistro"
 
 
 def test_the_standalone_app_carries_the_code_it_runs_and_nothing_under_data(tmp_path):
     build_app.copy_app(build_app.ROOT, tmp_path)
-    for name in (*build_app.APP_FILES, "opendetector/detector.py", "ui/guide.py", "ui/assets/mark.svg"):
+    for name in (*build_app.APP_FILES, "opendetector/detector.py", "ui/guide.py", "ui/assets/mark.svg",
+                 "ui/assets/mark-bistro.svg", "ui/assets/logo-bistro.svg"):
         assert (tmp_path / name).is_file(), name
     assert not (tmp_path / "data").exists() and not (tmp_path / ".env").exists()
     assert not list(tmp_path.rglob("__pycache__"))

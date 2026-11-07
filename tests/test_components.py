@@ -64,3 +64,14 @@ def test_pickable_highlights_number_every_sentence_and_carry_no_script_of_their_
     assert "<script>" not in page and 'class="od-pickable"' in page
     assert "click sentences to pick them" in page
     assert "<script>" in highlighted_text(TEXT, sentences(), BANDS, THRESHOLDS)
+
+
+def test_cloche_wears_the_verdict_on_his_face():
+    from ui.components import MOODS, cloche_svg
+
+    assert MOODS == {"likely_human": "happy", "needs_review": "skeptical", "likely_ai": "shocked"}
+    happy, skeptical, shocked, tasting = (cloche_svg(mood) for mood in ("happy", "skeptical", "shocked", "tasting"))
+    assert 'r="9.5"' in skeptical and 'r="9.5"' not in happy, "the monocle goes up for needs review"
+    assert "#9ED3F0" in shocked and "#9ED3F0" not in happy, "he sweats at likely AI"
+    assert tasting.count("q-4 -5 0 -10") == 3, "steam while tasting"
+    assert "#1E2A4A" in cloche_svg("happy", "glass") and "#2A1F17" in happy

@@ -125,7 +125,8 @@ from opendetector.env import env_keys, extra_keys_name, load_env, save_env, save
 from opendetector.segment import count_words
 
 from . import detect, models, nav, style
-from .components import VERDICTS, Upload, keep, persistent_upload, priorities_chart, verdict_badge
+from .components import (VERDICTS, Upload, keep, order_ticket, persistent_upload, priorities_chart,
+                         verdict_badge)
 
 ROOT = Path(__file__).resolve().parents[1]
 STYLE_DIR = DATA_ROOT / "data/styles"
@@ -1293,7 +1294,7 @@ def _setup(profile: str) -> tuple[Plan, Connection]:
                 help="API writes with the models. Math uses no model or quota: it edits text you supply by rules, "
                      "keeping an edit only if the detector then scores lower. Combo writes with the models, then "
                      "runs the math script on the result.")
-    with style.group("Input", "02"):
+    with style.group("Input", "02", "the ingredients"):
         prompt, upload, sections, slots, blocks = _source(regenerate)
     plan = Plan(prompt, upload, sections, slots, blocks, "sample", profile)
     plan.citations = st.session_state.get("redteam:validated_references", []) if not regenerate else []
@@ -1301,14 +1302,14 @@ def _setup(profile: str) -> tuple[Plan, Connection]:
         plan.blocked = "Fix or clear the reference JSON before generating."
     plan.context_sections = sections
     steps = iter(("03", "04", "05", "06"))
-    with style.group("Priorities", next(steps)):
+    with style.group("Priorities", next(steps), "the head chef"):
         priorities_box = st.container()  # filled once Model & connection, at the foot, says which models there are
     if regenerate:
-        with style.group("Rewrite", next(steps)):
+        with style.group("Rewrite", next(steps), "what goes in the pan"):
             _scope(plan)
-    with style.group("Writing", next(steps)):
+    with style.group("Writing", next(steps), "the recipe card"):
         _writing(plan)
-    with style.group("Detector", next(steps)):
+    with style.group("Detector", next(steps), "the critic"):
         _scoring(plan, profile)
         plan.engine = engine
         if engine != "API":
@@ -1326,7 +1327,8 @@ def _setup(profile: str) -> tuple[Plan, Connection]:
                 help="Rule edits leave a text its original author's, so by default they aren't saved as AI data. "
                      "Turn this on only for text an AI wrote.")
     key_missing = public() and not st.session_state.get(PUBLIC_KEY, "").strip()
-    with st.expander("Model & connection" + (" · add your Gemini key" if key_missing else ""),
+    with st.expander("Model & connection" + (" · add your Gemini key" if key_missing else
+                                              style.flavour("", " · the cooks")),
                      icon=":material/key:", expanded=key_missing):
         conn = _connection()
     with priorities_box:
@@ -1956,13 +1958,89 @@ def _batch_progress(worker: BatchWorker) -> None:
     # Read the checkpoint from disk: the worker's own copy may change while it is being read.
     saved = Checkpoint.load(worker.checkpoint.path) or worker.checkpoint
     scoring = worker.phase == "scoring"
-    verb = "scored" if scoring else "written"
     keys, total = worker.keys, len(worker.keys)
     done = len(saved.scored(keys) if scoring else saved.generated(keys))
     # The last few rounds of blocks predict the rest best: a switch to another model changes the pace.
     recent = worker.seconds["scored" if scoring else "generated"][-worker.window:]
     seconds_left = sum(recent) / len(recent) * (total - done) if recent else None
     revising = worker.status.get("revising")
+    if style.bistro():
+        _ticket(worker, done, total, seconds_left)
+    else:
+        _progress_panel(worker, done, total, seconds_left, revising)
+    if note := worker.status.get("note"):
+        st.caption(note)
+    for line in worker.status.get("log", [])[-4:]:
+        st.caption(line)
+    if worker.stopping:
+        st.button("Stopping after the blocks in progress…", disabled=True, icon=":material/hourglass_top:",
+                  key=f"stopping:{worker.checkpoint.path}")
+    elif st.button("Stop", icon=":material/stop_circle:", key=f"stop:{worker.checkpoint.path}",
+                   help="Finishes the blocks being written, then stops. Every block written so far is saved "
+                        "and exported; press Resume to continue."):
+        worker.stop()
+        st.rerun(scope="fragment")
+
+
+def _ticket(worker: BatchWorker, done: int, total: int, seconds_left: float | None) -> None:
+    """Bistro's order ticket: the batch as the pipeline's stations (unpack, hold names and numbers aside, plan,
+    the recipe card, cook, inspect, the critic's taste, attacks, refine, plate), each done, cooking now or to
+    come, from what the worker reports (its phase, the blocks done, `status["station"]` and the revision)."""
+    plan, status = worker.plan, worker.status
+    model = status.get("model") or plan.model or "the first model"
+    revising = status.get("revising")
+    if plan.style_path:
+        recipe = (f"{plan.register.capitalize() if plan.register else plan.style_path.stem} register"
+                  + (" · sentence shapes from the writer's paragraphs" if plan.shapes else ""))
+    else:
+        recipe = "No style profile: the model's own voice"
+    attacks = [*plan.attacks, *(["phrase swaps"] if plan.rules else []), *(["math script"] if plan.math else [])]
+    revise_note = (f"Round {revising['round']} of up to {revising['rounds']} · {revising['tested']} of "
+                   f"{revising['passages']} passages · {revising['likelihood']:.0%} AI now" if revising else
+                   f"Only the burnt passages, up to {plan.revise} rounds, until under {WIN_BELOW:.0%}")
+    stations = [("unpack", "Unpack the document", f"{total} blocks to cook from {plan.upload.name}")]
+    if plan.mask_facts:
+        stations.append(("hold", "Hold names and numbers aside", "Sent as [F1], [F2]… so no cook can change them"))
+    stations += [("plan", "Head chef plans the meal", f"{model} · {plan.thinking} thinking · {plan.group_size} "
+                                                      f"blocks a pan, {plan.parallel} at once"),
+                 ("recipe", "Recipe card and moulds", recipe),
+                 ("cook", "Cooking the first draft", f"{done if worker.phase == 'generating' else total} of {total} "
+                                                     "blocks written"),
+                 ("inspect", "Inspection at the pass", "Wipe, season to the writer's rate, re-plate the layout")]
+    if plan.score:
+        stations.append(("taste", "The critic's first taste",
+                         f"{done} of {total} blocks scored" if worker.phase == "scoring" and not status.get("station")
+                         else "350-word bites"))
+        if attacks:
+            stations.append(("attacks", "Extra techniques", ", ".join(attacks)))
+        if plan.revise:
+            stations.append(("refine", "Refining the dish", revise_note))
+    stations.append(("plate", "Plating and labelling", "Export the document, label every block as AI test data"))
+    ids = [station[0] for station in stations]
+    now = "cook" if worker.phase == "generating" else status.get("station") or "taste"
+    at = ids.index(now) if now in ids else len(ids) - 1
+    inner = (done / total if now in ("cook", "taste") and total else
+             ((revising["round"] - 1 + revising["tested"] / max(revising["passages"], 1)) / revising["rounds"])
+             if now == "refine" and revising else 0.0)
+    rows = [("done" if index < at else "now" if index == at else "todo", title, note)
+            for index, (_, title, note) in enumerate(stations)]
+    if revising:
+        timing = f"Refining · {revising['likelihood']:.0%} AI now"
+    elif seconds_left is not None:
+        timing = (f"About {duration(seconds_left)} left · ready around "
+                  f"{(datetime.now() + timedelta(seconds=seconds_left)):%H:%M}")
+    else:
+        timing = "Timing the first block…"
+    foot = ("Every block is saved as it's cooked. Keep this tab open until it's done." if public() else
+            "Every block is saved as it's cooked, and the batch carries on if you close the tab.")
+    order_ticket(f"Regenerating {plan.upload.name}", timing, rows, (at + inner) / len(ids), foot)
+
+
+def _progress_panel(worker: BatchWorker, done: int, total: int, seconds_left: float | None,
+                    revising: dict | None) -> None:
+    """Glass's batch progress: what is being done, the time left or the revision round, and a bar."""
+    scoring = worker.phase == "scoring"
+    verb = "scored" if scoring else "written"
     with st.container(border=True):
         model_note = f" · {worker.status['model']}" if not scoring and worker.status.get("model") else ""
         st.markdown(f":material/autorenew: **{'Scoring' if scoring else 'Writing'} {worker.plan.upload.name}** · "
@@ -1987,18 +2065,6 @@ def _batch_progress(worker: BatchWorker) -> None:
                           else "Testing each new version against the detector…"))
         else:
             st.progress(done / total)
-        if note := worker.status.get("note"):
-            st.caption(note)
-        for line in worker.status.get("log", [])[-4:]:
-            st.caption(line)
-        if worker.stopping:
-            st.button("Stopping after the blocks in progress…", disabled=True, icon=":material/hourglass_top:",
-                      key=f"stopping:{worker.checkpoint.path}")
-        elif st.button("Stop", icon=":material/stop_circle:", key=f"stop:{worker.checkpoint.path}",
-                       help="Finishes the blocks being written, then stops. Every block written so far is saved "
-                            "and exported; press Resume to continue."):
-            worker.stop()
-            st.rerun(scope="fragment")
 
 
 def _finish_ended_batches() -> None:
@@ -2360,9 +2426,12 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
             record_stage("written", written)
         record_stage("source", "\n\n".join(job["previous"] for job in jobs if job["previous"].strip()))
         if (plan.attacks or plan.rules or plan.math) and "attack_changes" not in checkpoint.meta:
+            status["station"] = "attacks"  # for the order ticket (_ticket)
             attack_document()
         if plan.revise and "revise_rounds" not in checkpoint.meta:
+            status["station"] = "refine"
             revise_document()
+        status["station"] = "plate"
         # Answer boxes are mostly under the detector's 150-word minimum, so the regenerated text is
         # also scored as one document: the verdict a reader of the whole file would get.
         whole = "\n\n".join(checkpoint.blocks[key]["text"] for key in checkpoint.generated(keys))
@@ -3030,7 +3099,8 @@ def render() -> None:
     style.page_header(
         "Adversarial Lab",
         "Make labelled AI test text: generate it from instructions, or regenerate a document's own text.",
-        f"Scored with the {models.PROFILE_LABELS[profile]} build" + (" · public mode" if public() else ""))
+        f"Scored with the {models.PROFILE_LABELS[profile]} build" + (" · public mode" if public() else ""),
+        page="red-team")
     _finish_ended_batches()
     running = [worker for worker in _own_batches().values() if worker.is_alive()]
     if running:
@@ -3101,9 +3171,10 @@ def render() -> None:
             elif result := st.session_state.get(RESULT):
                 _show_result(result, profile)
             else:
-                st.html('<div class="od-empty"><b>Nothing made yet</b>Choose Generate or Regenerate, fill in the '
-                        "settings on the left and press the button. The text appears here with its detector "
-                        "score, ready to download or check in Detect.</div>")
+                st.html(f'<div class="od-empty"><b>{style.flavour("Nothing made yet", "Nothing on the plate yet")}'
+                        "</b>Choose Generate or Regenerate, fill in the settings on the left and press the "
+                        "button. The text appears here with its detector score, ready to download or check in "
+                        "Detect.</div>")
 
     with saved_tab:
         _history()

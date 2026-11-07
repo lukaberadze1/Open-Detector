@@ -1,9 +1,11 @@
-"""The app's two looks, each with a light and a dark mode. Glass is the default; Settings at the foot of
-the sidebar switches to Instrument:
+"""The app's two looks, each with a light and a dark mode. Bistro is the default; the Look switch at the
+foot of the sidebar changes to Glass:
 
+- **Bistro**: the kitchen. Cream paper, espresso ink and paprika, JetBrains Mono for titles, labels, numbers
+  and buttons and Geist for reading. Cloche, the critic (components.cloche), gives the verdict with his face,
+  engine readings print as a bill, and a running batch is an order ticket. The labels stay plain; the kitchen
+  flavour goes in subtitles, empty screens and loading lines (`flavour`), never near warnings or errors.
 - **Glass**: frosted, translucent panels floating over a soft aurora, with a ring dial for the score.
-- **Instrument**: a forensic scanner read-out. A fine grid, hairline panels with corner brackets,
-  monospace labels and a needle gauge. Built dark first; its light mode reads like a lab print-out.
 
 Streamlit's own light/dark setting (Settings in the app menu) still picks the mode. The look only
 layers styles on top, so every widget keeps working in either. The verdict tones (`human`, `review`,
@@ -22,15 +24,33 @@ from . import prefs
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "ui" / "assets"
 
-LOOKS = ("glass", "instrument")
-LOOK_LABELS = {"glass": "Glass", "instrument": "Instrument"}
+LOOKS = ("bistro", "glass")
+LOOK_LABELS = {"bistro": "Bistro", "glass": "Glass"}
 KEY = "keep:appearance:look"
-DEFAULT_LOOK = os.environ.get("OPENDETECTOR_LOOK", "glass").strip().lower()
+DEFAULT_LOOK = os.environ.get("OPENDETECTOR_LOOK", "bistro").strip().lower()
 if DEFAULT_LOOK not in LOOKS:
-    DEFAULT_LOOK = "glass"
+    DEFAULT_LOOK = "bistro"
+# The kitchen names under each page's link in the sidebar, and over its title, in Bistro.
+PAGE_FLAVOUR = {"detect": "The critic's table", "red-team": "The kitchen", "guide": "The menu"}
 
 # Each look's surface tokens per mode. Text pairs were checked at 4.5:1 or better against `bg` and `panel`.
 TOKENS = {
+    ("bistro", "light"): {
+        "bg": "#F8F1E4", "panel": "#FFFCF6", "panel-solid": "#FFFCF6", "panel-strong": "#FBF6EC",
+        "edge": "#E7DAC4", "hair": "#EFE3CF", "ink": "#2A1F17", "muted": "#6E5B4B", "accent": "#C2410C",
+        "accent-2": "#3F7A3A", "glow": "rgba(194,65,12,0.22)", "track": "#F2E8D6", "shadow": "0 3px 0 #E7DAC4",
+        "aurora": "linear-gradient(transparent, transparent)", "side": "#F2E8D6", "dash": "#E0CFB5",
+        "accent-deep": "#9A3412", "press": "#8A2E08", "on": "#2A1F17", "on-ink": "#FFFCF6", "soft": "#FBEBDD",
+        "faint": "#8C7867",
+    },
+    ("bistro", "dark"): {
+        "bg": "#18120E", "panel": "#221A14", "panel-solid": "#221A14", "panel-strong": "#2A2019",
+        "edge": "#3B2E24", "hair": "#33271F", "ink": "#F3E7D3", "muted": "#BBA58E", "accent": "#EA6A2E",
+        "accent-2": "#6FB466", "glow": "rgba(234,106,46,0.25)", "track": "#2E231B", "shadow": "0 3px 0 #0E0A07",
+        "aurora": "linear-gradient(transparent, transparent)", "side": "#1F1712", "dash": "#4A3B2F",
+        "accent-deep": "#F08A55", "press": "#7A2A0A", "on": "#F3E7D3", "on-ink": "#18120E", "soft": "#3A2418",
+        "faint": "#9C8670",
+    },
     ("glass", "light"): {
         "bg": "#EEF0F8", "panel": "rgba(255,255,255,0.58)", "panel-solid": "#FFFFFF",
         "panel-strong": "rgba(255,255,255,0.78)",
@@ -54,29 +74,10 @@ TOKENS = {
                    "radial-gradient(50rem 36rem at 100% 5%, rgba(20,170,200,0.20), transparent 60%),"
                    "radial-gradient(56rem 40rem at 65% 115%, rgba(170,60,220,0.20), transparent 60%)"),
     },
-    ("instrument", "dark"): {
-        "bg": "#05070A", "panel": "rgba(9,15,20,0.86)", "panel-solid": "#0A1117",
-        "panel-strong": "rgba(12,20,27,0.94)",
-        "edge": "rgba(90,230,255,0.20)", "hair": "rgba(90,230,255,0.10)", "ink": "#D9F4FA", "muted": "#7896A1",
-        "accent": "#45E0FF", "accent-2": "#B6FF5C", "glow": "rgba(69,224,255,0.45)",
-        "track": "rgba(90,230,255,0.10)",
-        "shadow": "0 0 0 1px rgba(0,0,0,0.6), 0 20px 50px -24px rgba(0,0,0,0.9)",
-        "aurora": ("linear-gradient(rgba(90,230,255,0.045) 1px, transparent 1px) 0 0 / 32px 32px,"
-                   "linear-gradient(90deg, rgba(90,230,255,0.045) 1px, transparent 1px) 0 0 / 32px 32px,"
-                   "radial-gradient(70rem 50rem at 50% -20%, rgba(69,224,255,0.10), transparent 70%)"),
-    },
-    ("instrument", "light"): {
-        "bg": "#EEF1F0", "panel": "rgba(255,255,255,0.92)", "panel-solid": "#FFFFFF", "panel-strong": "#FFFFFF",
-        "edge": "rgba(0,70,90,0.24)", "hair": "rgba(0,70,90,0.12)", "ink": "#0A1E25", "muted": "#4A6470",
-        "accent": "#00788C", "accent-2": "#4C7A00", "glow": "rgba(0,120,140,0.22)", "track": "rgba(0,70,90,0.10)",
-        "shadow": "0 1px 0 rgba(0,40,50,0.04), 0 12px 32px -20px rgba(0,40,50,0.35)",
-        "aurora": ("linear-gradient(rgba(0,90,110,0.06) 1px, transparent 1px) 0 0 / 32px 32px,"
-                   "linear-gradient(90deg, rgba(0,90,110,0.06) 1px, transparent 1px) 0 0 / 32px 32px"),
-    },
 }
 
 FONTS = ("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&"
-         "family=Geist+Mono:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap")
+         "family=Geist+Mono:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap")
 
 
 def public() -> bool:
@@ -104,6 +105,15 @@ def current_look() -> str:
     return look
 
 
+def bistro() -> bool:
+    return current_look() == "bistro"
+
+
+def flavour(plain: str, kitchen: str) -> str:
+    """`kitchen` in Bistro, `plain` in Glass: for loading lines and empty screens, never for warnings or errors."""
+    return kitchen if bistro() else plain
+
+
 def mode() -> str:
     theme = getattr(st.context, "theme", None)
     return "dark" if getattr(theme, "type", None) == "dark" else "light"
@@ -114,42 +124,47 @@ def tokens() -> dict[str, str]:
 
 
 def look_picker() -> None:
-    """The sidebar's Settings, folded away at the bottom: Glass unless the viewer switches to Instrument.
-    Light or dark stays with Streamlit's own Settings."""
+    """The Look switch at the foot of the sidebar: Bistro unless the viewer picks Glass. Light or dark stays
+    with Streamlit's own Settings."""
     current_look()
-    with st.expander("Settings", icon=":material/settings:"):
+    with st.container(key="od-look"):
+        st.html('<div class="od-group">Look</div>')
         st.segmented_control("Look", LOOKS, format_func=LOOK_LABELS.get, key=KEY, required=True,
-                             label_visibility="collapsed", on_change=_save_look)
-        st.caption("The app's look. Light or dark: app menu > Settings." if current_look() == "glass" else
-                   "The app's look, built dark first. Light or dark: app menu > Settings.")
+                             label_visibility="collapsed", on_change=_save_look,
+                             help="The app's look. Light or dark: app menu > Settings.")
 
 
 def logo_paths() -> tuple[str, str]:
     """The sidebar logo and the small mark for the active look and mode."""
-    suffix = "" if current_look() == "glass" else "-instrument"
+    suffix = "" if current_look() == "glass" else "-bistro"
     tone = "-dark" if mode() == "dark" else ""
     return str(ASSETS / f"logo{suffix}{tone}.svg"), str(ASSETS / f"mark{suffix}.svg")
 
 
-def page_header(title: str, subtitle: str, status: str | None = None, ready: bool = True) -> None:
+def page_header(title: str, subtitle: str, status: str | None = None, ready: bool = True,
+                page: str | None = None) -> None:
     """The top of a page: its title and one line on what it is for, and on the right one status pill
-    (the detector build, the text model) when the page has one."""
+    (the detector build, the text model) when the page has one. In Bistro the page's kitchen name
+    (`PAGE_FLAVOUR[page]`) sits over the title."""
     import html
 
     pill = (f'<span class="od-status{"" if ready else " off"}"><i aria-hidden="true"></i>{html.escape(status)}</span>'
             if status else "")
-    st.html(f'<header class="od-page"><div><h1>{html.escape(title)}</h1><p>{html.escape(subtitle)}</p></div>'
+    eyebrow = (f'<span class="od-page-eyebrow">{html.escape(PAGE_FLAVOUR[page])}</span>'
+               if page in PAGE_FLAVOUR and bistro() else "")
+    st.html(f'<header class="od-page"><div>{eyebrow}<h1>{html.escape(title)}</h1><p>{html.escape(subtitle)}</p></div>'
             f"{pill}</header>")
 
 
-def group(title: str, step: str | None = None):
-    """A bordered panel that opens with a small title, for one group of related settings or results.
-    Returns the container, to fill with `with`."""
+def group(title: str, step: str | None = None, kitchen: str | None = None):
+    """A bordered panel that opens with a small title, for one group of related settings or results, and
+    in Bistro its kitchen name ("the recipe card"). Returns the container, to fill with `with`."""
     import html
 
     box = st.container(border=True)
     number = f'<span class="od-step">{html.escape(step)}</span>' if step else ""
-    box.html(f'<div class="od-group">{number}{html.escape(title)}</div>')
+    extra = f'<em> · {html.escape(kitchen)}</em>' if kitchen and bistro() else ""
+    box.html(f'<div class="od-group">{number}{html.escape(title)}{extra}</div>')
     return box
 
 
@@ -307,68 +322,96 @@ BASE_CSS = """
 @media (prefers-reduced-motion: reduce) { .od-pulse, .od-scan { animation: none !important; } }
 """
 
-INSTRUMENT_CSS = """
-.stApp p, .stApp label, .stApp li, .stApp button { font-family: 'Geist', 'Inter', system-ui, sans-serif; }
-[data-testid="stSidebar"] { -webkit-backdrop-filter: none; backdrop-filter: none; }
-[data-testid="stSidebar"] h3, .od-hero-eyebrow, .od-eyebrow, .od-chip, .od-zones, .od-foot, .od-engine-value,
-.od-stats b, .od-stats span, .od-section-title span, [data-testid="stTab"] p,
-[data-testid="stCaptionContainer"] {
-  font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, monospace !important; }
-[data-testid="stTab"] p { text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.78rem !important; }
-.od-group, .od-status, .od-page p { font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, monospace !important; }
-.od-page p { font-size: 0.82rem; }
-[data-testid="stSidebarNavLink"], [data-testid="stSidebarNavLink"][aria-current="page"] {
-  border-radius: 4px !important; }
-.od-status, .od-empty { border-radius: 4px; }
-[data-testid="stTopNavLink"] span:not([data-testid="stIconMaterial"]) { font-family: 'JetBrains Mono',
-  monospace !important;
-  text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.78rem; }
-.od-stats span { font-size: 0.66rem; letter-spacing: 0.04em; text-transform: uppercase; }
-.od-stats b { font-size: 1.15rem; }
-:root { --od-radius: 4px; }
-[data-testid="stTopNavLink"] { border-radius: 4px !important; }
-[data-testid="stTopNavLink"][aria-current="page"] *,
-  [data-testid="stTopNavLink"].active * { color: var(--od-bg) !important; }
-[data-testid="stBaseButton-primary"] { border-radius: 4px !important; color: var(--od-bg) !important;
-  text-transform: uppercase;
-  letter-spacing: 0.1em; font-family: 'JetBrains Mono', monospace !important; font-size: 0.82rem !important; }
-[data-testid="stBaseButton-primary"] * { color: var(--od-bg) !important; }
-[data-testid="stBaseButton-secondary"], [data-testid="stButtonGroup"], [data-testid="stButtonGroup"] button,
-[data-baseweb="textarea"], [data-baseweb="input"], [data-baseweb="select"] > div,
-  [data-testid="stFileUploaderDropzone"],
-[data-testid="stExpander"] details, [data-testid="stAlertContainer"], [data-testid="stDataFrame"], .od-chip {
-  border-radius: 4px !important; }
-.od-chip { text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.7rem; }
-.od-hero-title { font-weight: 600 !important; letter-spacing: -0.045em;
-  background: none; -webkit-text-fill-color: var(--od-ink); color: var(--od-ink); }
-.od-hero-title em { font-style: normal; color: var(--od-accent); -webkit-text-fill-color: var(--od-accent);
-  text-shadow: 0 0 24px var(--od-glow); }
-.od-pulse { border-radius: 1px; }
-/* Corner brackets on every panel */
+MONO = "'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace"
+
+# Bistro on top of BASE_CSS: flat paper, 1.5px crust borders with a pressed shadow, espresso segments, paprika for
+# the one action on a page, and the kitchen-ticket mono for titles, labels, numbers and buttons.
+BISTRO_CSS = """
+.stApp h1, .stApp h2, .stApp h3, .od-page h1, .od-group, .od-status, .od-eyebrow, .od-stats b, .od-engine-value,
+.od-hero-eyebrow, .od-chip, .od-zones, .od-foot, [data-testid="stTab"] p, [data-testid="stMetricValue"],
+[data-testid="stMetricLabel"] p, [data-testid="stSidebarNavLink"] span, [data-testid="stSidebarNavLink"] p,
+[data-testid="stExpander"] summary p,
+[data-testid="stButtonGroup"] button p, [data-testid="stBaseButton-primary"] p,
+[data-testid="stBaseButton-secondary"] p { font-family: MONO !important; }
+[data-testid="stSidebar"] { background: var(--od-side) !important; border-right: 1.5px solid var(--od-edge) !important;
+  -webkit-backdrop-filter: none; backdrop-filter: none; }
+[data-testid="stSidebarNavLink"] { flex-wrap: wrap; border: 1.5px solid transparent; border-radius: 14px !important;
+  padding: 0.55rem 0.8rem !important; }
+[data-testid="stSidebarNavLink"] > span:has([data-testid="stIconMaterial"]) { display: none; }
+[data-testid="stSidebarNavLink"] span { font-size: 0.875rem; color: var(--od-ink) !important; }
+[data-testid="stSidebarNavLink"]::after { flex-basis: 100%; font-family: 'Geist', system-ui, sans-serif;
+  font-size: 0.75rem; color: var(--od-muted); }
+[data-testid="stSidebarNavLink"][href$="/"]::after, [data-testid="stSidebarNavLink"][href$="/detect"]::after {
+  content: "DETECT"; }
+[data-testid="stSidebarNavLink"][href$="/red-team"]::after { content: "RED_TEAM"; }
+[data-testid="stSidebarNavLink"][href$="/guide"]::after { content: "GUIDE"; }
+[data-testid="stSidebarNavLink"]:hover { background: color-mix(in srgb, var(--od-edge) 45%, transparent) !important; }
+[data-testid="stSidebarNavLink"][aria-current="page"] { background: var(--od-panel) !important;
+  border-color: var(--od-edge); box-shadow: 0 2px 0 var(--od-edge) !important; }
+[data-testid="stSidebarNavLink"][aria-current="page"] span { font-weight: 700; }
+.st-key-od-look { margin-top: 1.4rem; padding: 0.75rem; border-radius: 14px; background: var(--od-panel);
+  border: 1.5px solid var(--od-edge); gap: 0.5rem; }
+.st-key-od-look [data-testid="stButtonGroup"] { width: 100%; }
+.st-key-od-look [data-testid="stButtonGroup"] button { flex: 1 1 0; padding: 4px 8px !important; min-width: 4.6rem; }
+.st-key-od-look .stElementContainer, .st-key-od-look [data-testid="stButtonGroup"] div:has(> button) {
+  width: 100% !important; }
+.stApp div:has(> textarea), .stApp div:has(> input) { background: var(--od-panel-strong) !important; }
+
+.od-page { border-bottom: 1.5px dashed var(--od-dash); padding-bottom: 1.25rem; }
+.od-page-eyebrow { display: block; font-family: MONO; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--od-accent); margin-bottom: 0.35rem; }
+.od-page h1 { font-size: 2.25rem !important; font-weight: 800 !important; letter-spacing: -0.04em; }
+.od-page p { font-size: 0.95rem; }
+.od-status { font-size: 0.75rem; border: 1.5px solid var(--od-edge); }
+.od-status i { background: var(--od-accent-2); box-shadow: none; }
+.od-group { font-weight: 700; letter-spacing: 0.14em; }
+.od-group em { font-style: normal; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--od-faint); }
+.od-step { margin-right: 0.15rem; }
+.od-step::after { content: " · "; color: var(--od-muted); }
+.od-empty { border: 1.5px dashed var(--od-dash); background: color-mix(in srgb, var(--od-panel) 60%, transparent); }
+.od-empty b { font-family: MONO; }
+
 [data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"]),
-.stVerticalBlock[class*="st-key-od-panel"], .od-glass { position: relative;
-  background-image: linear-gradient(var(--od-accent), var(--od-accent)), linear-gradient(var(--od-accent),
-  var(--od-accent)),
-    linear-gradient(var(--od-accent), var(--od-accent)), linear-gradient(var(--od-accent), var(--od-accent));
-  background-size: 14px 1.5px, 1.5px 14px, 14px 1.5px, 1.5px 14px;
-  background-position: top left, top left, bottom right, bottom right; background-repeat: no-repeat; }
-[data-testid="stButtonGroup"] button[aria-checked="true"] { background: var(--od-accent) !important;
-  box-shadow: 0 0 14px var(--od-glow); }
-[data-testid="stButtonGroup"] button[aria-checked="true"] * { color: var(--od-bg) !important; }
-[data-testid="stButtonGroup"] button p { font-family: 'JetBrains Mono', monospace !important;
-  font-size: 0.8rem !important;
-  text-transform: uppercase; letter-spacing: 0.06em; }
-[data-testid="stCheckbox"] label[data-selected="true"] > div:first-of-type > div {
-  background: var(--od-bg) !important; }
+.stVerticalBlock[class*="st-key-od-panel"], .od-glass {
+  border: 1.5px solid var(--od-edge) !important; -webkit-backdrop-filter: none; backdrop-filter: none; }
+[data-baseweb="textarea"], [data-baseweb="input"], [data-baseweb="select"] > div {
+  border: 1.5px solid var(--od-edge) !important; border-radius: 16px !important; }
+[data-testid="stFileUploaderDropzone"] { border: 2px dashed var(--od-dash) !important; }
+[data-testid="stBaseButton-primary"] { border-radius: 16px !important; font-weight: 800 !important;
+  color: var(--od-on-ink) !important; box-shadow: 0 4px 0 var(--od-press); min-height: 3rem; }
+[data-testid="stBaseButton-primary"] * { color: #FFFCF6 !important; font-weight: 800 !important; }
+[data-testid="stBaseButton-primary"]:hover { background: var(--od-accent-deep) !important;
+  box-shadow: 0 4px 0 var(--od-press); }
+[data-testid="stBaseButton-secondary"] { border: 1.5px solid var(--od-edge) !important; border-radius: 10px !important;
+  background: var(--od-panel) !important; }
+[data-testid="stButtonGroup"] { background: var(--od-track); border-radius: 999px; }
+[data-testid="stButtonGroup"] button[aria-checked="true"] { background: var(--od-on) !important; box-shadow: none; }
+[data-testid="stButtonGroup"] button[aria-checked="true"] * { color: var(--od-on-ink) !important; font-weight: 700; }
+[data-testid="stButtonGroup"] button p { font-size: 0.78rem !important; }
+[data-testid="stCheckbox"] label[data-selected="true"] > div:first-of-type { box-shadow: none; }
+[data-testid="stSlider"] [role="slider"] { background: var(--od-accent) !important;
+  box-shadow: 0 0 0 3px var(--od-panel) !important; }
+[data-testid="stTab"] p { font-size: 0.82rem !important; }
+[data-testid="stTab"] .react-aria-SelectionIndicator { height: 3px !important; box-shadow: none; }
+[data-testid="stExpander"] details { border: 1.5px solid var(--od-edge) !important; }
+[data-testid="stDataFrame"] { border: 1.5px solid var(--od-edge); }
+.od-hero-title { font-family: MONO; font-weight: 800 !important; letter-spacing: -0.045em; background: none;
+  -webkit-text-fill-color: var(--od-ink); color: var(--od-ink); }
+.od-pulse { background: var(--od-accent); }
+.od-verdict { border-width: 1.5px; box-shadow: 0 3px 0 var(--od-edge); -webkit-backdrop-filter: none;
+  backdrop-filter: none; }
+.od-verdict::before { display: none; }
 """
+for page, name in (("DETECT", "detect"), ("RED_TEAM", "red-team"), ("GUIDE", "guide")):
+    BISTRO_CSS = BISTRO_CSS.replace(f'"{page}"', f'"{PAGE_FLAVOUR[name]}"')
+BISTRO_CSS = BISTRO_CSS.replace("MONO", MONO)
 
 
 def css() -> str:
     look, current = current_look(), mode()
     values = dict(tokens())
     variables = "".join(f"--od-{name}: {value};" for name, value in values.items())
-    radius = "22px" if look == "glass" else "4px"
     style = BASE_CSS.replace("FONTS", FONTS).replace("MODE", current)
-    if look == "instrument":
-        style += INSTRUMENT_CSS
-    return f":root {{{variables} --od-radius: {radius};}}" + style
+    if look == "bistro":
+        style += BISTRO_CSS
+    return f":root {{{variables} --od-radius: 22px;}}" + style

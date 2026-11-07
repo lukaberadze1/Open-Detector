@@ -37,6 +37,11 @@ TONES = {
              "human": "#199E70", "review": "#C98500", "ai": "#E5484D"},
 }
 
+# Bistro's verdict colours (basil, mustard, tomato), on top of TONES. Review and AI keep their own underline styles
+# (dotted, solid), so the three stay apart without colour. Dark mode keeps TONES' checked ones.
+BISTRO_TONES = {"light": {"red": "#B42318", "orange": "#9A5B00", "green": "#3F7A3A", "human": "#3F7A3A",
+                          "review": "#E9B949", "ai": "#B42318"}}
+
 CSS = """
 .od-verdict { position: relative; overflow: clip; border-radius: var(--od-radius, 22px);
   padding: 1.5rem 1.6rem 1.25rem;
@@ -102,6 +107,64 @@ CSS = """
 .od-pickable .od-hl { cursor: pointer; }
 .od-hl.od-picked { box-shadow: 0 0 0 2px var(--od-accent); background-color: color-mix(in srgb, var(--od-accent) 16%,
   transparent); }
+.od-cloche { flex: 0 0 auto; display: block; max-width: 100%; height: auto; }
+.od-critic { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 1.4rem; }
+.od-critic > div { flex: 1 1 17rem; min-width: 0; }
+.od-says { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem 0.9rem; margin: 0.35rem 0 0.45rem; }
+.od-says .od-label { font-family: var(--od-mono); font-size: clamp(1.7rem, 2.6vw, 2.15rem); font-weight: 800;
+  letter-spacing: -0.03em; margin: 0; }
+.od-says span { font-family: var(--od-mono); font-size: 1.1rem; color: var(--od-muted); }
+.od-band { position: relative; display: flex; gap: 4px; height: 12px; margin-top: 0.9rem; }
+.od-band i { border-radius: 2px; }
+.od-band i:first-child { border-radius: 6px 2px 2px 6px; }
+.od-band i:last-of-type { border-radius: 2px 6px 6px 2px; flex: 1 1 auto; }
+.od-band i.human { background: color-mix(in srgb, var(--od-human) 26%, var(--od-panel)); }
+.od-band i.review { background: color-mix(in srgb, var(--od-review) 45%, var(--od-panel)); }
+.od-band i.ai { background: color-mix(in srgb, var(--od-ai) 28%, var(--od-panel)); }
+.od-band b { position: absolute; top: -6px; width: 4px; height: 24px; margin-left: -2px; border-radius: 2px;
+  background: var(--od-ink); }
+.od-band-ends { display: flex; justify-content: space-between; gap: 0.5rem; margin-top: 0.4rem;
+  font-family: var(--od-mono); font-size: 0.69rem; color: var(--od-muted); }
+.od-bill { height: 100%; box-sizing: border-box; padding: 1.25rem 1.4rem; border-radius: 6px 6px 20px 20px;
+  background: var(--od-panel) radial-gradient(circle at 8px -2px, var(--od-bg) 6px, transparent 6.5px) 0 0 / 16px 12px
+  repeat-x; border: 1.5px solid var(--od-edge); font-family: var(--od-mono); font-size: 0.82rem; color: var(--od-ink);
+  display: flex; flex-direction: column; gap: 0.55rem; }
+.od-bill .od-eyebrow { margin-top: 0.25rem; }
+.od-line { display: flex; align-items: baseline; gap: 0.5rem; }
+.od-line i { flex: 1 1 auto; border-bottom: 2px dotted var(--od-dash); transform: translateY(-3px); }
+.od-line b { font-weight: 700; }
+.od-line.total { font-size: 0.95rem; font-weight: 800; }
+.od-line.total i { border: 0; }
+.od-rule { border-top: 1.5px dashed var(--od-dash); margin: 0.25rem 0; }
+.od-bill small { font-size: 0.69rem; color: var(--od-muted); }
+.od-hygiene { height: 100%; box-sizing: border-box; padding: 1.25rem; border-radius: 20px; background: var(--od-panel);
+  border: 1.5px solid var(--od-edge); display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.82rem;
+  line-height: 1.5; }
+.od-ticket { padding: 1.4rem 1.5rem; border-radius: 6px 6px 22px 22px; border: 1.5px solid var(--od-edge);
+  box-shadow: 0 3px 0 var(--od-edge);
+  background: var(--od-panel) radial-gradient(circle at 8px -2px, var(--od-bg) 6px, transparent 6.5px) 0 0 / 16px 12px
+  repeat-x; display: flex; flex-direction: column; gap: 0.85rem; color: var(--od-ink); }
+.od-ticket-head { display: flex; align-items: center; gap: 1rem; }
+.od-ticket-head > div { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+.od-ticket-head .od-eyebrow { color: var(--od-accent); }
+.od-ticket-head b { font-family: var(--od-mono); font-size: 1.2rem; font-weight: 800; overflow-wrap: anywhere; }
+.od-ticket-head span { font-size: 0.82rem; color: var(--od-muted); }
+.od-ticket ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.od-ticket li { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; padding: 8px 10px;
+  border-radius: 12px; }
+.od-ticket li.now { background: var(--od-soft); }
+.od-ticket li > i { font-style: normal; font-family: var(--od-mono); font-size: 0.875rem; font-weight: 800;
+  line-height: 20px; color: var(--od-dash); }
+.od-ticket li.done > i { color: var(--od-accent-2); }
+.od-ticket li.now > i { color: var(--od-accent); }
+.od-ticket li b { display: block; font-family: var(--od-mono); font-size: 0.875rem; line-height: 20px;
+  font-weight: 600; }
+.od-ticket li.now b { font-weight: 800; }
+.od-ticket li.todo b { color: var(--od-muted); }
+.od-ticket li span { display: block; font-size: 0.75rem; color: var(--od-muted); }
+.od-ticket-bar { height: 8px; border-radius: 8px; background: var(--od-track); overflow: hidden; }
+.od-ticket-bar i { display: block; height: 100%; border-radius: 8px; background: var(--od-accent); }
+.od-ticket small { font-family: var(--od-mono); font-size: 0.75rem; color: var(--od-muted); }
 @keyframes od-flash { 0%, 35% { box-shadow: 0 0 0 3px var(--od-accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
 
 .od-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 1.2rem; font-size: 0.86rem;
@@ -166,11 +229,21 @@ def theme_type() -> str:
     return "dark" if getattr(theme, "type", None) == "dark" else "light"
 
 
+def tones() -> dict[str, str]:
+    """The verdict tones for the active mode and look: TONES, with Bistro's own in its light mode."""
+    from . import style
+
+    merged = dict(TONES[theme_type()])
+    if style.bistro():
+        merged.update(BISTRO_TONES.get(theme_type(), {}))
+    return merged
+
+
 def look_tones() -> dict[str, str]:
     """The verdict tones for the active mode, with the active look's surfaces (ui/style.py) on top."""
     from . import style
 
-    merged = dict(TONES[theme_type()])
+    merged = tones()
     look = style.tokens()
     merged.update({"surface": look["panel-solid"], "ink": look["ink"], "muted": look["muted"], "track": look["track"],
                    "accent": look["accent"]})
@@ -182,9 +255,74 @@ def apply_theme() -> None:
     highlights) in the verdict tones."""
     from . import style
 
-    variables = "".join(f"--od-{name}: {value};" for name, value in TONES[theme_type()].items()
+    variables = "".join(f"--od-{name}: {value};" for name, value in tones().items()
                         if name not in ("ink", "muted", "track", "accent", "surface"))
-    st.html(f"<style>{style.css()}:root {{{variables}--od-surface: var(--od-panel-solid);}}{CSS}</style>")
+    st.html(f"<style>{style.css()}:root {{{variables}--od-surface: var(--od-panel-solid); --od-mono: {style.MONO};}}"
+            f"{CSS}</style>")
+
+
+# Cloche, the critic: a serving dome with a moustache and a monocle, from the Bistro identity. His face is the
+# verdict, so he has a job: pleased for likely human, monocle up for needs review, shocked for likely AI, and
+# steam while the text is being tasted. The colours are the look's (`CLOCHE_TONES`).
+MOODS = {"likely_human": "happy", "needs_review": "skeptical", "likely_ai": "shocked"}
+CLOCHE_LABELS = {"happy": "Cloche, pleased: likely human", "skeptical": "Cloche, raising a monocle: needs review",
+                 "shocked": "Cloche, shocked: likely AI", "tasting": "Cloche, tasting"}
+CLOCHE_TONES = {
+    "bistro": {"ink": "#2A1F17", "dome": "#F3E7D3", "plate": "#FFFCF6", "shine": "#FFFBF3", "accent": "#C2410C",
+               "blush": "rgba(194,65,12,0.20)", "sweat": "#9ED3F0"},
+    "glass": {"ink": "#1E2A4A", "dome": "rgba(255,255,255,0.75)", "plate": "rgba(255,255,255,0.55)",
+              "shine": "#FFFFFF", "accent": "#5B57F5", "blush": "rgba(244,114,182,0.35)", "sweat": "#A5D8FF"},
+}
+
+
+def cloche_svg(mood: str = "skeptical", tone: str = "bistro") -> str:
+    """Cloche as SVG markup, 120 units square (the logo files are drawn from this too)."""
+    c = CLOCHE_TONES.get(tone, CLOCHE_TONES["bistro"])
+    ink, line = c["ink"], 'fill="none" stroke-linecap="round"'
+    parts = []
+    if mood == "tasting":
+        parts += [f'<path d="M{x} {y} q-4 -5 0 -10 q4 -5 0 -10" {line} stroke="{c["accent"]}" stroke-width="2.6"/>'
+                  for x, y in ((50, 26), (60, 22), (70, 26))]
+    parts += [f'<ellipse cx="60" cy="95" rx="54" ry="8" fill="{c["plate"]}" stroke="{ink}" stroke-width="3"/>',
+              f'<path d="M13 92 A47 47 0 0 1 107 92 Z" fill="{c["dome"]}" stroke="{ink}" stroke-width="3" '
+              'stroke-linejoin="round"/>',
+              f'<path d="M24 78 A37 37 0 0 1 44 52" {line} stroke="{c["shine"]}" stroke-width="4"/>',
+              f'<circle cx="60" cy="40" r="6.5" fill="{c["accent"]}" stroke="{ink}" stroke-width="3"/>',
+              f'<circle cx="34" cy="80" r="5" fill="{c["blush"]}"/><circle cx="86" cy="80" r="5" fill="{c["blush"]}"/>']
+    if mood == "happy":
+        parts += [f'<path d="{d}" {line} stroke="{ink}" stroke-width="{w}"/>' for d, w in
+                  (("M38 59 q8 -5 16 0", 3), ("M66 59 q8 -5 16 0", 3), ("M40 70 q6 -7 12 0", 3.2),
+                   ("M68 70 q6 -7 12 0", 3.2))]
+    elif mood == "shocked":
+        parts += [f'<path d="M37 56 l16 -5" {line} stroke="{ink}" stroke-width="3"/>',
+                  f'<path d="M67 51 l16 5" {line} stroke="{ink}" stroke-width="3"/>',
+                  f'<circle cx="46" cy="67" r="6.5" fill="#FFFFFF" stroke="{ink}" stroke-width="2.6"/>',
+                  f'<circle cx="74" cy="67" r="6.5" fill="#FFFFFF" stroke="{ink}" stroke-width="2.6"/>',
+                  f'<circle cx="46" cy="68" r="2.6" fill="{ink}"/><circle cx="74" cy="68" r="2.6" fill="{ink}"/>',
+                  f'<ellipse cx="60" cy="87" rx="3.4" ry="2.6" fill="{ink}"/>',
+                  f'<path d="M98 50 q4 6 0 9 q-4 -3 0 -9 z" fill="{c["sweat"]}" stroke="{ink}" stroke-width="1.6"/>']
+    elif mood == "tasting":
+        parts += [f'<path d="M38 58 q8 -3 16 0" {line} stroke="{ink}" stroke-width="3"/>',
+                  f'<path d="M66 58 q8 -3 16 0" {line} stroke="{ink}" stroke-width="3"/>',
+                  f'<circle cx="47" cy="65" r="3.6" fill="{ink}"/><circle cx="75" cy="65" r="3.6" fill="{ink}"/>']
+    else:  # skeptical: one eyebrow up, the monocle and its chain
+        parts += [f'<path d="M38 61 l15 1" {line} stroke="{ink}" stroke-width="3"/>',
+                  f'<path d="M65 54 q9 -7 18 -2" {line} stroke="{ink}" stroke-width="3"/>',
+                  f'<circle cx="46" cy="69" r="3.6" fill="{ink}"/><circle cx="74" cy="68" r="3.6" fill="{ink}"/>',
+                  f'<circle cx="74" cy="68" r="9.5" fill="none" stroke="{ink}" stroke-width="2.6"/>',
+                  f'<path d="M83 71 q7 9 1 20" {line} stroke="{ink}" stroke-width="1.8" stroke-dasharray="2 3"/>']
+    parts.append(f'<path d="M60 80 c-4 -6 -12 -6 -16 -1 c-2 3 -6 3 -8 0 c2 7 12 9 18 5 c3 -2 5 -3 6 -4 c1 1 3 2 6 4 '
+                 f'c6 4 16 2 18 -5 c-2 3 -6 3 -8 0 c-4 -5 -12 -5 -16 1 z" fill="{ink}"/>')
+    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -4 120 112">{"".join(parts)}</svg>'
+
+
+def cloche(mood: str = "skeptical", size: int = 150, tone: str | None = None) -> str:
+    """Cloche as an <img> (st.html strips inline SVG), in the active look's colours."""
+    from . import style
+
+    data = base64.b64encode(cloche_svg(mood, tone or style.current_look()).encode()).decode()
+    return (f'<img class="od-cloche" src="data:image/svg+xml;base64,{data}" width="{size}" height="{size}" '
+            f'alt="{html.escape(CLOCHE_LABELS.get(mood, "Cloche"))}">')
 
 
 def _polar(cx: float, cy: float, r: float, p: float) -> tuple[float, float]:
@@ -199,10 +337,9 @@ def _arc(cx: float, cy: float, r: float, p0: float, p1: float) -> str:
     return f"M{x0:.2f} {y0:.2f} A{r} {r} 0 {large} 1 {x1:.2f} {y1:.2f}"
 
 
-def dial(probability: float, review: float, ai: float, verdict: str, instrument: bool) -> str:
-    """The AI likelihood as a dial, as an <img>: the three bands around the rim and the score on it.
-    Glass draws a thick lit ring; Instrument a tick-marked scale with a needle. st.html strips inline
-    SVG, so the dial goes in as an image with the active look's colours written in."""
+def dial(probability: float, review: float, ai: float, verdict: str) -> str:
+    """Glass's AI likelihood dial, as an <img>: the three bands around the rim and a lit ring to the score.
+    st.html strips inline SVG, so the dial goes in as an image with the active look's colours written in."""
     from . import style
 
     c = {**look_tones(), **{k: v for k, v in style.tokens().items() if k in ("accent-2", "panel-solid", "bg")}}
@@ -213,38 +350,18 @@ def dial(probability: float, review: float, ai: float, verdict: str, instrument:
     zones = (("human", 0, review), ("review", review, ai), ("ai", ai, 1))
     sans = "Geist, -apple-system, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif"
     mono = "'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace"
-    parts = []
-    if instrument:
-        for name, start, end in zones:
-            parts.append(f'<path d="{_arc(cx, cy, r, start + gap / 2, end - gap / 2)}" stroke="{c[name]}" '
-                         'stroke-width="3" fill="none"/>')
-        for i in range(41):
-            share, major = i / 40, i % 10 == 0
-            (x0, y0), (x1, y1) = _polar(cx, cy, r - 7, share), _polar(cx, cy, r - (17 if major else 11), share)
-            parts.append(f'<line x1="{x0:.2f}" y1="{y0:.2f}" x2="{x1:.2f}" y2="{y1:.2f}" stroke="{c["muted"]}" '
-                         f'stroke-width="{1.4 if major else 0.8}" opacity="{0.9 if major else 0.55}"/>')
-        for cut in (review, ai):
-            (x0, y0), (x1, y1) = _polar(cx, cy, r + 4, cut), _polar(cx, cy, r - 20, cut)
-            parts.append(f'<line x1="{x0:.2f}" y1="{y0:.2f}" x2="{x1:.2f}" y2="{y1:.2f}" stroke="{c["ink"]}" '
-                         'stroke-width="1.2" stroke-dasharray="2 2"/>')
-        tip, tail = _polar(cx, cy, r - 2, p), _polar(cx, cy, 14, (p + 0.5) % 1)
-        parts.append(f'<line x1="{tail[0]:.2f}" y1="{tail[1]:.2f}" x2="{tip[0]:.2f}" y2="{tip[1]:.2f}" stroke="{mark}" '
-                     f'stroke-width="2.2" stroke-linecap="round" filter="url(#glow)"/>'
-                     f'<circle cx="{cx}" cy="{cy}" r="5" fill="{c["bg"]}" stroke="{mark}" stroke-width="2"/>')
-        number, number_y, font = f"{probability * 100:.1f}", cy + 68, mono
-    else:
-        parts.append(f'<path d="{_arc(cx, cy, r, 0, 1)}" stroke="{c["track"]}" stroke-width="14" fill="none" '
-                     'stroke-linecap="round"/>')
-        for name, start, end in zones:
-            parts.append(f'<path d="{_arc(cx, cy, r + 13, start + gap / 2, end - gap / 2)}" stroke="{c[name]}" '
-                         'stroke-width="3" fill="none" stroke-linecap="round" opacity="0.8"/>')
-        if p > 0.004:
-            parts.append(f'<path d="{_arc(cx, cy, r, 0, p)}" stroke="url(#fill)" stroke-width="14" fill="none" '
-                         'stroke-linecap="round" filter="url(#glow)"/>')
-        kx, ky = _polar(cx, cy, r, p)
-        parts.append(f'<circle cx="{kx:.2f}" cy="{ky:.2f}" r="9" fill="{c["panel-solid"]}" stroke="{mark}" '
-                     'stroke-width="3.5"/>')
-        number, number_y, font = f"{probability * 100:.0f}", cy + 14, sans
+    parts = [f'<path d="{_arc(cx, cy, r, 0, 1)}" stroke="{c["track"]}" stroke-width="14" fill="none" '
+             'stroke-linecap="round"/>']
+    for name, start, end in zones:
+        parts.append(f'<path d="{_arc(cx, cy, r + 13, start + gap / 2, end - gap / 2)}" stroke="{c[name]}" '
+                     'stroke-width="3" fill="none" stroke-linecap="round" opacity="0.8"/>')
+    if p > 0.004:
+        parts.append(f'<path d="{_arc(cx, cy, r, 0, p)}" stroke="url(#fill)" stroke-width="14" fill="none" '
+                     'stroke-linecap="round" filter="url(#glow)"/>')
+    kx, ky = _polar(cx, cy, r, p)
+    parts.append(f'<circle cx="{kx:.2f}" cy="{ky:.2f}" r="9" fill="{c["panel-solid"]}" stroke="{mark}" '
+                 'stroke-width="3.5"/>')
+    number, number_y = f"{probability * 100:.0f}", cy + 14
     for cut in (review, ai):
         lx, ly = _polar(cx, cy, r + 27, cut)
         parts.append(f'<text x="{lx:.1f}" y="{ly + 3:.1f}" text-anchor="middle" font-family="{mono}" font-size="9.5" '
@@ -255,12 +372,10 @@ def dial(probability: float, review: float, ai: float, verdict: str, instrument:
            '<filter id="glow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2.5" '
            'result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>'
            f'{"".join(parts)}'
-           f'<text x="{cx}" y="{number_y}" text-anchor="middle" font-family="{html.escape(font)}" fill="{c["ink"]}">'
-           f'<tspan font-size="{30 if instrument else 46}" font-weight="700" letter-spacing="-1.5">{number}</tspan>'
-           f'<tspan font-size="{14 if instrument else 18}" font-weight="600" fill="{c["muted"]}" dx="2">%</tspan>'
-           '</text>'
-           f'<text x="{cx}" y="{number_y + (16 if instrument else 20)}" text-anchor="middle" font-family="{mono}" '
-           'font-size="9" '
+           f'<text x="{cx}" y="{number_y}" text-anchor="middle" font-family="{html.escape(sans)}" fill="{c["ink"]}">'
+           f'<tspan font-size="46" font-weight="700" letter-spacing="-1.5">{number}</tspan>'
+           f'<tspan font-size="18" font-weight="600" fill="{c["muted"]}" dx="2">%</tspan></text>'
+           f'<text x="{cx}" y="{number_y + 20}" text-anchor="middle" font-family="{mono}" font-size="9" '
            f'font-weight="600" letter-spacing="1.6" fill="{c["muted"]}">AI LIKELIHOOD</text></svg>')
     data = base64.b64encode(svg.encode()).decode()
     label = f"AI likelihood {probability:.0%}; needs review above {review:.0%}, likely AI above {ai:.0%}"
@@ -304,6 +419,24 @@ def priorities_chart(points: dict[str, int], most: int) -> str:
     return f'<img class="od-priorities" src="data:image/svg+xml;base64,{data}" alt="Priorities: {label}">'
 
 
+def order_ticket(title: str, timing: str, stations: list[tuple[str, str, str]], done: float, foot: str) -> None:
+    """A running batch as an order ticket: Cloche tasting, the order, one line per station of the pipeline
+    (state "done", "now" or "todo", title, note), how far it has got, and a line at the foot."""
+    marks = {"done": "\u2713", "now": "\u25cf", "todo": "\u25cb"}
+    rows = "".join(f'<li class="{state}"><i aria-hidden="true">{marks[state]}</i><div><b>{html.escape(name)}</b>'
+                   f'<span>{html.escape(note)}</span></div></li>' for state, name, note in stations)
+    st.html(f"""
+<div class="od-ticket" role="status">
+  <div class="od-ticket-head">{cloche("tasting", 92)}<div><div class="od-eyebrow">Order ticket</div>
+    <b>{html.escape(title)}</b><span>{html.escape(timing)}</span></div></div>
+  <div class="od-rule"></div>
+  <ol>{rows}</ol>
+  <div class="od-ticket-bar" role="progressbar" aria-valuenow="{done * 100:.0f}" aria-valuemin="0"
+    aria-valuemax="100"><i style="width: {min(max(done, 0), 1) * 100:.1f}%"></i></div>
+  <small>{html.escape(foot)}</small>
+</div>""")
+
+
 def verdict_badge(verdict: str | None) -> None:
     label, color, icon = VERDICTS.get(verdict or "", ("Not scored", "gray", ":material/remove:"))
     st.badge(label, color=color, icon=icon)
@@ -324,12 +457,33 @@ def verdict_card(verdict: str, probability: float, thresholds: dict[str, float],
         }[verdict]
     from . import style
 
+    if style.bistro():  # Cloche gives the verdict with his face; the band shows where the score sits
+        p = min(max(probability, 0.0), 1.0)
+        st.html(f"""
+<div class="od-verdict" style="--tone: var(--od-{color})">
+  <div class="od-critic">
+    {cloche(MOODS[verdict], 150)}
+    <div>
+      <div class="od-eyebrow">The critic says</div>
+      <div class="od-says"><div class="od-label">{label}</div><span>{probability:.0%} AI likelihood</span></div>
+      <div class="od-meaning">{meaning}</div>
+      <div class="od-band" role="img" aria-label="AI likelihood {probability:.0%} against the cut-offs at
+        {review:.0%} and {ai:.0%}"><i class="human" style="flex: 0 0 {review * 100:.1f}%"></i>
+        <i class="review" style="flex: 0 0 calc({(ai - review) * 100:.1f}% - 8px)"></i><i class="ai"></i>
+        <b style="left: {p * 100:.1f}%"></b></div>
+      <div class="od-band-ends"><span>Likely human &lt; {review:.0%}</span><span>Needs review</span>
+        <span>Likely AI &gt; {ai:.0%}</span></div>
+    </div>
+  </div>
+  <div class="od-foot">{html.escape(foot)}</div>
+</div>""")
+        return
     zones = (("likely_human", "human", f"Likely human < {review:.0%}"),
              ("needs_review", "review", f"Needs review {review:.0%}\u2013{ai:.0%}"),
              ("likely_ai", "ai", f"Likely AI > {ai:.0%}"))
     chips = "".join(f'<span class="{"on" if band == verdict else ""}"><i style="background: var(--od-{tone})"></i>'
                     f'{text}</span>' for band, tone, text in zones)
-    gauge = dial(probability, review, ai, verdict, instrument=style.current_look() == "instrument")
+    gauge = dial(probability, review, ai, verdict)
     st.html(f"""
 <div class="od-verdict" style="--tone: var(--od-{color}); --mark: var(--od-{BANDS[verdict]})">
   <div class="od-top">
@@ -356,8 +510,26 @@ class Reading:
     share: float | None = None
 
 
-def engine_panel(readings: list[Reading], stats: list[tuple[str, str]]) -> None:
-    """Each engine's own reading as a labelled meter, with a row of counts underneath."""
+def engine_panel(readings: list[Reading], stats: list[tuple[str, str]],
+                 total: tuple[str, str, str] | None = None) -> None:
+    """Each engine's own reading as a labelled meter, with a row of counts underneath. In Bistro it prints
+    as the critic's bill instead: each reading and count on a dotted line, then `total` (the AI likelihood,
+    the tone to print it in, and a note under it)."""
+    from . import style
+
+    if style.bistro():
+        lines = [f'<div class="od-line"><span>{html.escape(r.name)}</span><i></i><b>{html.escape(r.value)}</b></div>'
+                 for r in readings]
+        lines += [f'<div class="od-line"><span>{html.escape(name.capitalize())}</span><i></i>'
+                  f'<b>{html.escape(value)}</b></div>' for value, name in stats]
+        end = ""
+        if total:
+            value, tone, note = total
+            end = (f'<div class="od-rule"></div><div class="od-line total"><span>TOTAL · AI likelihood</span><i></i>'
+                   f'<b style="color: var(--od-{tone})">{html.escape(value)}</b></div>'
+                   f'<small>{html.escape(note)}</small>')
+        st.html(f'<div class="od-bill"><div class="od-eyebrow">The bill</div>{"".join(lines)}{end}</div>')
+        return
     rows = []
     for reading in readings:
         meter = (f'<div class="od-meter"><i style="width:{min(max(reading.share, 0), 1) * 100:.1f}%"></i></div>'
@@ -556,7 +728,7 @@ def _dress(chart: alt.LayerChart) -> alt.LayerChart:
     """Lets the panel behind a chart show through, in the active look's type."""
     from . import style
 
-    font = ("'JetBrains Mono', 'SF Mono', Menlo, monospace" if style.current_look() == "instrument"
+    font = ("'JetBrains Mono', 'SF Mono', Menlo, monospace" if style.bistro()
             else "Geist, Inter, -apple-system, system-ui, sans-serif")
     tones = look_tones()
     return chart.configure(background="transparent", font=font).configure_view(stroke=None).configure_axis(
