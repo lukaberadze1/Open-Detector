@@ -334,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
                         changed, history = revise_anchored(
                             blocks, originals, chunk_scorer(detector), CachedScorer(detector), ask, clean, shapes,
                             args.rounds, prompt=REVISE_KEEPING, facts=True, candidates=ANCHORED_CANDIDATES,
-                            fits=fits, stats=outcomes, mask=args.mask_facts)
+                            fits=fits, stats=outcomes, mask=args.mask_facts, trace=trace)
                         text = "\n\n".join(changed.get(key, part) for key, part in blocks.items())
                         row[method] = {"history": history, "changed": len(changed), "words": count_words(text),
                                        "outcomes": dict(outcomes), "text": text,

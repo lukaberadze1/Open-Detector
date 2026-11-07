@@ -1096,3 +1096,34 @@ def test_revise_anchored_keeps_the_originals_names_however_many_rounds():
                                        human, ask, str.strip, rounds=3, candidates=2, stats=stats)
     assert changed == {} and history[-1] == 0.9, "a lower score bought by losing Coimbra isn't kept"
     assert stats["facts:drift"] >= 1, (stats, "keeps_facts alone passes it; the original still says Coimbra")
+
+
+def test_revise_anchored_traces_each_try_and_why_it_was_kept_or_dropped(tmp_path):
+    from eval.redteam_batch import revise_anchored
+    from eval.trace import Trace
+
+    original = ("My cousin Marta and I drove from Porto to Lisbon in August 2019, and the car broke down twice on "
+                "the way, so we spent a night in Coimbra waiting for a mechanic.")
+    tidy = ("Marta and I undertook a memorable road trip from Porto to Lisbon in August 2019, a journey that "
+            "featured two breakdowns and an unplanned overnight stay in Coimbra.")
+    good = ("My cousin Marta and I drove from Porto to Lisbon in August 2019; the car broke down twice, so we "
+            "slept a night in Coimbra and waited for a mechanic.")
+    lossy = "We drove south one summer and the car broke down twice, so we waited for a mechanic somewhere."
+
+    def ask(prompt, pending):
+        return json.dumps({"blocks": [{"id": f"B{n}", "text": good if job.get("anchor") else lossy}
+                                      for n, job in enumerate(pending, 1)]})
+
+    def human(text):
+        return 0.02 if "slept" in text else 0.9
+
+    trace = Trace(tmp_path / "trace.jsonl", run="r1")
+    changed, history = revise_anchored({"a": tidy}, {"a": original}, lambda chunks: [human(c) for c in chunks],
+                                       human, ask, str.strip, rounds=2, candidates=2, trace=trace)
+    assert changed == {"a": good} and history == [0.9, 0.02]
+    events = [json.loads(line) for line in (tmp_path / "trace.jsonl").read_text().splitlines()]
+    tries = [event for event in events if event["kind"] == "candidate"]
+    assert {(event["status"], event.get("reason")) for event in tries} == {("dropped", "facts"), ("scored", None)}
+    assert any(event["kind"] == "passage" and event["kept"] for event in events)
+    stages = [event["stage"] for event in events if event["kind"] == "version"]
+    assert stages == ["revise_start", "revise_round"] and all(event["run"] == "r1" for event in events)

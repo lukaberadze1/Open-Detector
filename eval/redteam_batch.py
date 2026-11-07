@@ -1054,7 +1054,7 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
                     prompt: str = REVISE_KEEPING, facts: bool = True, candidates: int = ANCHORED_CANDIDATES,
                     progress: Callable[[dict], None] | None = None, stats: Counter | None = None,
                     mask: bool = False, saved: Callable[[dict[str, str], list[float | None]], None] | None = None,
-                    parallel: int = 1) -> tuple[dict[str, str], list[float | None]]:
+                    parallel: int = 1, trace=None) -> tuple[dict[str, str], list[float | None]]:
     """A document's rewritten blocks revised back toward the writer's originals where the detector reads them as AI.
 
     revise_blocks capped a round at a few passages, chosen by sentence scores, and wrote every try in a borrowed
@@ -1069,7 +1069,8 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
     original) or `fits` (style_guard).
     The whole document is scored with `score` after each round, and a round that raised it is undone. Requests go
     `REVISE_GROUP` passages at a time, `parallel` at once. `progress`, `stats` and `saved` are as in revise_blocks,
-    `stats` adding `copied`. Gives the changed blocks' texts by key, and the AI likelihood after each round, the first
+    `stats` adding `copied`, and `trace` (eval/trace.py) records each round, passage and try with why it was kept
+    or dropped. Gives the changed blocks' texts by key, and the AI likelihood after each round, the first
     before any."""
     tell = progress or (lambda _: None)
     stats = Counter() if stats is None else stats
@@ -1110,7 +1111,13 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
     if best is None:
         return {}, [None]
     history = [best]
+    if trace:
+        trace.version("revise_start", whole(shown), score=best, loop="anchored")
     anchored_tries = (candidates + 1) // 2
+
+    def note(name: str, round_: int, new: str, **fields) -> None:
+        if trace:
+            trace.event("candidate", round=round_, passage=name, before=shown[name], text=new, **fields)
     for round_ in range(1, rounds + 1):
         if best < target:
             break
@@ -1167,6 +1174,7 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
                 new = normalize(text)[0]
                 if not new or new == shown[name]:
                     stats["unchanged"] += 1
+                    note(name, round_, new, status="dropped", reason="unchanged")
                     continue
                 original = originals.get(key, "")
                 problem = meaning_problem(shown[name], new, whole(shown) + "\n\n" + original) if facts else None
@@ -1177,24 +1185,33 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
                 if problem:
                     stats["facts"] += 1
                     stats[f"facts:{problem}"] += 1
+                    note(name, round_, new, status="dropped", reason=problem)
                     continue
                 trial = {**shown, name: new}
                 if originals.get(key, "").strip() and copied(originals[key], block_text(trial, key)):
                     stats["copied"] += 1
+                    note(name, round_, new, status="dropped", reason="copied")
                     continue
                 if fits and not fits(whole(trial)):
                     stats["style"] += 1
+                    note(name, round_, new, status="dropped", reason="style")
                     continue
                 passing.append(trial)
             stats["scored"] += len(passing)
             found = score_chunks([chunk(trial, span) for trial in passing]) if passing else []
             kept = None
             for trial, reading in zip(passing, found, strict=True):
+                note(name, round_, trial[name], status="scored", score=reading, passage_score=current,
+                     closeness=closeness(trial, key))
                 if reading is None:
                     continue
                 rank = (round(max(reading, good_enough), 2), -closeness(trial, key), stock_phrases(trial[name]))
                 if kept is None or rank < kept[0]:
                     kept = (rank, reading, trial[name])
+            if trace:
+                trace.event("passage", round=round_, passage=name, local_before=current,
+                            kept=bool(kept and current is not None and kept[1] < current),
+                            lowest=kept[1] if kept else None, best_before=best)
             if kept and current is not None and kept[1] < current:
                 shown[name] = kept[2]
                 stats["kept"] += 1
@@ -1211,6 +1228,9 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
         history.append(best)
         if saved:
             saved(changed_blocks(), list(history))
+        if trace:
+            trace.version("revise_round", whole(shown), round=round_, score=best, undone=shown is before,
+                          passages=[[name, round(local[name], 4)] for name in hot], failed=len(failures))
         if _stalled(history):
             break
     return changed_blocks(), history

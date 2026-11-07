@@ -88,7 +88,9 @@ def setup_line(model: str, name: str, rows: list[dict], outside: dict[str, float
     facts = [revised(row)["facts"] for row in rows if revised(row).get("facts") is not None]
     passes = sum(map(passed, rows))
     low, high = wilson_interval(passes, len(rows))
-    reached = [number for row in rows if (number := rounds_to_line(row)) is not None]
+    rounds = [rounds_to_line(row) for row in rows]  # one round is the goal: each one can wear the meaning down
+    reached = [number for number in rounds if number is not None]
+    one_round = sum(number is not None and number <= 1 for number in rounds) / len(rows)
     before = [outside[row["draft"]] for row in rows if row.get("draft") in outside]
     after = [outside[revised(row)["text"]] for row in rows if revised(row)["text"] in outside]
     requests = [row.get("requests", 0) + row.get("revise_requests", 0) + row.get("attack_requests", 0) for row in rows]
@@ -96,7 +98,7 @@ def setup_line(model: str, name: str, rows: list[dict], outside: dict[str, float
             f"{100 * median(ends):.0f} | {sum(end <= HUMAN_CUTOFF for end in ends)} | "
             f"{passes} ({low:.0%} to {high:.0%}) | {sum(value <= HUMAN_CUTOFF for value in means.values())} | "
             f"{mean(facts) if facts else 0:.0f} | "
-            f"{median(reached) if reached else '-'} | "
+            f"{median(reached) if reached else '-'} | {one_round:.0%} | "
             f"{f'{100 * mean(before):.0f} > {100 * mean(after):.0f}' if before and after else '-'} | "
             f"{mean(requests):.0f} | {mean(row.get('seconds', 0) for row in rows) / 60:.1f} |")
 
@@ -160,9 +162,10 @@ def scoreboard(rows: list[dict], outside: dict[str, float], math: Path | None = 
              "numbers kept. Independent is a second detector the runs never saw, first draft > final. Compare setups "
              "only within a model.", "",
              "| Model | Setup | Runs | Docs | Draft % | Median end % | At or under the line | Pass "
-             "| Docs under on average | Facts % | Rounds to the line | Independent % | Requests a run "
+             "| Docs under on average | Facts % | Rounds to the line | Under after one round | Independent % "
+             "| Requests a run "
              "| Minutes a run |",
-             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     lines += [setup_line(model, style, group, outside)
               for (model, style), group in sorted(setups.items(), key=lambda item: (item[0][0], len(item[0][1])))]
     for model in sorted({model for model, _ in setups}):
