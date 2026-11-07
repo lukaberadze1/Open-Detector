@@ -202,6 +202,8 @@ PRIORITIES = {
     "speed": (":material/bolt:", "Speed"),
     "quota": (":material/savings:", "Saves quota"),
 }
+ESTIMATE = "redteam:estimate"  # seconds the picked setting should take, from the measured table
+DEFAULT_SECONDS = 45.0  # the timer's guess when nothing measured says how long it takes
 NOTICE = "redteam:notice"  # how the last batch ended, shown until the next run starts
 # The largest context window a local model gets on a machine with 8 GB or less. gemma3:4b ran with
 # 4,096 tokens and crashed Ollama with 32,768 on an 8 GB Mac; a batch whose prompts need more than this
@@ -1180,7 +1182,8 @@ def _revise_output(plan: Plan, conn: Connection, run: bool) -> None:
         if kitchen.enabled():
             kitchen.cue("tasting", "Back to the stove with the burnt bits.", ms=2400)
             with stage.container(border=True, key="od-box-revising"):
-                kitchen.timer("lab:revise_timer", None, size=150, layout="stack", eyebrow="Revising",
+                expected = _expected(plan) * 2  # several rounds of rewrites, each scored
+                kitchen.timer("lab:revise_timer", expected, expected, size=150, layout="stack", eyebrow="Revising",
                               note="Rewriting only the passages above the line, and tasting each try.",
                               stamp=f"{time.time():.3f}", waiting="Revising…", lines=kitchen.REVISING_LINES)
             kitchen.show("lab", "revise")
@@ -1728,6 +1731,7 @@ def _readout(plan: Plan, table: dict, setting: generation_settings.Setting, bloc
             context += len(style_instructions(load_style_profile(plan.style_path), plan.register,
                                               *writer_samples(plan)))
     estimate = generation_settings.estimate(setting, blocks, table, context)
+    st.session_state[ESTIMATE] = float(estimate["seconds"])  # what the kitchen timer counts down from
     if kitchen.enabled():
         _chef_bill(plan, table, setting, estimate)
         return
@@ -2194,6 +2198,8 @@ def _ticket(worker: BatchWorker, done: int, total: int, seconds_left: float | No
     # The kitchen timer at the foot of the ticket counts down in the browser between the page's refreshes, from the
     # batch's own estimate of the time left; until the first blocks are timed its sector sweeps round.
     elapsed = max(0.0, time.time() - status.get("started", time.time()))
+    if seconds_left is None and status.get("expected"):  # until the first blocks are timed, the measured guess
+        seconds_left = max(0.0, status["expected"] - elapsed)
     ready = f"ready around {datetime.now() + timedelta(seconds=seconds_left):%H:%M} · " if seconds_left else ""
     kitchen.timer(f"ticket:{worker.checkpoint.path}", seconds_left,
                   (elapsed + seconds_left) if seconds_left is not None else None, size=104, layout="row",
@@ -2296,7 +2302,9 @@ def _start_batch(plan: Plan, conn: Connection, jobs: list[dict], path: Path, che
         )
     by_key = {job["key"]: job for job in jobs}
     status = {"model": None, "note": None, "log": [], "released": False,
-              "order": _model_order(plan, conn), "started": time.time()}
+              "order": _model_order(plan, conn), "started": time.time(),
+              "expected": (st.session_state.get(ESTIMATE) or DEFAULT_SECONDS * len(jobs) / 4)
+              * (2 if plan.revise else 1) + (10 * len(jobs) if plan.score else 0)}
     # Adaptive challenge mode drafts and scores each block on its own. A local server, as the main endpoint,
     # answers one request at a time anyway.
     group_size = 1 if plan.evasion else plan.group_size
@@ -3259,6 +3267,17 @@ def _improve_batch(plan: Plan, jobs: list[dict], previous_path: Path) -> tuple[P
     return path, checkpoint
 
 
+def _expected(plan: Plan) -> float:
+    """Seconds a sample should take: the measured setting's time, the critic's tasting and, when revising is on, a
+    few rounds of it, or a guess when nothing is measured."""
+    seconds = st.session_state.get(ESTIMATE) or DEFAULT_SECONDS
+    if plan.score:
+        seconds += 10
+    if plan.revise:
+        seconds *= 2
+    return max(10.0, seconds)
+
+
 def _plated(made: dict | None) -> None:
     """Cloche's reaction to a finished sample (`made`, None when nothing came out): his face for its verdict and
     the bell."""
@@ -3364,7 +3383,8 @@ def render() -> None:
                 stage = st.empty()  # the kitchen timer while the sample cooks
                 if kitchen.enabled():
                     with stage.container(border=True, key="od-box-cooking"):
-                        kitchen.timer("lab:timer", None, size=150, layout="stack", eyebrow="Cooking",
+                        expected = _expected(plan)
+                        kitchen.timer("lab:timer", expected, expected, size=150, layout="stack", eyebrow="Cooking",
                                       note="The cooks are writing your sample, then the critic tastes it.",
                                       stamp=f"{time.time():.3f}", waiting="Cooking…", lines=kitchen.COOKING_LINES)
                     kitchen.show("lab", "order")

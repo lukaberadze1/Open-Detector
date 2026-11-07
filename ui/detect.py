@@ -146,25 +146,36 @@ def _load(profile: str, enabled: list[str]):
     if models.is_loaded(profile, enabled):
         return models.get_detector(profile, enabled)
     names = ", ".join(models.ENGINES[name][0] for name in enabled)
+    started = time.monotonic()
     with st.spinner(f"Loading {names}. The first time, this downloads about "
                     f"{models.download_gb(profile, enabled):.1f} GB and can take a few minutes…"):
-        return models.get_detector(profile, enabled)
+        detector = models.get_detector(profile, enabled)
+    seconds = time.monotonic() - started
+    if not style.public() and seconds < 600:  # a first download isn't how long a load takes
+        prefs.update(loads={**(prefs.load().get("loads") or {}), _pace_key(profile, enabled, False): round(seconds, 1)})
+    return detector
 
 
 def _pace_key(profile: str, enabled: list[str], sentences: bool) -> str:
     return f"{profile}|{','.join(sorted(enabled))}|{int(sentences)}"
 
 
-def _estimate(profile: str, enabled: list[str], sentences: bool, words: int) -> float | None:
-    """Seconds the detector should take on `words`, from the pace of the last check with the same engines on this
-    computer (prefs) or in this session: None the first time, or while the engines still have to load."""
-    if not models.is_loaded(profile, enabled):
-        return None
+DEFAULT_PACE = {"slim": 0.10, "full": 0.25}  # seconds a word, with sentence scores, on an 8 GB Mac
+DEFAULT_LOAD = {"slim": 20.0, "full": 45.0}  # seconds to load the engines, once downloaded
+
+
+def _estimate(profile: str, enabled: list[str], sentences: bool, words: int) -> float:
+    """Seconds the detector should take on `words`: the pace of the last check with the same engines on this computer
+    (prefs) or in this session, or a measured default, and the time to load the engines first if they aren't."""
     key = _pace_key(profile, enabled, sentences)
     pace = st.session_state.get(PACE, {}).get(key)
-    if pace is None and not style.public():
-        pace = (prefs.load().get("paces") or {}).get(key)
-    return max(2.0, pace * words) if pace else None
+    saved = {} if style.public() else prefs.load()
+    if pace is None:
+        pace = (saved.get("paces") or {}).get(key) or DEFAULT_PACE.get(profile, 0.15) * (1 if sentences else 0.6)
+    load = 0.0
+    if not models.is_loaded(profile, enabled):
+        load = (saved.get("loads") or {}).get(_pace_key(profile, enabled, False)) or DEFAULT_LOAD.get(profile, 30.0)
+    return max(3.0, pace * words + load)
 
 
 def _record_pace(profile: str, enabled: list[str], sentences: bool, words: int, seconds: float) -> None:

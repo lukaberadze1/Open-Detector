@@ -12,16 +12,19 @@ elements across reruns:
   element as the script draws it.
 - The timer counts down in the browser from the seconds left it was last given, so it ticks smoothly between
   the batch page's two-second refreshes and while the detector holds the script.
-- The bell is made in the browser with the Web Audio API, no sound file. Browsers play sound only after the
-  reader has clicked on the page, and the bell always follows a button press.
+- The bell is a recorded kitchen bell (ui/assets/bell.mp3), carried inside the component's script and played with
+  the Web Audio API, with a synthesised one until it is decoded. Browsers play sound only after the reader has
+  clicked on the page, and the bell always follows a button press.
 
 All three are Bistro's; in Glass, Cloche stays hidden. Motion stops for readers who ask for reduced motion.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import uuid
+from pathlib import Path
 
 import streamlit as st
 
@@ -126,10 +129,29 @@ function unlock() {
   try {
     S.ac = S.ac || new (window.AudioContext || window.webkitAudioContext)();
     if (S.ac.state === "suspended") S.ac.resume();
+    if (!S.ring && !S.loading) {  // the recorded bell, decoded once
+      S.loading = true;
+      fetch(BELL_URI).then((r) => r.arrayBuffer()).then((data) => S.ac.decodeAudioData(data))
+        .then((buffer) => { S.ring = buffer; }).catch(() => { S.loading = false; });
+    }
   } catch (e) { /* no sound on this browser */ }
 }
 
 function bell() {
+  try {
+    const ac = S.ac; if (!ac) return;
+    if (ac.state === "suspended") ac.resume();
+    if (S.ring) {
+      const source = ac.createBufferSource(), gain = ac.createGain();
+      gain.gain.value = 0.9;
+      source.buffer = S.ring; source.connect(gain); gain.connect(ac.destination); source.start();
+      return;
+    }
+    synthBell();
+  } catch (e) { /* no sound on this browser */ }
+}
+
+function synthBell() {  // until the recording is decoded, or where it can't be
   try {
     const ac = S.ac; if (!ac) return;
     if (ac.state === "suspended") ac.resume();
@@ -235,7 +257,9 @@ export default function (component) {
     face(S.base, false);
   }
 }
-""".replace("STAGE_CSS", json.dumps(STAGE_CSS))
+""".replace("STAGE_CSS", json.dumps(STAGE_CSS)).replace(
+    "BELL_URI", json.dumps("data:audio/mpeg;base64," + base64.b64encode(
+        (Path(__file__).parent / "assets" / "bell.mp3").read_bytes()).decode()))
 
 TIMER_JS = """
 const TIMERS = window.__odTimers || (window.__odTimers = new Map());
@@ -293,7 +317,10 @@ export default function (component) {
       if (t.shownEnd == null) t.shownEnd = t.endAt;
       t.shownEnd += (t.endAt - t.shownEnd) * Math.min(1, (at - (t.lastAt || at)) / 900);
       const left = (t.shownEnd - at) / 1000;
-      to = Math.max(0, Math.min(1, left / t.total)) * 360;
+      // The red counts down a second at a time, each tick eased over about a tenth of a second.
+      const target = Math.max(0, Math.min(1, Math.ceil(Math.max(0, left)) / t.total)) * 360;
+      t.angle = t.angle == null ? target : t.angle + (target - t.angle) * Math.min(1, (at - (t.lastAt || at)) / 70);
+      to = t.angle;
       label = left > 0 ? clock(left) : (data.over || "Any second…");
       const done = 1 - to / 360;
       for (const [share, text] of t.steps) if (done >= share) step = text;
