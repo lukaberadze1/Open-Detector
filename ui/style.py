@@ -703,7 +703,7 @@ def tiles_css(current: str) -> str:
   background-size: 100% 100%, {size}, {size}, {size}, {size}, {size} !important;
   background-position: 0 0 !important; background-attachment: fixed !important; }}
 [data-testid="stMainBlockContainer"] {{ position: relative; }}
-[data-testid="stMainBlockContainer"]::before {{ content: ""; position: absolute; top: 0.35rem; right: 7rem;
+[data-testid="stMainBlockContainer"]::before {{ content: ""; position: absolute; top: 0.35rem; right: 16rem;
   width: 320px; height: 64px; pointer-events: none; background: url("{vegetables_uri()}") no-repeat right top / contain;
   filter: drop-shadow(0 4px 3px rgba(40,30,20,0.25)); }}
 @media (max-width: 640px) {{ [data-testid="stMainBlockContainer"]::before {{ width: 200px; }} }}
