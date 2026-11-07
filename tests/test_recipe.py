@@ -81,13 +81,11 @@ def test_main_writes_the_table_and_load_reads_it(tmp_path, monkeypatch):
     assert recipe.load()["setups"][0]["runs"] == 4
 
 
-def test_human_written_sources_are_kept_apart_and_decide_once_measured():
+def test_runs_on_ai_text_decide_and_human_sources_are_kept_apart():
     human = BASE + "+masked+anchored+human-sources"
     rows = ([run(BASE + "+masked", "a", 0.02, 90) for _ in range(4)]
-            + [run(human, "a", 0.10, 75, history=[0.5, 0.1], method="anchored") for _ in range(3)])
+            + [run(human, "a", 0.10, 95, history=[0.5, 0.1], method="anchored") for _ in range(4)])
     table = recipe.build(rows)
     assert {setup["source"] for setup in table["setups"]} == {"ai", "human"}
-    assert recipe.choose(table, {"detector": 12}).measures["source"] == "ai", "three human runs are too few"
-    rows.append(run(human, "a", 0.10, 75, history=[0.5, 0.1], method="anchored"))
-    picked = recipe.choose(recipe.build(rows), {"detector": 12})
-    assert picked.measures["source"] == "human" and picked.features == ("masked",), "the page's own case decides"
+    picked = recipe.choose(table, {"detector": 12})
+    assert picked.measures["source"] == "ai", "a human original is no test: the AI-text runs decide"

@@ -14,7 +14,7 @@ from pathlib import Path
 from . import Detector, DetectorConfig
 from .documents import extract_answer_slots, extract_document
 from .forensics import inspect_document
-from .segment import count_words
+from .segment import count_words, group_parts
 
 DOCUMENT_TYPES = (".md", ".docx", ".pptx")
 
@@ -68,11 +68,16 @@ def main(argv: list[str] | None = None) -> None:
     if sections is not None:
         report["sections_extracted"] = len(sections)
         report["sections"] = []
-        for section in sections:
-            words = count_words(section.text)
+        # Short sections are rated together with their neighbours, so none is left out as too short.
+        for group in group_parts([count_words(section.text) for section in sections], detector.config.min_words):
+            text = "\n\n".join(sections[i].text for i in group)
+            words = count_words(text)
             if words >= detector.config.min_words:
-                result = detector.analyze(section.text, sentences=False)
-                report["sections"].append({"label": section.label, "words": words, "verdict": result.verdict,
+                result = detector.analyze(text, sentences=False)
+                labels = [sections[i].label for i in group]
+                report["sections"].append({"label": labels[0] if len(labels) == 1 else
+                                           f"{labels[0]} to {labels[-1]} ({len(labels)} parts)",
+                                           "parts": len(group), "words": words, "verdict": result.verdict,
                                            "ai_probability": result.ai_probability})
     if path and (forensics := inspect_document(path.name, data)):
         report["forensics"] = forensics.to_dict()

@@ -989,7 +989,8 @@ def test_revise_anchored_goes_on_when_one_request_fails():
         return 0.01 if "fell" in text else 0.9
 
     stats = Counter()
-    changed, _ = revise_anchored({"a": tidy}, {"a": tidy.replace("numerous", "many")},
+    original = "I fell off my first board that August more times than I could count, and laughed about it."
+    changed, _ = revise_anchored({"a": tidy}, {"a": original},
                                        lambda chunks: [score(c) for c in chunks], score, ask, str.strip, rounds=1,
                                        candidates=2, facts=False, stats=stats)
     assert changed == {"a": plain} and stats["requests_failed"] == 1
@@ -1115,8 +1116,8 @@ def test_revise_anchored_traces_each_try_and_why_it_was_kept_or_dropped(tmp_path
         return json.dumps({"blocks": [{"id": f"B{n}", "text": good if job.get("anchor") else lossy}
                                       for n, job in enumerate(pending, 1)]})
 
-    def human(text):
-        return 0.02 if "slept" in text else 0.9
+    def human(text):  # the writer's original reads as human, so half the tries start from it
+        return 0.9 if "undertook" in text else 0.02
 
     trace = Trace(tmp_path / "trace.jsonl", run="r1")
     changed, history = revise_anchored({"a": tidy}, {"a": original}, lambda chunks: [human(c) for c in chunks],
@@ -1131,6 +1132,8 @@ def test_revise_anchored_traces_each_try_and_why_it_was_kept_or_dropped(tmp_path
 
 
 def test_revise_anchored_tries_more_in_its_first_round_in_the_same_requests_and_stretches_plans():
+    from collections import Counter
+
     from eval.redteam_batch import REVISE_STRETCH, revise_anchored, target_words
 
     tidy = ("The acquisition of a first skateboard in August marked the beginning of a learning journey that "
@@ -1143,9 +1146,18 @@ def test_revise_anchored_tries_more_in_its_first_round_in_the_same_requests_and_
         return json.dumps({"blocks": [{"id": f"B{n}", "text": text} for n in range(1, len(pending) + 1)]})
 
     original = "My first skateboard came in August. I fell a lot that week but kept at it until I could ride."
-    revise_anchored({"a": tidy}, {"a": original}, lambda chunks: [0.9 for _ in chunks], lambda text: 0.9, ask,
+
+    def score(text):
+        return 0.05 if text == original else 0.9
+
+    revise_anchored({"a": tidy}, {"a": original}, lambda chunks: [0.9 for _ in chunks], score, ask,
                     str.strip, rounds=2, candidates=4, first_round=8, facts=False)
     assert asked == [4, 4, 2, 2], "round 1: 8 tries in its two requests; round 2: 4, still two requests"
+    asked.clear()
+    stats = Counter()
+    revise_anchored({"a": tidy}, {"a": tidy.replace("numerous", "many")}, lambda chunks: [0.9 for _ in chunks],
+                    lambda text: 0.9, ask, str.strip, rounds=2, candidates=4, first_round=8, facts=False, stats=stats)
+    assert asked == [8, 4] and not stats["anchored"], "an AI original: every try a fresh rewrite, one request"
     from types import SimpleNamespace
     plan = SimpleNamespace(match_existing_lengths=True, answer_words=100, stretch=REVISE_STRETCH)
     assert target_words(plan, {"previous": " ".join(["word"] * 40)}) == 50, "models write short: ask for more"

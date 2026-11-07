@@ -68,8 +68,10 @@ def test_ai_text_is_flagged_with_every_engine(monkeypatch):
     assert result["report"].verdict == "likely_ai"
     assert set(result["report"].engines) == {"glyph", "desklib", "bino"}
     assert "likely_ai" in result["bands"]
-    assert [tab.label for tab in at.tabs] == ["Highlights", "Sentences", "Details"]
-    assert len(result["contributions"]) == 6  # every feature's push, for the Details chart
+    assert [tab.label for tab in at.tabs] == ["Highlights", "Sentences", "Sections", "Details"]
+    assert len(result["contributions"])
+    assert len(result["sections"]) > 1 and all(row["words"] >= 150 and row["verdict"] for row in result["sections"]), \
+        "pasted text is rated part by part, about 150 words each" == 6  # every feature's push, for the Details chart
 
 
 def test_human_text_on_the_slim_build_runs_desklib_alone():

@@ -95,13 +95,13 @@ def test_a_spent_model_hands_on_and_the_next_measures_every_setup(tmp_path, monk
 
     def run(command, log, minutes):
         calls.append(tuple(command))
-        return QUOTA_EXIT if command == ["anchored_masked", overnight.MODELS[0]] else 0
+        return QUOTA_EXIT if command == ["anchored", overnight.MODELS[0]] else 0
 
     item = night(tmp_path, [Stage("round", "?", gemini=1)], run, monkeypatch)
     item.run_all()
     first, second = overnight.MODELS[:2]
     setups = [name for name, _ in overnight.gemini_setups(item.paths, True)]
-    assert calls == [("human_anchored_masked", first), ("anchored_masked", first),
+    assert calls == [("anchored_masked", first), ("anchored", first),
                      *[(name, second) for name in setups]]
     assert status(item, "round") == "done" and item.spent(first) and not item.spent(second)
 
@@ -195,7 +195,7 @@ def test_other_work_is_in_the_plan(tmp_path):
     for name in wanted:
         assert name in names
     assert names.index("humanizer_bart") < names.index("humanizer_report")
-    assert "masked" in [setup for setup, _ in overnight.gemini_setups(paths, True)]
+    assert "anchored_masked" in [setup for setup, _ in overnight.gemini_setups(paths, True)]
 
 
 def test_errors_a_stage_caught_show_in_its_note(tmp_path):
@@ -302,7 +302,7 @@ def test_no_api_holds_the_rounds_back_for_a_later_start_and_runs_the_rest(tmp_pa
     assert calls == ["other"] and status(item, "round") == "held back" and status(item, "other") == "done"
     later = night(tmp_path, stages, lambda command, *a: calls.append(command[0]) or 0, monkeypatch)
     later.run_all()
-    assert status(later, "round") == "done" and "baseline" in calls
+    assert status(later, "round") == "done" and "anchored_masked" in calls
 
 
 def test_no_api_is_on_the_command_line():
@@ -313,17 +313,17 @@ def test_no_api_is_on_the_command_line():
 def test_tonight_measures_the_pages_loop_first_and_the_recipe_is_rebuilt_last(tmp_path):
     paths = Paths(True)
     setups = overnight.gemini_setups(paths, True)
-    assert [name for name, _ in setups][:2] == ["human_anchored_masked", "anchored_masked"], "the page's own case"
+    assert [name for name, _ in setups][:2] == ["anchored_masked", "anchored"], "the leading setup first"
     assert all("anchored" in extra for name, extra in setups if "anchored" in name)
     stages = overnight.plan(paths, True)
     assert stages[-1].name == "recipe" and stages[-1].closing
     assert str(paths.recipe).startswith(str(paths.out)), "a smoke run never writes the page's models/recipe.json"
 
 
-def test_the_human_setup_rewrites_the_human_written_documents():
+def test_the_more_setup_rewrites_the_documents_nothing_else_used():
     paths = Paths(True)
-    human = [str(part) for part in overnight.gemini_command(paths, False, "human_anchored_masked",
-                                                            ["--tag", "human-sources"], 1, overnight.MODELS[0])]
+    more = [str(part) for part in overnight.gemini_command(paths, False, "more_anchored_masked",
+                                                           ["--tag", "more-docs"], 1, overnight.MODELS[0])]
     other = [str(part) for part in overnight.gemini_command(paths, False, "anchored", [], 1, overnight.MODELS[0])]
-    assert any(str(overnight.HUMAN_DOCUMENTS) in part for part in human)
-    assert not any(str(overnight.HUMAN_DOCUMENTS) in part for part in other)
+    assert any(str(overnight.MORE_DOCUMENTS) in part for part in more)
+    assert not any(str(overnight.MORE_DOCUMENTS) in part for part in other)

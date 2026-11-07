@@ -40,11 +40,14 @@ def run(capsys, *argv):
     return json.loads(capsys.readouterr().out)
 
 
-def test_document_gets_a_verdict_and_long_sections_their_own(stub_detector, worksheet, capsys):
+def test_document_gets_a_verdict_and_every_section_a_rating(stub_detector, worksheet, capsys):
     report = run(capsys, str(worksheet), "--no-sentences")
     assert report["ai_probability"] is not None and report["words"] > 150
     assert report["sections_extracted"] == 5
-    assert [s["label"] for s in report["sections"]] == ["Paragraph 1", "Table 1, row 1, cell 2"]
+    assert [s["label"] for s in report["sections"]] == [
+        "Paragraph 1 to Table 1, row 1, cell 1 (2 parts)", "Table 1, row 1, cell 2 to Table 1, row 2, cell 2 (3 parts)"
+    ], "the short cells are rated with their neighbours, not left out as too short"
+    assert sum(s["parts"] for s in report["sections"]) == 5
     assert stub_detector[0].glyph_model is not None  # full profile by default
 
 

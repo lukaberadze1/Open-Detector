@@ -110,6 +110,7 @@ def mage_documents(folder: Path, count: int, seed: int = 11, words: int = 400, s
 
     cached = ROOT / "eval/cache/mage.jsonl"
     used = {json.loads(line)["id"] for line in cached.open(encoding="utf-8")} if cached.exists() else set()
+    used |= {path.stem for path in (ROOT / "data/essays/sources").rglob("*.md")}  # no document twice
     frame = load_mage("test", n=20000, seed=seed)
     frame = frame[(frame["label"] == (0 if human else 1)) & (frame["attack"] == "none") & ~frame["id"].isin(used)]
     frame = frame[frame["text"].map(count_words) >= words]

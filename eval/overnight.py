@@ -51,9 +51,9 @@ MEMORY_GB = 1.5  # wanted free before a stage starts; it starts anyway after MEM
 MEMORY_PATIENCE = 300
 PROBLEM = re.compile(r"^.*(?:\b\w+Error\b|Traceback|Giving up|can't start).*$", re.M)
 DOCUMENTS = ROOT / "data/essays/sources/revise"
-# Human-written MAGE documents the detector reads as human (tune_revise --mage 8 --human-sources): the page's own
-# case, a writer regenerating their work, where half the anchored loop's tries start from the original's wording.
-HUMAN_DOCUMENTS = ROOT / "data/essays/sources/human"
+# Eight more AI-written MAGE documents (tune_revise --mage 8, none repeated), to try the leading setup on text no
+# comparison has used: does it still win in one to three rounds, keeping the meaning?
+MORE_DOCUMENTS = ROOT / "data/essays/sources/revise_more"
 DAIGT_CSV = ROOT / "data/pairs/train_v2_drcat_02.csv"
 DEMOS = ROOT / "data/pairs/humanize_text_demo"
 
@@ -109,17 +109,17 @@ ANCHORED = ["--methods", "anchored", "--rounds", 5]  # the page's revision loop 
 
 
 def gemini_setups(paths: Paths, smoke: bool) -> list[tuple[str, list[str]]]:
-    """Newest question first, so a spent quota leaves the old ones short. On 6-7 Nov multi-start and the German
-    round trip did no better than the baseline and are left out; holding names and numbers kept twice the meaning.
-    Now: does the page's anchored loop, masked or not, reach the line in fewer rounds and keep more, first on
-    human-written documents, the page's own case?"""
-    return [("human_anchored_masked", [*ANCHORED, "--mask-facts", "--tag", "human-sources"]),
-            ("anchored_masked", [*ANCHORED, "--mask-facts"]), ("anchored", ANCHORED), ("masked", ["--mask-facts"]),
-            ("baseline", [])]
+    """The leading setup first, so a spent quota leaves the others short, all on AI-written documents: what the
+    detector catches is what there is to get through. On 6-7 Nov multi-start and the German round trip did no
+    better than the baseline, and holding names and numbers kept twice the meaning; the old loop's masked and
+    baseline runs from then are the comparison. Now: the page's anchored loop with names and numbers held, the same
+    without, and the first on eight documents nothing else has used."""
+    return [("anchored_masked", [*ANCHORED, "--mask-facts"]), ("anchored", ANCHORED),
+            ("more_anchored_masked", [*ANCHORED, "--mask-facts", "--tag", "more-docs"])]
 
 
 def gemini_command(paths: Paths, smoke: bool, setup: str, extra: list, repeats: int, model: str) -> list[str]:
-    folder = HUMAN_DOCUMENTS if setup.startswith("human_") else DOCUMENTS
+    folder = MORE_DOCUMENTS if setup.startswith("more_") else DOCUMENTS
     documents = sorted(folder.glob("*.md"))[:1 if smoke else None]
     tiny = ["--rounds", 1, "--no-log"] if smoke else []
     provider, name = model.split(":", 1) if model.split(":")[0] in ("groq", "openrouter") else ("gemini", model)
@@ -172,8 +172,8 @@ def plan(paths: Paths, smoke: bool) -> list[Stage]:
                  "--out", paths.out / "hop.jsonl", "--report", paths.local_hop)),
         Stage("humanizer_rules", "How do the public rule-based humanizers fare? No model, so it is quick.", 10,
               py("eval.humanizer_attack", "--n", 2 if small else 40, "--no-report", "--out", paths.humanizers)),
-        Stage("gemini_round_1", "Does multi-start, the German round trip or holding names and numbers beat the current "
-              "recipe?", 130, gemini=1),
+        Stage("gemini_round_1", "Does the page's anchored loop with names and numbers held win in one to three rounds, "
+              "keeping the meaning and the style, and beat the same without them and the old loop?", 180, gemini=1),
         board(1),
         Stage("anatomy", "What does Desklib read: words, order, punctuation? Which edits can move it?", 40,
               py("eval.detector_anatomy", "--texts", 2 if small else 16, "--out", paths.out / "anatomy.jsonl",
@@ -194,7 +194,7 @@ def plan(paths: Paths, smoke: bool) -> list[Stage]:
         Stage("humanizer_report", "The humanizers' scores, the same texts before and after.", 15,
               py("eval.humanizer_attack", "--report-only", "--out", paths.humanizers, "--report",
                  paths.humanizer_report), needs=[paths.humanizers]),
-        Stage("gemini_round_2", "The same comparison with a second repeat: is the first round's answer stable?", 50,
+        Stage("gemini_round_2", "The same comparison with a second repeat: is the first round's answer stable?", 150,
               gemini=2),
         Stage("export_revised", "Hands the revised texts to the next stage.", 2, call=lambda: export_revised(paths),
               needs_rows=True, again=True),
@@ -213,8 +213,19 @@ def plan(paths: Paths, smoke: bool) -> list[Stage]:
                  "--redteam", paths.features, "--report", paths.trial_report), needs=[paths.trial, paths.features]),
         Stage("redteam_report", "How much of everything saved gets through, by attack?", 20,
               py("eval.redteam_report", *([paths.samples] if small else []), "--report", paths.redteam)),
-        Stage("gemini_round_3", "A third repeat, if quota and time allow.", 30, gemini=3),
+        Stage("gemini_round_3", "A third repeat, if quota and time allow.", 90, gemini=3),
         board(3),
+        # While quota is out: the same local tests on more texts. Each resumes from what it has.
+        Stage("local_hop_more", "The local translation hop on 30 texts: is it worth adding before revision?", 30,
+              py("eval.bench_hop", "--texts", 1 if small else 30, "--pivots", *(["German"] if small else
+                 ["German", "Finnish"]), "--math", "--budget", 10 if small else 150, "--independent",
+                 "--out", paths.out / "hop.jsonl", "--report", paths.local_hop)),
+        Stage("humanizer_bart_more", "The BART humanizers on 40 texts, for a firmer reading of what they miss.", 90,
+              py("eval.humanizer_attack", "--n", 1 if small else 40, "--no-report", "--humanizers",
+                 "stealth-bart,cive-bart", "--out", paths.humanizers)),
+        Stage("humanizer_report_more", "The humanizers' scores again, with the texts added.", 15,
+              py("eval.humanizer_attack", "--report-only", "--out", paths.humanizers, "--report",
+                 paths.humanizer_report), needs=[paths.humanizers]),
         Stage("reference_full", "The same grading on the full build; it picks up from its saved scores and takes the "
               "hours left over.", 600,
               py("eval.reference_benchmark", "--report", paths.reference, *reference_small)),

@@ -149,8 +149,9 @@ def choose(table: dict, points: dict[str, int], allowed: tuple[str, ...] = OFFER
     floor = table.get("meaning_floor", MEANING_FLOOR)
     pool = [setup for setup in table.get("setups", [])
             if setup.get("runs", 0) >= table.get("min_runs", MIN_RUNS) and offered(setup, allowed)]
-    # Runs on human-written documents are the page's own case, so they decide once there are enough of them.
-    pool = [setup for setup in pool if setup.get("source") == "human"] or pool
+    # Runs that rewrote AI text decide: what the detector catches is what there is to get through. A human original
+    # already reads as human, and a rewrite of it can only lose meaning and read more as AI.
+    pool = [setup for setup in pool if setup.get("source", "ai") == "ai"] or pool
     if not pool:
         return None
     keeping = [setup for setup in pool if (setup.get("facts") or 0) >= floor]

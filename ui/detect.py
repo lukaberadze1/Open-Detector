@@ -12,7 +12,7 @@ import streamlit as st
 
 from opendetector.documents import extract_answer_slots, extract_document
 from opendetector.forensics import inspect_document
-from opendetector.segment import count_words
+from opendetector.segment import count_words, group_parts, sentence_runs, split_sentences
 
 from . import models, nav, style
 from .components import (
@@ -141,24 +141,49 @@ def _analyze(text: str, source: str, sections: list | None, profile: str, enable
     with st.spinner("Scoring the text with every engine…"):
         report = detector.analyze(text, sentences=sentences)
 
-    rows = []
     if sections:
-        progress = st.progress(0.0, text="Scoring sections…")
-        for done, section in enumerate(sections, 1):
-            words = count_words(section.text)
-            verdict = probability = None
-            if words >= detector.config.min_words:
-                section_report = detector.analyze(section.text, sentences=False)
-                verdict, probability = section_report.verdict, section_report.ai_probability
-            rows.append({"label": section.label, "text": section.text, "words": words, "verdict": verdict,
-                         "probability": probability})
-            progress.progress(done / len(sections), text=f"Scored {done} of {len(sections)} sections")
-        progress.empty()
+        parts = [(section.label, section.text) for section in sections]
+    else:  # pasted text: its paragraphs, short ones together and long ones cut, about 150 words a part
+        clean = report.text
+        found = split_sentences(clean)
+        runs = sentence_runs(found, detector.config.min_words)
+        parts = [(f"Part {n}", clean[found[first].start:found[last].end]) for n, (first, last) in enumerate(runs, 1)]
+        parts = parts if len(parts) > 1 else []
+    rows = score_parts(detector, parts)
 
     result = _result(detector, report, text, source, profile, enabled, rows)
     upload = st.session_state.get("upload:detect:file") if sections else None
     result["forensics"] = inspect_document(upload.name, upload.data) if upload else None
     st.session_state[RESULT] = result
+
+
+def score_parts(detector, parts: list[tuple[str, str]], scored: list[dict] | None = None) -> list[dict]:
+    """A row for each group of neighbouring parts (label, text) long enough to score: a part of the detector's
+    minimum or more on its own, shorter ones together (group_parts), so none is left as too short unless the whole
+    text is. `scored` are rows already scored for the same parts, kept for a part that stays on its own."""
+    min_words = detector.config.min_words
+    groups = group_parts([count_words(text) for _, text in parts], min_words)
+    rows = []
+    progress = st.progress(0.0, text="Scoring sections…") if len(groups) > 1 else None
+    for done, group in enumerate(groups, 1):
+        labels = [parts[i][0] for i in group]
+        text = "\n\n".join(parts[i][1] for i in group)
+        words = count_words(text)
+        if len(group) == 1 and scored and scored[group[0]].get("verdict") not in (None, "insufficient_text"):
+            rows.append(scored[group[0]])
+            continue
+        verdict = probability = None
+        if words >= min_words:
+            part_report = detector.analyze(text, sentences=False)
+            verdict, probability = part_report.verdict, part_report.ai_probability
+        label = labels[0] if len(labels) == 1 else f"{labels[0]} – {labels[-1]} ({len(labels)} parts)"
+        rows.append({"label": label, "text": text, "words": words, "verdict": verdict, "probability": probability,
+                     "parts": len(group)})
+        if progress:
+            progress.progress(done / len(groups), text=f"Scored {done} of {len(groups)} sections")
+    if progress:
+        progress.empty()
+    return rows
 
 
 def breakdown(text: str, source: str, profile: str, rows: list[dict]) -> dict:
@@ -168,6 +193,8 @@ def breakdown(text: str, source: str, profile: str, rows: list[dict]) -> dict:
     detector = _load(profile, enabled)
     with st.spinner("Scoring every sentence…"):
         report = detector.analyze(text, sentences=True)
+    if any(row["words"] < detector.config.min_words for row in rows):  # short blocks rated together, not "too short"
+        rows = score_parts(detector, [(row["label"], row["text"]) for row in rows], rows)
     return _result(detector, report, text, source, profile, enabled, rows)
 
 
@@ -208,9 +235,9 @@ def _engine_readings(report, bands: list[str]) -> None:
 
 
 def _sections_table(rows: list[dict], min_words: int, thresholds: dict[str, float]) -> None:
-    st.caption(f"Each section with {min_words} words or more is scored on its own. Shorter ones are too short "
-               f"for a reliable verdict. The dashed lines are the cut-offs at {thresholds['review']:.0%} and "
-               f"{thresholds['ai']:.0%}.")
+    st.caption(f"Each section with {min_words} words or more is scored on its own, and shorter ones together with "
+               f"their neighbours until they reach {min_words}, the fewest the detector rates reliably. The dashed "
+               f"lines are the cut-offs at {thresholds['review']:.0%} and {thresholds['ai']:.0%}.")
     if chart := score_bars(rows, thresholds):
         st.altair_chart(chart, width="stretch")
     st.dataframe(

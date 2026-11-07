@@ -210,6 +210,55 @@ def paragraph_blocks(sentences: list[Sentence], min_words: int) -> list[tuple[in
     return blocks
 
 
+def group_parts(words: list[int], min_words: int) -> list[list[int]]:
+    """Indexes of neighbouring parts (document sections, answer boxes) grouped so each group can be scored: a part
+    with `min_words` or more stays on its own, shorter neighbours join until they reach it, and a short run that
+    doesn't joins the group before it (the next part, when there is none before). Every part is in exactly one
+    group, in order."""
+    groups: list[list[int]] = []
+    run: list[int] = []
+    total = 0
+    for index, count in enumerate(words):
+        if count >= min_words and (not run or groups):
+            if run:  # a short run before a long part joins the group before it, so the long part keeps its own
+                groups[-1] = groups[-1] + run
+                run, total = [], 0
+            groups.append([index])
+            continue
+        run.append(index)
+        total += count
+        if total >= min_words:
+            groups.append(run)
+            run, total = [], 0
+    if run:
+        if groups:
+            groups[-1] = groups[-1] + run
+        else:
+            groups.append(run)
+    return groups
+
+
+def sentence_runs(sentences: list[Sentence], min_words: int) -> list[tuple[int, int]]:
+    """Sentence-index ranges (first, last) of about `min_words` each, for rating a text part by part: paragraphs
+    as paragraph_blocks makes them, and a block of more than twice `min_words` cut at sentence ends into runs of at
+    least `min_words`, a short tail joining the run before it."""
+    runs: list[tuple[int, int]] = []
+    for first, last in paragraph_blocks(sentences, min_words):
+        if sum(s.words for s in sentences[first:last + 1]) <= 2 * min_words:
+            runs.append((first, last))
+            continue
+        start, words, cut = first, 0, []
+        for i in range(first, last + 1):
+            words += sentences[i].words
+            if words >= min_words:
+                cut.append((start, i))
+                start, words = i + 1, 0
+        if start <= last:
+            cut[-1] = (cut[-1][0], last)
+        runs.extend(cut)
+    return runs
+
+
 def sentence_windows(sentences: list[Sentence], target_words: int, stride_words: int,
                      min_paragraph_words: int | None = None) -> list[Window]:
     """Group consecutive sentences into windows of about `target_words`, advancing about

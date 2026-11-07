@@ -1031,6 +1031,9 @@ ANCHORED_CANDIDATES = 4  # tries a passage gets a round in revise_anchored, half
 # tokens and detector time, not requests. On 6-7 Nov a try lowered its document 25% of the time: if tries were
 # independent, 4 would fix about 68% of flagged passages and 8 about 90%.
 ANCHORED_FIRST_ROUND = 8
+# Tries start from the writer's original only when the detector reads the original as human, under this. An AI
+# original's wording is what the detector catches, so then every try is a fresh rewrite in the writer's sentences.
+ANCHOR_BELOW = 0.5
 
 
 def chunk_scorer(detector) -> Callable[[list[str]], list[float | None]]:
@@ -1068,9 +1071,11 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
     sentence plan, so a long document took many rounds and drifted from its original. Here each round takes every
     passage that reads as AI (at `target` / 2 or more) inside the `CONTEXT_WORDS` around it, as the document's
     windows read it, since the score is their mean and maximum. Each such passage gets `candidates` tries
-    (`first_round` in the first, to win in fewer rounds; plans stretched by REVISE_STRETCH): half start
+    (`first_round` in the first, to win in fewer rounds; plans stretched by REVISE_STRETCH). When the detector reads
+    the originals as human (under ANCHOR_BELOW), half start
     from the writer's original of its block (`originals`, by key; ANCHORED), the rest rewrite it as revise_blocks
-    does, in the writer's sentence plans when `shapes` are given. A try is scored on its own surroundings
+    does, in the writer's sentence plans when `shapes` are given; an original read as AI gets none starting from it.
+    A try is scored on its own surroundings
     (`score_chunks`, chunk_scorer), and the lowest is kept if it beats the passage there; among tries that already
     read as human (under `target` / 2) the one keeping most of the original's words wins. A try that leaves its block
     a copy of the original (COPIED) is dropped, as are those failing `facts` (meaning_problem, and `drifted` against the
@@ -1119,8 +1124,13 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
     if best is None:
         return {}, [None]
     history = [best]
+    source = "\n\n".join(text for text in originals.values() if text.strip())
+    reading = score(source) if source else None
+    anchoring = reading is not None and reading < ANCHOR_BELOW  # an AI original is nothing to go back to
+    stats["anchored"] = int(anchoring)
     if trace:
-        trace.version("revise_start", whole(shown), score=best, loop="anchored")
+        trace.version("revise_start", whole(shown), score=best, loop="anchored", original_score=reading,
+                      anchoring=anchoring)
 
     def note(name: str, round_: int, new: str, **fields) -> None:
         if trace:
@@ -1140,7 +1150,7 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
         context = whole(shown)
         failures: list[Exception] = []
         count = max(first_round, candidates) if round_ == 1 else candidates
-        anchored_tries = (count + 1) // 2
+        anchored_tries = (count + 1) // 2 if anchoring else 0
 
         def request(group: list[str], anchored: bool, round_=round_, context=context, parts=shown,
                     failures=failures, count=count, anchored_tries=anchored_tries) -> dict[str, list[str]]:
@@ -1167,7 +1177,7 @@ def revise_anchored(texts: dict[str, str], originals: dict[str, str], score_chun
 
         groups = [hot[at:at + REVISE_GROUP] for at in range(0, len(hot), REVISE_GROUP)]
         written: dict[str, list[str]] = {}
-        sides = [(group, side) for group in groups for side in (True, False)]
+        sides = [(group, side) for group in groups for side in ((True, False) if anchoring else (False,))]
         with ThreadPoolExecutor(max(1, parallel)) as pool:
             for found in pool.map(lambda job: request(*job), sides):
                 for key, versions in found.items():
