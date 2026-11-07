@@ -38,7 +38,7 @@ from string import Template
 ROOT = Path(__file__).resolve().parents[2]
 APP_NAME = "Open Detector"
 BUNDLE_ID = "io.github.lukaberadze1.opendetector"
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 DMG_NAME = "Open-Detector.dmg"  # fixed, so releases/latest/download/Open-Detector.dmg always works
 LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework"
               "/Support/lsregister")
